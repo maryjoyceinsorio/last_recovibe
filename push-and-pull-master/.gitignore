@@ -3,3 +3,4 @@ functions/.secret.local
 functions/node_modules/
 !functions/.env.local.example
 !functions/.secret.local.example
+/geminiConfig.local.js

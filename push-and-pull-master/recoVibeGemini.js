@@ -1,8 +1,20 @@
-// recoVibeGemini.js - Gemini (free tier) called straight from the browser. No backend, no Cloud Functions.
-// No side effects on import: nothing is sent until askGemini() is called.
+// recoVibeGemini.js - Gemini (free tier) called straight from the browser.
+// No Gemini API request is sent until askGemini() is called.
 
 // ================= CONFIG =================
-export const GEMINI_API_KEY = "PASTE_YOUR_GEMINI_API_KEY_HERE"; // free key from Google AI Studio
+const localGeminiConfig = await import("./geminiConfig.local.js").catch((error) => {
+  if (
+    error?.code !== "ERR_MODULE_NOT_FOUND" &&
+    !(error instanceof TypeError)
+  ) {
+    console.warn("[RecoVibe Gemini] Local API key config could not be loaded:", error);
+  }
+  return null;
+});
+export const GEMINI_API_KEY =
+  typeof localGeminiConfig?.GEMINI_API_KEY === "string"
+    ? localGeminiConfig.GEMINI_API_KEY.trim()
+    : "";
 const MODEL = "gemini-2.5-flash";   // if you see 404 in the console, this model name was retired: use the current Flash model
 const MAX_OUTPUT_TOKENS = 500;
 const THINKING_BUDGET = 0;          // 0 = no hidden "thinking" tokens (cheaper, faster). Set to null if your model rejects it.
