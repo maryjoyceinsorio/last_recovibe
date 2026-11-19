@@ -10,12 +10,15 @@
   let registrationsUnsubscribe = null;
   let rtdbUnsubscribe = null;
   let rtdbNotificationsRef = null;
+  let academicCalendarUnsubscribe = null;
+  let academicCalendarTimer = null;
   let badgeRefreshInterval = null;
   let currentUid = "";
   let currentProfile = {};
   let isEventVisibleToStudent = null;
   let loadStudentProfile = null;
   let sources = new Map();
+  let academicCalendarItems = new Map();
   let realtimeSources = new Map();
   let events = new Map();
   let registrations = new Map();
@@ -25,6 +28,13 @@
 
   function debug(...args) {
     if (DEBUG) console.debug("[Student notification badge]", ...args);
+  }
+
+  function publishAcademicCalendarItems(items) {
+    window.StudentAcademicCalendarItems = items;
+    window.dispatchEvent(new CustomEvent("student-academic-calendar-alerts", {
+      detail: items,
+    }));
   }
 
   function toMillis(value) {
@@ -156,6 +166,9 @@
     derivedItems().forEach((item) => {
       if (!merged.has(item.id)) merged.set(item.id, item);
     });
+    academicCalendarItems.forEach((item, id) => {
+      if (!merged.has(id)) merged.set(id, item);
+    });
     Object.entries(state.restored).forEach(([id, item]) => {
       if (!merged.has(id)) merged.set(id, item);
     });
@@ -185,7 +198,13 @@
     }
     rtdbUnsubscribe = null;
     rtdbNotificationsRef = null;
+    clearTimeout(academicCalendarTimer);
+    academicCalendarTimer = null;
+    academicCalendarUnsubscribe?.();
+    academicCalendarUnsubscribe = null;
     sources.clear();
+    academicCalendarItems.clear();
+    publishAcademicCalendarItems([]);
     realtimeSources.clear();
     events.clear();
     registrations.clear();
@@ -207,6 +226,48 @@
       currentProfile = profile;
       updateBadge();
     }).catch((error) => debug("Could not load student profile for badge:", error));
+
+    academicCalendarTimer = setTimeout(() => {
+      if (version !== generation) return;
+      academicCalendarItems.clear();
+      debug("Academic calendar badge notifications timed out.");
+      publishAcademicCalendarItems([]);
+      updateBadge();
+    }, 5000);
+    import("../academicCalendarStore.js").then(({ subscribeCalendarAlerts }) => {
+      if (version !== generation) return;
+      academicCalendarUnsubscribe = subscribeCalendarAlerts(
+        firebase.db,
+        (items) => {
+          if (version !== generation) return;
+          clearTimeout(academicCalendarTimer);
+          academicCalendarTimer = null;
+          academicCalendarItems = new Map(items.map((item) => [
+            String(item.id),
+            { ...item, type: "academic_calendar", createdAt: null, read: false },
+          ]));
+          publishAcademicCalendarItems([...academicCalendarItems.values()]);
+          updateBadge();
+        },
+        (error) => {
+          if (version !== generation) return;
+          clearTimeout(academicCalendarTimer);
+          academicCalendarTimer = null;
+          academicCalendarItems.clear();
+          debug("Academic calendar badge listener failed:", error);
+          publishAcademicCalendarItems([]);
+          updateBadge();
+        },
+      );
+    }).catch((error) => {
+      if (version !== generation) return;
+      clearTimeout(academicCalendarTimer);
+      academicCalendarTimer = null;
+      academicCalendarItems.clear();
+      debug("Could not subscribe to academic calendar badge notifications:", error);
+      publishAcademicCalendarItems([]);
+      updateBadge();
+    });
 
     const notificationDocs = new Map([["userId", new Map()], ["recipientUid", new Map()]]);
     ["userId", "recipientUid"].forEach((field) => {

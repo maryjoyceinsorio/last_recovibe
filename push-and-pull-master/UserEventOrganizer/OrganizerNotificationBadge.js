@@ -33,6 +33,9 @@
   let initialized = false;
   let lifecycleActive = true;
   let sourceError = "";
+  let academicCalendarItems = [];
+  let academicCalendarUnsubscribe = null;
+  let academicCalendarTimer = null;
 
   function debug(...args) {
     if (DEBUG) console.debug("[OrganizerNotifications]", ...args);
@@ -308,6 +311,10 @@
       const normalized = normalizedItem(item.id, item, "derived");
       if (!merged.has(normalized.id)) merged.set(normalized.id, normalized);
     });
+    academicCalendarItems.forEach((item) => {
+      const normalized = normalizedItem(item.id, item, "derived");
+      if (!merged.has(normalized.id)) merged.set(normalized.id, normalized);
+    });
     let deletedIds = new Set();
     try {
       const deleted = JSON.parse(localStorage.getItem(DELETED_STORAGE_KEY) || "[]");
@@ -397,6 +404,11 @@
     listenerStops.clear();
     registrations.clear();
     registrationErrors.clear();
+    clearTimeout(academicCalendarTimer);
+    academicCalendarTimer = null;
+    academicCalendarUnsubscribe?.();
+    academicCalendarUnsubscribe = null;
+    academicCalendarItems = [];
   }
 
   function reset(uid) {
@@ -410,6 +422,7 @@
     firestoreEventQueries.forEach((items) => items.clear());
     rtdbEvents.clear();
     readOverrides.clear();
+    academicCalendarItems = [];
     readStoredNotifications(activeUid).forEach((item) => {
       if (item.id && typeof item.read === "boolean") {
         readOverrides.set(String(item.id), item.read);
@@ -582,6 +595,46 @@
     }
     startFirestore(uid);
     startRtdb(uid);
+    startAcademicCalendar(uid);
+  }
+
+  function startAcademicCalendar(uid) {
+    let settled = false;
+    const finish = (items) => {
+      if (settled || !lifecycleActive || uid !== activeUid) return;
+      settled = true;
+      clearTimeout(academicCalendarTimer);
+      academicCalendarTimer = null;
+      academicCalendarItems = (items || []).map((item) => ({
+        ...item,
+        type: "academic_calendar",
+        source: "derived",
+        createdAt: null,
+        ownerUid: uid,
+        read: readOverrides.get(String(item.id)) === true,
+      }));
+      settleSource("academicCalendar", "ready");
+    };
+    academicCalendarTimer = setTimeout(() => {
+      debug("Academic calendar notifications timed out.");
+      finish([]);
+    }, 5000);
+    import("../academicCalendarStore.js")
+      .then(({ subscribeCalendarAlerts }) => {
+        if (settled || !lifecycleActive || uid !== activeUid) return;
+        academicCalendarUnsubscribe = subscribeCalendarAlerts(
+          firebase.db,
+          finish,
+          (error) => {
+            debug("Academic calendar notification source failed:", error);
+            finish([]);
+          },
+        );
+      })
+      .catch((error) => {
+        debug("Could not start academic calendar notifications:", error);
+        finish([]);
+      });
   }
 
   function fallbackUid() {

@@ -12,6 +12,8 @@ import {
 import { off, onValue, ref, update } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-database.js";
 import { auth, authReady, db, isRtdbConfigured, rtdb } from "../UserStudent/firebaseConfig.js";
 import { getCurrentStageKey, getEventStage, getStages } from "../eventWorkflow.js";
+import { clearOsasCache, isOsasReviewer } from "../correctionAccess.js";
+import { subscribeCalendarAlerts } from "../academicCalendarStore.js";
 
 const DEBUG = false;
 const MAX_EVENTS = 300;
@@ -698,11 +700,19 @@ function dedupeFilteredItems(candidates, localList, permanentIds) {
     });
   });
   const allItems = [...byId.values()].filter((item) => !permanentIds.has(item.id));
-  allItems.sort((a, b) => (dateValue(b.createdAt)?.getTime() || 0) - (dateValue(a.createdAt)?.getTime() || 0));
+  allItems.sort((a, b) => {
+    const dateOrder = (dateValue(b.createdAt)?.getTime() || 0) -
+      (dateValue(a.createdAt)?.getTime() || 0);
+    if (dateOrder) return dateOrder;
+    if (a.type === "academic_calendar" && b.type === "academic_calendar") {
+      return Number(b.stage === "ongoing") - Number(a.stage === "ongoing");
+    }
+    return 0;
+  });
   return allItems;
 }
 
-export function subscribeAdminNotifications(onChange) {
+export function subscribeAdminNotifications(onChange, { includeAcademicCalendar = false } = {}) {
   let stopped = false;
   let activeUid = "";
   let authUnsubscribe = null;
@@ -713,6 +723,7 @@ export function subscribeAdminNotifications(onChange) {
   let controllerState = {
     uid: "",
     role: "",
+    canReviewCorrections: false,
     myOrgs: [],
     items: [],
     allItems: [],
@@ -720,6 +731,7 @@ export function subscribeAdminNotifications(onChange) {
     unreadCount: 0,
     loading: true,
     error: "",
+    partialError: "",
     sourceCounts: {},
     correctionRequests: [],
     correctionRequestsLoading: false,
@@ -733,11 +745,13 @@ export function subscribeAdminNotifications(onChange) {
   let correctionRequests = [];
   let correctionRequestsUnsubscribe = null;
   let correctionRequestsTimer = null;
+  let academicCalendarItems = [];
+  let academicCalendarUnsubscribe = null;
+  let academicCalendarTimer = null;
   let events = [];
   let cachedEvents = [];
   let sourceState = {};
   let regUnsubs = new Map();
-  let registrationErrorLogged = false;
 
   const publish = (patch = {}) => {
     if (stopped) return;
@@ -766,6 +780,12 @@ export function subscribeAdminNotifications(onChange) {
     }
     clearTimeout(correctionRequestsTimer);
     correctionRequestsTimer = null;
+    clearTimeout(academicCalendarTimer);
+    academicCalendarTimer = null;
+    if (academicCalendarUnsubscribe) {
+      try { academicCalendarUnsubscribe(); } catch (error) { log("academic calendar unsubscribe failed", error); }
+      academicCalendarUnsubscribe = null;
+    }
   };
 
   const refresh = () => {
@@ -775,8 +795,10 @@ export function subscribeAdminNotifications(onChange) {
     const permanentKey = `recovibeAdminPermanentlyDeleted:${context.uid}`;
     const localList = getLocalState(key);
     const activeCorrectionIds = new Set(correctionItems.map((item) => item.id));
+    const activeAcademicCalendarIds = new Set(academicCalendarItems.map((item) => String(item.id)));
     const localCandidates = localList.filter((item) =>
-      item.type !== "correction-request" || activeCorrectionIds.has(String(item.id)),
+      (item.type !== "correction-request" || activeCorrectionIds.has(String(item.id))) &&
+      (item.type !== "academic_calendar" || activeAcademicCalendarIds.has(String(item.id))),
     );
     const trashList = getLocalState(trashKey).filter((item) => Number(item.expiresAt) > Date.now());
     const permanentIds = new Set(getLocalState(permanentKey).map(String));
@@ -787,6 +809,7 @@ export function subscribeAdminNotifications(onChange) {
       ...eventItems,
       ...registrationItems,
       ...correctionItems,
+      ...academicCalendarItems,
     ];
     const proposalsById = new Map(
       [...events, ...cachedEvents]
@@ -820,10 +843,18 @@ export function subscribeAdminNotifications(onChange) {
       trash: visibleTrash,
     };
     const unreadCount = merged.items.filter((item) => !item.read).length;
-    const failures = Object.values(sourceState).filter((entry) => entry === "error").length;
-    const settled = Object.values(sourceState).filter((entry) => entry === "success" || entry === "error").length;
-    const sourceCount = Object.keys(sourceState).length;
-    const allFailed = sourceCount > 0 && settled === sourceCount && failures === sourceCount;
+    const sourceEntries = Object.entries(sourceState);
+    const failures = sourceEntries.filter(
+      ([name, entry]) => name !== "rtdbNotifications" && entry === "error",
+    ).length;
+    const firestoreGroups = [
+      sourceEntries.filter(([name]) => name.startsWith("notifications:")),
+      sourceEntries.filter(([name]) => name === "correctionRequests"),
+      sourceEntries.filter(([name]) => name === "academicCalendar"),
+      sourceEntries.filter(([name]) => name.startsWith("events:") || name.startsWith("registrations:")),
+    ].filter((group) => group.length > 0);
+    const allFailed = firestoreGroups.length > 0 &&
+      firestoreGroups.every((group) => group.every(([, status]) => status === "error"));
     const firestoreAfterFilter = filteredCandidates.filter((item) => item.sources.includes("firestore")).length;
     const rtdbAfterFilter = filteredCandidates.filter((item) => item.sources.includes("rtdb")).length;
     const derivedAfterFilter = filteredCandidates.filter((item) => item.source === "derived").length;
@@ -846,23 +877,17 @@ export function subscribeAdminNotifications(onChange) {
       trash: merged.trash,
       unreadCount,
       sourceCounts: counts,
-      error: allFailed ? "Notifications could not be loaded. Please retry." : "",
+      error: allFailed ? "Could not load data." : "",
+      partialError: failures > 0 && !allFailed
+        ? "Some notifications couldn't be loaded."
+        : "",
       correctionRequests,
+      canReviewCorrections: context.canReviewCorrections,
     });
   };
 
-  const canReviewCorrections = (identity) => {
-    const role = normalize(identity.profile.role || identity.profile.userRole || "");
-    return identity.systemWide ||
-      ["admin", "superadmin", "systemadmin", "systemwideadmin"].includes(role) ||
-      identity.profile.isSuperAdmin === true ||
-      identity.profile.isSystemAdmin === true ||
-      profileApprovalStageKeys(identity.profile).has("osas") ||
-      approvalStageKey(profileRole(identity.profile)) === "osas";
-  };
-
   const subscribeCorrectionRequests = (user) => {
-    if (!db || !context || !canReviewCorrections(context)) {
+    if (!db || !context || !context.canReviewCorrections) {
       correctionRequests = [];
       correctionItems = [];
       publish({
@@ -872,11 +897,13 @@ export function subscribeAdminNotifications(onChange) {
       });
       return;
     }
+    sourceState.correctionRequests = "pending";
+    clearTimeout(correctionRequestsTimer);
+    correctionRequestsTimer = null;
     if (correctionRequestsUnsubscribe) {
       correctionRequestsUnsubscribe();
       correctionRequestsUnsubscribe = null;
     }
-    clearTimeout(correctionRequestsTimer);
     correctionRequests = [];
     correctionItems = [];
     publish({
@@ -885,49 +912,71 @@ export function subscribeAdminNotifications(onChange) {
       correctionRequestsError: "",
     });
     correctionRequestsTimer = setTimeout(() => {
-      if (controllerState.correctionRequestsLoading) {
-        publish({
-          correctionRequestsLoading: false,
-          correctionRequestsError: "Correction requests are taking too long to load.",
-        });
-      }
+      correctionRequestsTimer = null;
+      if (!controllerState.correctionRequestsLoading) return;
+      const error = {
+        code: "timeout",
+        message: "Initial correction request snapshot timed out after 5 seconds.",
+      };
+      console.error("[AdminNotifications] correctionRequests failed:", error.code, error.message);
+      publish({
+        correctionRequestsLoading: false,
+        correctionRequestsError: "Correction requests are taking too long to load.",
+      });
+      markSource("correctionRequests", "error");
     }, 5000);
     try {
       correctionRequestsUnsubscribe = onSnapshot(
-        collection(db, "correctionRequests"),
+        query(
+          collection(db, "correctionRequests"),
+          where("status", "==", "pending"),
+          limit(50),
+        ),
         (snapshot) => {
           if (stopped || auth.currentUser?.uid !== user.uid) return;
-          correctionRequests = snapshot.docs.map((requestSnapshot) => ({
-            ...requestSnapshot.data(),
-            id: requestSnapshot.id,
-          }));
-          correctionItems = correctionRequests
-            .filter((request) => normalize(request.status) === "pending")
-            .map((request) => ({
-              id: `correction-${request.id}`,
-              correctionRequestId: request.id,
-              type: "correction-request",
-              title: `Correction request from ${request.requesterName || "Teacher"}`,
-              message: `${request.fieldLabel || request.field || "Detail"}: ${request.currentValue ?? ""} -> ${request.requestedValue ?? ""}`,
-              createdAt: request.createdAtMs ?? request.createdAt ?? null,
-              read: false,
-              source: "derived",
-              openToAll: true,
-            }));
           clearTimeout(correctionRequestsTimer);
           correctionRequestsTimer = null;
-          publish({
-            correctionRequests,
-            correctionRequestsLoading: false,
-            correctionRequestsError: "",
-          });
-          refresh();
+          try {
+            correctionRequests = snapshot.docs.map((requestSnapshot) => ({
+              ...requestSnapshot.data(),
+              id: requestSnapshot.id,
+            }));
+            correctionItems = correctionRequests
+              .filter((request) => normalize(request.status) === "pending")
+              .map((request) => ({
+                id: `correction-${request.id}`,
+                correctionRequestId: request.id,
+                type: "correction-request",
+                title: `Correction request from ${request.requesterName || "Teacher"}`,
+                message: `${request.fieldLabel || request.field || "Detail"}: ${request.currentValue ?? ""} -> ${request.requestedValue ?? ""}`,
+                createdAt: request.createdAtMs ?? request.createdAt ?? null,
+                read: false,
+                source: "derived",
+                openToAll: true,
+              }));
+            publish({
+              correctionRequests,
+              correctionRequestsLoading: false,
+              correctionRequestsError: "",
+            });
+            markSource("correctionRequests", "success");
+          } catch (error) {
+            console.error("[AdminNotifications] correctionRequests failed:", error.code, error.message);
+            correctionRequests = [];
+            correctionItems = [];
+            publish({
+              correctionRequests,
+              correctionRequestsLoading: false,
+              correctionRequestsError: "Couldn't load correction requests. Check your connection and try again.",
+            });
+            markSource("correctionRequests", "error");
+          }
         },
         (error) => {
           if (stopped || auth.currentUser?.uid !== user.uid) return;
-          log("correction requests listener failed", error.code || error);
           clearTimeout(correctionRequestsTimer);
           correctionRequestsTimer = null;
+          console.error("[AdminNotifications] correctionRequests failed:", error.code, error.message);
           correctionRequests = [];
           correctionItems = [];
           publish({
@@ -937,13 +986,13 @@ export function subscribeAdminNotifications(onChange) {
               ? "You don't have permission to view correction requests."
               : "Couldn't load correction requests. Check your connection and try again.",
           });
-          refresh();
+          markSource("correctionRequests", "error");
         },
       );
     } catch (error) {
-      log("correction requests listener could not start", error.code || error);
       clearTimeout(correctionRequestsTimer);
       correctionRequestsTimer = null;
+      console.error("[AdminNotifications] correctionRequests failed:", error.code, error.message);
       correctionRequests = [];
       correctionItems = [];
       publish({
@@ -951,7 +1000,7 @@ export function subscribeAdminNotifications(onChange) {
         correctionRequestsLoading: false,
         correctionRequestsError: "Couldn't load correction requests. Check your connection and try again.",
       });
-      refresh();
+      markSource("correctionRequests", "error");
     }
   };
 
@@ -962,7 +1011,8 @@ export function subscribeAdminNotifications(onChange) {
   };
 
   const settleLoading = () => {
-    if (controllerState.loading) {
+    const pending = Object.values(sourceState).some((entry) => entry === "pending");
+    if (controllerState.loading && !pending) {
       controllerState.loading = false;
       clearTimeout(safetyTimer);
       safetyTimer = null;
@@ -1002,6 +1052,8 @@ export function subscribeAdminNotifications(onChange) {
     eligible.forEach((event) => {
       const eventId = String(event.id);
       if (regUnsubs.has(eventId)) return;
+      const sourceName = `registrations:${eventId}`;
+      sourceState[sourceName] = "pending";
       try {
         const registrationQuery = query(
           collection(db, "events", eventId, "registrations"),
@@ -1011,62 +1063,63 @@ export function subscribeAdminNotifications(onChange) {
           registrationQuery,
           (snapshot) => {
             if (stopped || auth.currentUser?.uid !== context?.uid) return;
-            const groups = new Map();
-            snapshot.docs.forEach((registration) => {
-              const data = registration.data() || {};
-              const registeredAt = registrationTime(data);
-              const day = manilaDay(registeredAt);
-              if (!day) return;
-              const entry = groups.get(day) || { count: 0, latest: null, names: [] };
-              entry.count += 1;
-              const date = dateValue(registeredAt);
-              if (date && (!entry.latest || date > entry.latest)) entry.latest = date;
-              const name = registrationName(data);
-              if (name) entry.names.push(name);
-              groups.set(day, entry);
-            });
-            registrationItems = registrationItems.filter((item) => item.eventId !== eventId);
-            groups.forEach((group, day) => {
-              const stamp = group.latest?.toISOString();
-              if (!stamp || !group.count) return;
-              const title = eventTitle(event);
-              const registeredName = group.count === 1
-                ? (group.names[0] || "A student")
-                : "";
-              registrationItems.push({
-                id: `registrations-${eventId}-${day}-${group.count}`,
-                eventId,
-                type: "registration",
-                title: group.count === 1
-                  ? `New registration for ${title}`
-                  : `${group.count} students registered for ${title}`,
-                message: group.count === 1
-                  ? `${registeredName} registered for ${title}.`
-                  : `${group.count} students registered for ${title}.`,
-                createdAt: stamp,
-                read: false,
-                source: "derived",
-                ...eventOrgMetadata(event),
+            try {
+              const groups = new Map();
+              snapshot.docs.forEach((registration) => {
+                const data = registration.data() || {};
+                const registeredAt = registrationTime(data);
+                const day = manilaDay(registeredAt);
+                if (!day) return;
+                const entry = groups.get(day) || { count: 0, latest: null, names: [] };
+                entry.count += 1;
+                const date = dateValue(registeredAt);
+                if (date && (!entry.latest || date > entry.latest)) entry.latest = date;
+                const name = registrationName(data);
+                if (name) entry.names.push(name);
+                groups.set(day, entry);
               });
-            });
-            markSource(`registrations:${eventId}`, "success");
+              registrationItems = registrationItems.filter((item) => item.eventId !== eventId);
+              groups.forEach((group, day) => {
+                const stamp = group.latest?.toISOString();
+                if (!stamp || !group.count) return;
+                const title = eventTitle(event);
+                const registeredName = group.count === 1
+                  ? (group.names[0] || "A student")
+                  : "";
+                registrationItems.push({
+                  id: `registrations-${eventId}-${day}-${group.count}`,
+                  eventId,
+                  type: "registration",
+                  title: group.count === 1
+                    ? `New registration for ${title}`
+                    : `${group.count} students registered for ${title}`,
+                  message: group.count === 1
+                    ? `${registeredName} registered for ${title}.`
+                    : `${group.count} students registered for ${title}.`,
+                  createdAt: stamp,
+                  read: false,
+                  source: "derived",
+                  ...eventOrgMetadata(event),
+                });
+              });
+              markSource(sourceName, "success");
+            } catch (error) {
+              registrationItems = registrationItems.filter((item) => item.eventId !== eventId);
+              console.error(`[AdminNotifications] ${sourceName.replace(":", ".")} failed:`, error.code, error.message);
+              markSource(sourceName, "error");
+            }
           },
           (error) => {
             if (stopped || auth.currentUser?.uid !== context?.uid) return;
             registrationItems = registrationItems.filter((item) => item.eventId !== eventId);
-            if (!registrationErrorLogged) {
-              registrationErrorLogged = true;
-              log("registration reads failed; skipping registration notifications", error);
-            }
-            markSource(`registrations:${eventId}`, "error");
+            console.error(`[AdminNotifications] ${sourceName.replace(":", ".")} failed:`, error.code, error.message);
+            markSource(sourceName, "error");
           },
         );
         regUnsubs.set(eventId, unsubscribe);
       } catch (error) {
-        if (!registrationErrorLogged) {
-          registrationErrorLogged = true;
-          log("registration listener could not start", error);
-        }
+        console.error(`[AdminNotifications] ${sourceName.replace(":", ".")} failed:`, error.code, error.message);
+        markSource(sourceName, "error");
       }
     });
   };
@@ -1076,7 +1129,18 @@ export function subscribeAdminNotifications(onChange) {
     activeUid = user.uid;
     context = null;
     safetyTimer = setTimeout(() => {
-      if (controllerState.loading) publish({ loading: false });
+      if (!controllerState.loading) return;
+      const error = {
+        code: "timeout",
+        message: "Admin identity did not load within 5 seconds.",
+      };
+      console.error("[AdminNotifications] identity failed:", error.code, error.message);
+      publish({
+        loading: false,
+        error: "Could not load data.",
+        partialError: "",
+        correctionRequestsLoading: false,
+      });
     }, 5000);
     publish({
       uid: user.uid,
@@ -1086,11 +1150,14 @@ export function subscribeAdminNotifications(onChange) {
       unreadCount: 0,
       loading: true,
       error: "",
+      partialError: "",
       sourceCounts: {},
     });
     const loaded = await loadIdentity(user);
     if (stopped || auth.currentUser?.uid !== user.uid) return;
-    context = { uid: user.uid, ...loaded };
+    const canReviewCorrections = db ? await isOsasReviewer(db, auth) : false;
+    if (stopped || auth.currentUser?.uid !== user.uid) return;
+    context = { uid: user.uid, ...loaded, canReviewCorrections };
     if (!context.systemWide && !context.myOrgs.size) {
       log("no organization assignment resolved; showing personal and open-for-all items only");
     }
@@ -1100,24 +1167,26 @@ export function subscribeAdminNotifications(onChange) {
     registrationItems = [];
     correctionItems = [];
     correctionRequests = [];
+    academicCalendarItems = [];
     events = [];
     cachedEvents = [];
     sourceState = {
-      firestoreRecipientUid: "pending",
-      firestoreUserId: "pending",
-      events: "pending",
+      "notifications:recipientUid": "pending",
+      "notifications:userId": "pending",
+      ...(includeAcademicCalendar ? { academicCalendar: "pending" } : {}),
     };
-    if (isRtdbConfigured && rtdb) sourceState.rtdb = "pending";
-    registrationErrorLogged = false;
+    if (isRtdbConfigured && rtdb) sourceState.rtdbNotifications = "pending";
     publish({
       uid: user.uid,
       role: loaded.role,
       myOrgs: [...loaded.myOrgs],
+      canReviewCorrections,
       items: [],
       allItems: [],
       trash: [],
       unreadCount: 0,
       error: "",
+      partialError: "",
       sourceCounts: {},
       correctionRequests,
       correctionRequestsLoading: false,
@@ -1126,66 +1195,124 @@ export function subscribeAdminNotifications(onChange) {
 
     subscribeCorrectionRequests(user);
 
+    if (includeAcademicCalendar) {
+      const failAcademicCalendar = (error) => {
+        if (stopped || auth.currentUser?.uid !== user.uid) return;
+        clearTimeout(academicCalendarTimer);
+        academicCalendarTimer = null;
+        academicCalendarUnsubscribe?.();
+        academicCalendarUnsubscribe = null;
+        academicCalendarItems = [];
+        if (DEBUG) console.error("[AdminNotifications] academicCalendar failed:", error.code, error.message);
+        markSource("academicCalendar", "success");
+      };
+      academicCalendarTimer = setTimeout(() => {
+        if (sourceState.academicCalendar !== "pending") return;
+        failAcademicCalendar({
+          code: "timeout",
+          message: "Initial academic calendar snapshot timed out after 5 seconds.",
+        });
+      }, 5000);
+      if (db) {
+        try {
+          academicCalendarUnsubscribe = subscribeCalendarAlerts(
+            db,
+            (items) => {
+              if (stopped || auth.currentUser?.uid !== user.uid) return;
+              clearTimeout(academicCalendarTimer);
+              academicCalendarTimer = null;
+              academicCalendarItems = items.map((item) => ({
+                ...item,
+                id: `acad-${item.docId}-${item.stage}`,
+                type: "academic_calendar",
+                createdAt: null,
+                read: false,
+                source: "academicCalendar",
+                sources: ["academicCalendar"],
+                openToAll: true,
+              }));
+              markSource("academicCalendar", "success");
+            },
+            failAcademicCalendar,
+          );
+        } catch (error) {
+          failAcademicCalendar(error);
+        }
+      } else {
+        failAcademicCalendar({
+          code: "unavailable",
+          message: "Firestore is not configured.",
+        });
+      }
+    }
+
     if (!db) {
-      sourceState.firestoreRecipientUid = "error";
-      sourceState.firestoreUserId = "error";
-      sourceState.events = "error";
-      markSource("firestoreRecipientUid", "error");
-      markSource("firestoreUserId", "error");
-      markSource("events", "error");
+      markSource("notifications:recipientUid", "error");
+      markSource("notifications:userId", "error");
     } else {
       [
-        ["firestoreRecipientUid", "recipientUid"],
-        ["firestoreUserId", "userId"],
+        ["notifications:recipientUid", "recipientUid"],
+        ["notifications:userId", "userId"],
       ].forEach(([sourceName, field]) => {
         try {
-          const sourceQuery = query(collection(db, "notifications"), where(field, "==", user.uid));
+          sourceState[sourceName] = "pending";
+          const sourceQuery = query(
+            collection(db, "notifications"),
+            where(field, "==", user.uid),
+            limit(50),
+          );
           const unsubscribe = onSnapshot(
             sourceQuery,
             (snapshot) => {
               if (stopped || auth.currentUser?.uid !== user.uid) return;
-              const docs = snapshot.docs.map((snap) => {
-                const data = snap.data() || {};
-                return {
-                  ...data,
-                  id: snap.id,
-                  eventId: data.proposalId || data.eventId || "",
-                  proposalId: data.proposalId || data.eventId || "",
-                  type: data.type || "default",
-                  title: data.title || "Notification",
-                  createdAt: data.createdAt ?? null,
-                  read: data.read === true || data.isRead === true,
-                  source: "firestore",
-                  sources: ["firestore"],
-                  recipientUid: data.recipientUid || (field === "recipientUid" ? user.uid : ""),
-                  userId: data.userId || (field === "userId" ? user.uid : ""),
-                  orgId: data.orgId || data.organizationId || data.organizationCode || data.organization || null,
-                  organizationCodes: data.organizationCodes || [],
-                  departmentCodes: data.departmentCodes || [],
-                  openToAll: openToAll(data),
-                };
-              });
-              firestoreItems = [
-                ...firestoreItems.filter((item) => item._queryField !== field),
-                ...docs.map((item) => ({ ...item, _queryField: field })),
-              ];
-              markSource(sourceName, "success");
+              try {
+                const docs = snapshot.docs.map((snap) => {
+                  const data = snap.data() || {};
+                  return {
+                    ...data,
+                    id: snap.id,
+                    eventId: data.proposalId || data.eventId || "",
+                    proposalId: data.proposalId || data.eventId || "",
+                    type: data.type || "default",
+                    title: data.title || "Notification",
+                    createdAt: data.createdAt ?? null,
+                    read: data.read === true || data.isRead === true,
+                    source: "firestore",
+                    sources: ["firestore"],
+                    recipientUid: data.recipientUid || (field === "recipientUid" ? user.uid : ""),
+                    userId: data.userId || (field === "userId" ? user.uid : ""),
+                    orgId: data.orgId || data.organizationId || data.organizationCode || data.organization || null,
+                    organizationCodes: data.organizationCodes || [],
+                    departmentCodes: data.departmentCodes || [],
+                    openToAll: openToAll(data),
+                  };
+                });
+                firestoreItems = [
+                  ...firestoreItems.filter((item) => item._queryField !== field),
+                  ...docs.map((item) => ({ ...item, _queryField: field })),
+                ];
+                markSource(sourceName, "success");
+              } catch (error) {
+                console.error(`[AdminNotifications] ${sourceName.replace(":", ".")} failed:`, error.code, error.message);
+                firestoreItems = firestoreItems.filter((item) => item._queryField !== field);
+                markSource(sourceName, "error");
+              }
             },
             (error) => {
               if (stopped || auth.currentUser?.uid !== user.uid) return;
-              log(`${field} notifications query failed`, error);
+              console.error(`[AdminNotifications] ${sourceName.replace(":", ".")} failed:`, error.code, error.message);
+              firestoreItems = firestoreItems.filter((item) => item._queryField !== field);
               markSource(sourceName, "error");
             },
           );
           subscriptions.push(unsubscribe);
         } catch (error) {
-          log(`${field} notifications subscription failed`, error);
+          console.error(`[AdminNotifications] ${sourceName.replace(":", ".")} failed:`, error.code, error.message);
           markSource(sourceName, "error");
         }
       });
 
       const eventSnapshots = new Map();
-      const eventQueryStates = new Map();
       const eventQueries = [];
       if (loaded.systemWide) {
         eventQueries.push([
@@ -1262,22 +1389,23 @@ export function subscribeAdminNotifications(onChange) {
         });
         eventItems = [...derived, ...cachedDerived];
         addRegistrationListeners();
-        markSource("events", "success");
       };
 
       const failEventQuery = (name, error) => {
-        eventQueryStates.set(name, "error");
-        log(`${name} query failed`, error);
-        settleLoading();
-        if ([...eventQueryStates.values()].every((status) => status === "error")) {
-          markSource("events", "error");
-        } else {
-          refresh();
+        console.error(`[AdminNotifications] ${name.replace(/:/g, ".")} failed:`, error.code, error.message);
+        eventSnapshots.delete(name);
+        try {
+          updateEvents();
+        } catch (processingError) {
+          console.error(`[AdminNotifications] ${name.replace(/:/g, ".")} failed:`, processingError.code, processingError.message);
+          eventItems = [];
+          registrationItems = [];
         }
+        markSource(name, "error");
       };
 
       eventQueries.forEach(([name, makeEventQuery]) => {
-        eventQueryStates.set(name, "pending");
+        sourceState[name] = "pending";
         try {
           const eventQuery = makeEventQuery();
           const unsubscribe = onSnapshot(
@@ -1289,8 +1417,8 @@ export function subscribeAdminNotifications(onChange) {
                   name,
                   snapshot.docs.map((snap) => ({ ...snap.data(), id: snap.id })),
                 );
-                eventQueryStates.set(name, "success");
                 updateEvents();
+                markSource(name, "success");
               } catch (error) {
                 failEventQuery(name, error);
               }
@@ -1314,37 +1442,72 @@ export function subscribeAdminNotifications(onChange) {
           rtdbRef,
           (snapshot) => {
             if (stopped || auth.currentUser?.uid !== user.uid) return;
-            const data = snapshot.val() || {};
-            rtdbItems = Object.entries(data).map(([id, value]) => ({
-              ...(value || {}),
-              id,
-              eventId: value?.eventId || "",
-              type: value?.type || "default",
-              title: value?.title || "Notification",
-              message: value?.message || "",
-              createdAt: value?.createdAt ?? null,
-              read: value?.read === true,
-              recipientUid: value?.recipientUid || user.uid,
-              source: "rtdb",
-              sources: ["rtdb"],
-              orgId: value?.orgId || value?.organizationId || value?.organizationCode || null,
-              openToAll: openToAll(value),
-            }));
-            markSource("rtdb", "success");
+            try {
+              const data = snapshot.val() || {};
+              rtdbItems = Object.entries(data).map(([id, value]) => ({
+                ...(value || {}),
+                id,
+                eventId: value?.eventId || "",
+                type: value?.type || "default",
+                title: value?.title || "Notification",
+                message: value?.message || "",
+                createdAt: value?.createdAt ?? null,
+                read: value?.read === true,
+                recipientUid: value?.recipientUid || user.uid,
+                source: "rtdb",
+                sources: ["rtdb"],
+                orgId: value?.orgId || value?.organizationId || value?.organizationCode || null,
+                openToAll: openToAll(value),
+              }));
+              markSource("rtdbNotifications", "success");
+            } catch (error) {
+              rtdbItems = [];
+              console.error("[AdminNotifications] rtdbNotifications failed:", error.code, error.message);
+              markSource("rtdbNotifications", "error");
+            }
           },
           (error) => {
             if (stopped || auth.currentUser?.uid !== user.uid) return;
-            log("RTDB notifications failed", error);
-            markSource("rtdb", "error");
+            rtdbItems = [];
+            console.error("[AdminNotifications] rtdbNotifications failed:", error.code, error.message);
+            markSource("rtdbNotifications", "error");
           },
         );
         subscriptions.push(unsubscribe);
       } catch (error) {
-        log("RTDB notification subscription failed", error);
-        markSource("rtdb", "error");
+        console.error("[AdminNotifications] rtdbNotifications failed:", error.code, error.message);
+        markSource("rtdbNotifications", "error");
       }
     } else {
       log("RTDB source skipped: RTDB is not configured");
+    }
+
+    clearTimeout(safetyTimer);
+    if (Object.values(sourceState).some((entry) => entry === "pending")) {
+      safetyTimer = setTimeout(() => {
+        const timedOut = Object.entries(sourceState)
+          .filter(([, status]) => status === "pending");
+        timedOut.forEach(([name]) => {
+          const error = {
+            code: "timeout",
+            message: "Initial data snapshot timed out after 5 seconds.",
+          };
+          console.error(`[AdminNotifications] ${name.replace(/:/g, ".")} failed:`, error.code, error.message);
+          sourceState[name] = "error";
+          if (name === "correctionRequests") {
+            clearTimeout(correctionRequestsTimer);
+            correctionRequestsTimer = null;
+            publish({
+              correctionRequestsLoading: false,
+              correctionRequestsError: "Correction requests are taking too long to load.",
+            });
+          }
+        });
+        settleLoading();
+        refresh();
+      }, 5000);
+    } else {
+      settleLoading();
     }
   };
 
@@ -1363,6 +1526,7 @@ export function subscribeAdminNotifications(onChange) {
           if (stopped) return;
           if (!user) {
             unsubscribeSources();
+            clearOsasCache();
             activeUid = "";
             context = null;
             publish({
@@ -1380,7 +1544,7 @@ export function subscribeAdminNotifications(onChange) {
           try {
             await startSources(user);
           } catch (error) {
-            log("notification initialization failed", error);
+            console.error("[AdminNotifications] identity failed:", error.code, error.message);
             publish({
               uid: user.uid,
               items: [],
@@ -1389,11 +1553,12 @@ export function subscribeAdminNotifications(onChange) {
               unreadCount: 0,
               loading: false,
               error: "Notifications could not be loaded. Please retry.",
+              partialError: "",
             });
           }
         });
       } catch (error) {
-        log("auth startup failed", error);
+        console.error("[AdminNotifications] authentication failed:", error.code, error.message);
         publish({ loading: false, error: "Notifications are unavailable." });
       }
     })();

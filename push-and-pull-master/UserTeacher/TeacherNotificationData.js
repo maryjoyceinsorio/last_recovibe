@@ -21,6 +21,7 @@ import {
   rtdb,
 } from "../UserStudent/firebaseConfig.js";
 import { teacherEventReadFilters, teacherEventsQuery } from "./TeacherEventQuery.js";
+import { subscribeCalendarAlerts } from "../academicCalendarStore.js";
 
 const DEBUG = false;
 const TWO_WEEKS = 14 * 24 * 60 * 60 * 1000;
@@ -42,6 +43,9 @@ let timedOut = false;
 let sourceStates = new Map();
 let sourceErrors = new Map();
 let eventDocuments = new Map();
+let academicCalendarItems = [];
+let academicCalendarUnsubscribe = null;
+let academicCalendarTimer = null;
 let includeEventsSource = true;
 let firestoreQueries = new Map();
 let firestoreNotifications = new Map();
@@ -72,6 +76,7 @@ function normalizedType(data = {}) {
     .trim()
     .toLowerCase()
     .replace(/[\s_-]+/g, "");
+  if (value.includes("academiccalendar")) return "academic_calendar";
   if (value.includes("cancel")) return "cancelled";
   if (value.includes("resched")) return "rescheduled";
   if (value.includes("reminder") || value.includes("upcoming") || value.includes("starts")) return "reminder";
@@ -268,6 +273,11 @@ function mergeItems(uid) {
     if (firestoreCoverage.has(`${item.eventId}:${item.type}`)) return;
     if (!merged.has(item.id)) merged.set(item.id, item);
   });
+  academicCalendarItems.forEach((item) => {
+    if (!merged.has(item.id)) {
+      merged.set(item.id, normalizeItem(item.id, item, "derived", uid));
+    }
+  });
   return [...merged.values()].sort((a, b) => b.createdAtMillis - a.createdAtMillis);
 }
 
@@ -351,6 +361,10 @@ function stopSubscriptions() {
     debug("Could not stop the event notification listener:", error);
   }
   eventsUnsubscribe = null;
+  academicCalendarUnsubscribe?.();
+  academicCalendarUnsubscribe = null;
+  clearTimeout(academicCalendarTimer);
+  academicCalendarTimer = null;
   try {
     rtdbUnsubscribe?.();
   } catch (error) {
@@ -364,6 +378,7 @@ function stopSubscriptions() {
   sourceStates.clear();
   sourceErrors.clear();
   eventDocuments.clear();
+  academicCalendarItems = [];
   firestoreQueries.clear();
   firestoreNotifications.clear();
   rtdbNotifications.clear();
@@ -468,6 +483,54 @@ function subscribeToEvents(uid, version) {
   }
 }
 
+function subscribeToAcademicCalendar(uid, version) {
+  if (!db) {
+    markSource("academicCalendar", null, version);
+    return;
+  }
+  sourceStates.set("academicCalendar", "pending");
+  academicCalendarTimer = setTimeout(() => {
+    if (version !== subscriptionVersion || sourceStates.get("academicCalendar") !== "pending") return;
+    academicCalendarItems = [];
+    debug("Academic calendar notifications timed out.");
+    markSource("academicCalendar", null, version);
+  }, 5000);
+  try {
+    academicCalendarUnsubscribe = subscribeCalendarAlerts(
+      db,
+      (items) => {
+        if (version !== subscriptionVersion || currentUid !== uid) return;
+        clearTimeout(academicCalendarTimer);
+        academicCalendarTimer = null;
+        academicCalendarItems = items.map((item) => ({
+          ...item,
+          type: "academic_calendar",
+          createdAtMillis: 0,
+          read: false,
+          source: "derived",
+          userId: uid,
+          recipientUid: uid,
+        }));
+        markSource("academicCalendar", null, version);
+      },
+      (error) => {
+        if (version !== subscriptionVersion || currentUid !== uid) return;
+        clearTimeout(academicCalendarTimer);
+        academicCalendarTimer = null;
+        academicCalendarItems = [];
+        debug("Academic calendar notification source failed:", error);
+        markSource("academicCalendar", null, version);
+      },
+    );
+  } catch (error) {
+    clearTimeout(academicCalendarTimer);
+    academicCalendarTimer = null;
+    academicCalendarItems = [];
+    debug("Could not subscribe to academic calendar notifications:", error);
+    markSource("academicCalendar", null, version);
+  }
+}
+
 function subscribeToRtdb(uid, version) {
   if (!isRtdbConfigured || !rtdb) return;
   sourceStates.set("rtdb", "pending");
@@ -509,6 +572,7 @@ function startSubscriptions(uid) {
   sourceErrors.clear();
   subscribeToFirestoreNotifications(currentUid, version);
   if (includeEventsSource) subscribeToEvents(currentUid, version);
+  subscribeToAcademicCalendar(currentUid, version);
   subscribeToRtdb(currentUid, version);
   publish(version);
   refreshTimer = setInterval(() => publish(version), 60 * 1000);

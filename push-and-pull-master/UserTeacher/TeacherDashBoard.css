@@ -1,3 +1,24 @@
+.academic-calendar-alerts {
+  display: grid;
+  gap: 8px;
+  margin: 0 0 12px;
+  padding: 12px;
+  border: 1px solid rgba(79, 20, 32, 0.12);
+  border-radius: 12px;
+  background: #fffaf0;
+  color: #4f1420;
+}
+.academic-calendar-alerts[hidden] { display: none; }
+.academic-calendar-alert { display: grid; gap: 3px; padding: 7px 9px; border-left: 3px solid #475569; border-radius: 5px; background: #edf1f5; }
+.academic-calendar-alert small { color: #5b5560; }
+.academic-calendar-alert[data-category="holiday"] { border-color: #d97706; background: #fef3e2; }
+.academic-calendar-alert[data-category="exam"] { border-color: #b91c1c; background: #fdecec; }
+.academic-calendar-alert[data-category="enrollment"] { border-color: #2563eb; background: #e8f0fe; }
+.academic-calendar-alert[data-category="deadline"] { border-color: #7c3aed; background: #f1ebfd; }
+.academic-calendar-alert[data-category="break"] { border-color: #15803d; background: #e6f4ea; }
+.academic-calendar-alert[data-category="graduation"] { border-color: #a16207; background: #fbf3d4; }
+.academic-calendar-alert[data-category="classes"] { border-color: #0f766e; background: #e0f5f2; }
+
 :root {
   --maroon-900: #4f1420;
   --maroon-800: #661a29;
@@ -67,19 +88,24 @@ button {
 .teacher-sidebar {
   position: sticky;
   top: 0;
+  left: 0;
   display: flex;
   flex: 0 0 264px;
   flex-direction: column;
   width: 264px;
   height: 100vh;
+  height: 100dvh;
+  min-height: 0;
   padding: 20px 16px;
   overflow: hidden;
+  box-sizing: border-box;
   color: #f3e9dc;
   background: linear-gradient(180deg, var(--maroon-700), var(--maroon-800));
 }
 
 .sidebar-brand {
   display: flex;
+  flex: 0 0 auto;
   min-width: 0;
   align-items: center;
   gap: 10px;
@@ -134,14 +160,17 @@ button {
 
 .primary-nav {
   display: flex;
-  flex: 1;
+  flex: 1 1 auto;
+  min-height: 0;
   flex-direction: column;
   gap: 3px;
+  overflow-y: auto;
 }
 
 .nav-link {
   position: relative;
   display: flex;
+  flex: 0 0 auto;
   min-height: 44px;
   align-items: center;
   gap: 12px;

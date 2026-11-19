@@ -58,7 +58,21 @@ let eventDocuments = new Map();
 let registrationDocuments = new Map();
 let firestoreNotifications = new Map();
 let rtdbNotifications = new Map();
+let academicCalendarItems = [];
+let academicCalendarUnsubscribe = null;
+let academicCalendarTimer = null;
 let detailEventLoads = new Set();
+let publishedEventsTimeout = null;
+let initialLoadPending = new Set();
+let pageLoadSignaled = false;
+
+function settleInitialLoadSource(source) {
+  initialLoadPending.delete(source);
+  if (!pageLoadSignaled && initialLoadPending.size === 0) {
+    pageLoadSignaled = true;
+    window.dispatchEvent(new Event("page-data-ready"));
+  }
+}
 
 function debug(...args) {
   if (DEBUG) console.debug("[Student Notifications]", ...args);
@@ -204,6 +218,7 @@ function normalizedType(value, data = {}) {
     .trim()
     .toLowerCase()
     .replace(/[\s_-]+/g, "");
+  if (type.includes("academiccalendar")) return "academic_calendar";
   if (type.includes("publish") || type.includes("newevent")) return "published";
   if (type.includes("register") || type.includes("participat")) return "registered";
   if (type.includes("reminder") || type.includes("upcoming")) return "reminder";
@@ -399,6 +414,11 @@ function mergedItems() {
       merged.set(item.id, normalizeItem(item.id, item, "derived"));
     }
   });
+  academicCalendarItems.forEach((item) => {
+    if (!merged.has(item.id)) {
+      merged.set(item.id, normalizeItem(item.id, item, "derived"));
+    }
+  });
   Object.entries(state.restored).forEach(([id, item]) => {
     if (!merged.has(id)) merged.set(id, normalizeItem(id, item, item.source || "derived"));
   });
@@ -420,14 +440,9 @@ function updateBadge() {
   badge.hidden = unreadCount === 0;
 }
 
-function renderSkeleton() {
-  return `<div class="notification-skeleton" aria-hidden="true">${
-    Array.from({ length: 5 }, () => '<div class="skeleton-row"><i></i><span><b></b><small></small></span></div>').join("")
-  }</div>`;
-}
-
 function iconForType(type) {
   const icons = {
+    academic_calendar: "✦",
     published: '<svg viewBox="0 0 20 20" aria-hidden="true"><rect x="3" y="4" width="14" height="13" rx="1.5"/><path d="M3 8h14M7 2.5v3M13 2.5v3"/></svg>',
     registered: '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="m4 10 4 4 8-8"/></svg>',
     reminder: "◷",
@@ -444,6 +459,15 @@ function renderRow(item, inTrash = false) {
   const relativeTime = formatRelativeTime(item.createdAtMillis);
   const date = notificationDate(item.createdAtMillis);
   const typeLabel = {
+    academic_calendar: ({
+      holiday: "Holiday",
+      exam: "Exam",
+      enrollment: "Enrollment",
+      deadline: "Deadline",
+      break: "Break",
+      graduation: "Graduation",
+      classes: "Classes",
+    }[item.category] || "Other"),
     published: "New event",
     registered: "Registered",
     reminder: "Reminder",
@@ -496,7 +520,7 @@ function renderNotifications() {
       : "New notifications will show up here.";
   let content = "";
   if (notificationsLoading && !notificationItems.length) {
-    content = renderSkeleton();
+    content = "";
   } else if (notificationError && !notificationItems.length) {
     content = `<div class="notification-state" role="alert"><strong>Notifications couldn’t be loaded.</strong><p>${escapeHTML(notificationError)}</p><button type="button" class="notification-retry">Retry</button></div>`;
   } else if (!visible.length) {
@@ -745,12 +769,20 @@ function bindPageInteractions() {
 function stopSubscriptions() {
   unsubscribeFirestore.forEach((unsubscribe) => unsubscribe());
   unsubscribeFirestore = [];
+  if (publishedEventsTimeout) {
+    clearTimeout(publishedEventsTimeout);
+    publishedEventsTimeout = null;
+  }
   unsubscribeEvents?.();
   unsubscribeEvents = null;
   unsubscribeRegistrations?.();
   unsubscribeRegistrations = null;
   unsubscribeRtdb?.();
   unsubscribeRtdb = null;
+  clearTimeout(academicCalendarTimer);
+  academicCalendarTimer = null;
+  academicCalendarUnsubscribe?.();
+  academicCalendarUnsubscribe = null;
   if (derivedRefreshInterval) {
     clearInterval(derivedRefreshInterval);
     derivedRefreshInterval = null;
@@ -762,14 +794,17 @@ function stopSubscriptions() {
   registrationDocuments.clear();
   firestoreNotifications.clear();
   rtdbNotifications.clear();
+  academicCalendarItems = [];
   detailEventLoads.clear();
+  initialLoadPending.clear();
 }
 
 function syncItems(version) {
   if (version !== subscriptionVersion) return;
   notificationItems = mergedItems();
   const everyFirestoreQuerySettled = firestoreReady.size === 2;
-  notificationsLoading = !everyFirestoreQuerySettled && !eventDocuments.size && !registrationDocuments.size;
+  notificationsLoading = !everyFirestoreQuerySettled && !eventDocuments.size &&
+    !registrationDocuments.size && !sourceErrors.has("published-events");
   notificationError = [...sourceErrors.values()].join(" ");
   renderNotifications();
 }
@@ -790,6 +825,7 @@ function subscribeToFirestoreNotifications(uid, version) {
         firestoreReady.add(field);
         sourceErrors.delete(`notification-${field}`);
         syncItems(version);
+        settleInitialLoadSource(`notification-${field}`);
       },
       (error) => {
         if (version !== subscriptionVersion || currentUid !== uid) return;
@@ -802,6 +838,7 @@ function subscribeToFirestoreNotifications(uid, version) {
         );
         debug(`Firestore notification query (${field}) failed:`, error);
         syncItems(version);
+        settleInitialLoadSource(`notification-${field}`);
       },
     );
     unsubscribeFirestore.push(unsubscribe);
@@ -827,19 +864,31 @@ function loadMissingRegistrationEvents(version) {
 }
 
 function subscribeToDerivedSources(uid, version) {
+  publishedEventsTimeout = setTimeout(() => {
+    if (version !== subscriptionVersion || eventDocuments.size || sourceErrors.has("published-events")) return;
+    sourceErrors.set("published-events", "Published event notifications are temporarily unavailable.");
+    syncItems(version);
+    settleInitialLoadSource("published-events");
+  }, 8000);
   unsubscribeEvents = onSnapshot(
     collection(db, "events"),
     (snapshot) => {
       if (version !== subscriptionVersion || currentUid !== uid) return;
+      clearTimeout(publishedEventsTimeout);
+      publishedEventsTimeout = null;
       eventDocuments = new Map(snapshot.docs.map((item) => [item.id, item.data()]));
       sourceErrors.delete("published-events");
       syncItems(version);
+      settleInitialLoadSource("published-events");
     },
     (error) => {
       if (version !== subscriptionVersion) return;
+      clearTimeout(publishedEventsTimeout);
+      publishedEventsTimeout = null;
       debug("Published event listener failed:", error);
       sourceErrors.set("published-events", "Published event notifications are temporarily unavailable.");
       syncItems(version);
+      settleInitialLoadSource("published-events");
     },
   );
   unsubscribeRegistrations = onSnapshot(
@@ -854,12 +903,14 @@ function subscribeToDerivedSources(uid, version) {
       sourceErrors.delete("registrations");
       loadMissingRegistrationEvents(version);
       syncItems(version);
+      settleInitialLoadSource("registrations");
     },
     (error) => {
       if (version !== subscriptionVersion) return;
       debug("Student registration listener failed:", error);
       sourceErrors.set("registrations", "Registration-based notifications are temporarily unavailable.");
       syncItems(version);
+      settleInitialLoadSource("registrations");
     },
   );
 }
@@ -877,9 +928,11 @@ function subscribeToRtdb(uid, version) {
           if (data && typeof data === "object") rtdbNotifications.set(id, data);
         });
         syncItems(version);
+        settleInitialLoadSource("rtdb");
       },
       (error) => {
         debug("Realtime Database notification listener failed:", error);
+        settleInitialLoadSource("rtdb");
       },
     );
   } catch (error) {
@@ -889,9 +942,16 @@ function subscribeToRtdb(uid, version) {
   }
 }
 
-function startSubscriptions(uid) {
+function startSubscriptions(uid, includeDerivedSources = true) {
   stopSubscriptions();
   const version = ++subscriptionVersion;
+  pageLoadSignaled = false;
+  initialLoadPending = new Set([
+    "profile",
+    "notification-userId",
+    "notification-recipientUid",
+    "academic-calendar",
+  ]);
   notificationsLoading = true;
   notificationError = "";
   renderNotifications();
@@ -899,12 +959,59 @@ function startSubscriptions(uid) {
     notificationsLoading = false;
     notificationError = "Notifications are unavailable because Firebase is not configured.";
     renderNotifications();
-    return;
+    initialLoadPending.clear();
+    settleInitialLoadSource("unavailable");
+    return null;
   }
   subscribeToFirestoreNotifications(uid, version);
-  subscribeToDerivedSources(uid, version);
+  if (includeDerivedSources) subscribeToDerivedSources(uid, version);
   subscribeToRtdb(uid, version);
+  academicCalendarTimer = setTimeout(() => {
+    if (version !== subscriptionVersion) return;
+    academicCalendarItems = [];
+    debug("Academic calendar notifications timed out.");
+    syncItems(version);
+    settleInitialLoadSource("academic-calendar");
+  }, 5000);
+  import("../academicCalendarStore.js").then(({ subscribeCalendarAlerts }) => {
+    if (version !== subscriptionVersion || currentUid !== uid) return;
+    academicCalendarUnsubscribe = subscribeCalendarAlerts(
+      db,
+      (items) => {
+        if (version !== subscriptionVersion || currentUid !== uid) return;
+        clearTimeout(academicCalendarTimer);
+        academicCalendarTimer = null;
+        academicCalendarItems = items.map((item) => ({
+          ...item,
+          type: "academic_calendar",
+          createdAt: null,
+          createdAtMillis: 0,
+          read: false,
+        }));
+        syncItems(version);
+        settleInitialLoadSource("academic-calendar");
+      },
+      (error) => {
+        if (version !== subscriptionVersion || currentUid !== uid) return;
+        clearTimeout(academicCalendarTimer);
+        academicCalendarTimer = null;
+        academicCalendarItems = [];
+        debug("Academic calendar notification listener failed:", error);
+        syncItems(version);
+        settleInitialLoadSource("academic-calendar");
+      },
+    );
+  }).catch((error) => {
+    if (version !== subscriptionVersion || currentUid !== uid) return;
+    clearTimeout(academicCalendarTimer);
+    academicCalendarTimer = null;
+    academicCalendarItems = [];
+    debug("Could not subscribe to academic calendar notifications:", error);
+    syncItems(version);
+    settleInitialLoadSource("academic-calendar");
+  });
   derivedRefreshInterval = setInterval(() => syncItems(version), 60000);
+  return version;
 }
 
 function restartSubscriptions() {
@@ -916,6 +1023,25 @@ async function initializeStudent(user) {
   currentUid = user.uid;
   readState(currentUid);
   try {
+    const cachedProfile = JSON.parse(
+      localStorage.getItem("recovibeCurrentUser") ||
+      sessionStorage.getItem("recovibeCurrentUser") ||
+      "null",
+    );
+    if (
+      cachedProfile &&
+      user.email &&
+      String(cachedProfile.email || "").trim().toLowerCase() ===
+        String(user.email || "").trim().toLowerCase()
+    ) {
+      studentProfile = cachedProfile;
+      renderStudentSidebar(studentProfile);
+    }
+  } catch (error) {
+    debug("Could not read cached student profile:", error);
+  }
+  const version = startSubscriptions(currentUid, false);
+  try {
     studentProfile = await loadStudentProfile(user);
     renderStudentSidebar(studentProfile);
   } catch (error) {
@@ -923,7 +1049,10 @@ async function initializeStudent(user) {
     studentProfile = {};
   }
   if (auth?.currentUser?.uid !== user.uid) return;
-  startSubscriptions(currentUid);
+  if (version !== null) {
+    subscribeToDerivedSources(currentUid, version);
+    settleInitialLoadSource("profile");
+  }
 }
 
 function initializePage() {
@@ -946,6 +1075,7 @@ function initializePage() {
     notificationsLoading = false;
     notificationError = "Sign in to view your notifications.";
     renderNotifications();
+    window.dispatchEvent(new Event("page-data-ready"));
     return;
   }
   authReady.then(() => {
@@ -957,6 +1087,8 @@ function initializePage() {
         notificationsLoading = false;
         notificationError = "Sign in to view your notifications.";
         renderNotifications();
+        initialLoadPending.clear();
+        settleInitialLoadSource("unauthenticated");
         return;
       }
       initializeStudent(user);
@@ -966,6 +1098,7 @@ function initializePage() {
     notificationsLoading = false;
     notificationError = "Notifications could not be initialized. Please retry.";
     renderNotifications();
+    window.dispatchEvent(new Event("page-data-ready"));
   });
   window.addEventListener("pagehide", () => {
     stopSubscriptions();

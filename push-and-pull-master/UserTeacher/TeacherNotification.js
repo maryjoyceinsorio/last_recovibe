@@ -42,6 +42,13 @@
   let pendingDeleteId = null;
   let undoDeletedItem = null;
   let undoTimer = null;
+  let pageLoadSignaled = false;
+
+  function signalPageReady() {
+    if (pageLoadSignaled) return;
+    pageLoadSignaled = true;
+    window.dispatchEvent(new Event("page-data-ready"));
+  }
 
   function debug(...args) {
     if (DEBUG) console.debug("[Teacher Notifications]", ...args);
@@ -172,6 +179,7 @@
     notificationsLoading = state.loading;
     allSourcesFailed = state.allFailed;
     sourceError = state.error || "";
+    if (state.sourcesSettled || state.allFailed) signalPageReady();
     if (!state.items.length && (!state.sourcesSettled || state.allFailed)) {
       updateUnreadBadge();
       if (hasNotificationPage) renderNotifications();
@@ -229,6 +237,7 @@
         sourceError = "Notifications could not be loaded.";
         updateUnreadBadge();
         if (hasNotificationPage) renderNotifications();
+        signalPageReady();
       });
   }
 
@@ -373,7 +382,20 @@
   function renderNotificationCard(item, inTrash = false) {
     const timestamp = notificationDateLabel(item);
     const relative = notificationRelativeLabel(item);
-    const tag = item.tag || (String(item.type || "").toLowerCase().includes("register") ? "Registered" : String(item.type || "").toLowerCase().includes("event") ? "New event" : "");
+    const categoryLabels = {
+      holiday: "Holiday",
+      exam: "Exam",
+      enrollment: "Enrollment",
+      deadline: "Deadline",
+      break: "Break",
+      graduation: "Graduation",
+      classes: "Classes",
+    };
+    const tag = item.tag || (item.type === "academic_calendar"
+      ? categoryLabels[item.category] || "Other"
+      : String(item.type || "").toLowerCase().includes("register")
+        ? "Registered"
+        : String(item.type || "").toLowerCase().includes("event") ? "New event" : "");
     const id = escapeHTML(item.id);
     const controls = inTrash
       ? `<button type="button" data-deleted-action="restore">Restore</button><button type="button" data-deleted-action="delete-permanently">Delete forever</button><small>Removed in ${Math.max(0, Math.ceil((item.expiresAt - Date.now()) / 86400000))} days</small>`
@@ -486,10 +508,25 @@
         eventItem.time || "Time TBA";
       document.getElementById("notificationEventRoom").textContent =
         eventItem.room || "Room TBA";
-      document.getElementById("notificationEventSlots").textContent =
-        eventItem.slotsOpen === undefined
-          ? "Availability not specified"
-          : `${eventItem.slotsOpen} of ${eventItem.maxSlots ?? eventItem.slotsOpen} slots open`;
+      const capacity = Number(
+        eventItem.capacity ?? eventItem.maxCapacity ?? eventItem.maxSlots,
+      );
+      if (!Number.isFinite(capacity) || capacity < 0) {
+        document.getElementById("notificationEventSlots").textContent =
+          "Availability not specified";
+      } else {
+        const totalSlots = Math.floor(capacity);
+        const registeredCount = Math.max(
+          0,
+          Math.floor(Number(eventItem.registeredCount) || 0),
+        );
+        const openSlots = Math.max(
+          0,
+          Math.min(totalSlots, totalSlots - registeredCount),
+        );
+        document.getElementById("notificationEventSlots").textContent =
+          `${openSlots} of ${totalSlots} slots open`;
+      }
       eventPanel.hidden = false;
       viewButton.hidden = false;
       viewButton.dataset.eventId = eventItem.id;

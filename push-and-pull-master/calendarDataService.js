@@ -2,6 +2,53 @@ import { fetchMonthHolidays } from "./holidayService.js";
 
 let approvedEventsPromise;
 
+export function buildAcademicCalendarLookup(entries, fromYmd, toYmd) {
+  const lookup = new Map();
+  if (
+    !/^\d{4}-\d{2}-\d{2}$/.test(fromYmd) ||
+    !/^\d{4}-\d{2}-\d{2}$/.test(toYmd) ||
+    fromYmd > toYmd
+  ) {
+    return lookup;
+  }
+
+  for (const entry of Array.isArray(entries) ? entries : []) {
+    if (
+      !/^\d{4}-\d{2}-\d{2}$/.test(entry.startDate || "") ||
+      !/^\d{4}-\d{2}-\d{2}$/.test(entry.endDate || "") ||
+      entry.startDate > entry.endDate ||
+      entry.endDate < fromYmd ||
+      entry.startDate > toYmd
+    ) {
+      continue;
+    }
+
+    const cursor = new Date(
+      `${entry.startDate < fromYmd ? fromYmd : entry.startDate}T00:00:00.000Z`,
+    );
+    const endYmd = entry.endDate > toYmd ? toYmd : entry.endDate;
+    while (cursor.toISOString().slice(0, 10) <= endYmd) {
+      const date = cursor.toISOString().slice(0, 10);
+      const dateEntries = lookup.get(date) || [];
+      dateEntries.push(entry);
+      lookup.set(date, dateEntries);
+      cursor.setUTCDate(cursor.getUTCDate() + 1);
+    }
+  }
+  return lookup;
+}
+
+export async function subscribeAcademicCalendarRange(
+  db,
+  fromYmd,
+  toYmd,
+  onData,
+  onError,
+) {
+  const { subscribeCalendarRange } = await import("./academicCalendarStore.js");
+  return subscribeCalendarRange(db, fromYmd, toYmd, onData, onError);
+}
+
 function getStudentPreferences() {
   try {
     const user =

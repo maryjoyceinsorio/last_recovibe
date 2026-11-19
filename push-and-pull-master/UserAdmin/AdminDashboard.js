@@ -15,6 +15,7 @@ import {
   off,
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-database.js";
 import {
+  app,
   auth,
   authReady,
   db,
@@ -22,6 +23,7 @@ import {
   isFirebaseConfigured,
   isRtdbConfigured,
 } from "../UserStudent/firebaseConfig.js";
+import { mountHelpBot } from "../recoVibeHelpBot.js";
 
 (() => {
   "use strict";
@@ -37,6 +39,12 @@ import {
   let sharedNotificationItems = [];
   let dashboardLoadTimer;
   let dashboardLoadExpired = false;
+  let pageLoadSignaled = false;
+  function signalDashboardPageReady() {
+    if (pageLoadSignaled) return;
+    pageLoadSignaled = true;
+    window.dispatchEvent(new Event("page-data-ready"));
+  }
   const dashboardTableState = {
     query: "",
     status: "",
@@ -109,6 +117,7 @@ import {
     }
     root.innerHTML = `<div class="admin-error" role="alert">${message} <button class="admin-row-action" id="retryDashboardData" type="button">Try again</button></div>`;
     root.querySelector("#retryDashboardData")?.addEventListener("click", init);
+    signalDashboardPageReady();
   }
   function getCurrentAdminStage(adminProfile) {
     const normalize = (value) => String(value || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
@@ -340,7 +349,7 @@ import {
   function render() {
     try {
       root.innerHTML =
-        `<div class="dashboard-greeting"><div><p class="dashboard-greeting-title">${esc(greeting())}</p><p class="dashboard-greeting-date">${esc(localDateLabel())}</p></div></div><div class="admin-metrics"></div><section class="admin-section"><div class="admin-section-heading"><div><h2>Event Submissions</h2><p class="admin-section-description"><strong>Source</strong> is the publishing channel, <strong>Category</strong> is the event topic, and <strong>EO (Event Organizer)</strong> is the responsible person or group. Organizer roles are shown beneath the EO.</p></div><a href="AdminApproval.html">Open Review Queue</a></div><div class="dashboard-table-controls"><label>Search by event name<input type="search" id="dashboardEventSearch" placeholder="Search event name..." value="${esc(dashboardTableState.query)}"></label><label>Status<select id="dashboardStatusFilter"><option value="">All statuses</option></select></label><label for="dashboardOrganizationFilter">Organization<select id="dashboardOrganizationFilter"><option value="">All organizations</option></select></label><label>Sort by schedule<select id="dashboardScheduleSort"><option value="asc">Earliest first</option><option value="desc">Latest first</option></select></label><button type="button" class="admin-link-button" id="resetDashboardFilters">Reset</button></div><div class="admin-table-wrap"><table class="admin-table"><thead><tr><th scope="col">Event</th><th scope="col">Source</th><th scope="col">Category</th><th scope="col">Event Organizer (EO)</th><th scope="col">Schedule</th><th scope="col">Venue</th><th scope="col">Status</th><th scope="col">Actions</th></tr></thead><tbody id="eventRows"></tbody></table></div><div id="eventsEmpty" class="admin-empty" hidden>No event submissions yet.</div><div class="dashboard-show-more-wrap"><button type="button" class="admin-row-action" id="showMoreEvents" hidden>Show more</button></div></section>`;
+        `<div class="dashboard-greeting"><div><p class="dashboard-greeting-title">${esc(greeting())}</p><p class="dashboard-greeting-date">${esc(localDateLabel())}</p></div></div><section class="academic-calendar-alerts" id="academicCalendarAlerts" aria-label="Official dates" hidden></section><div class="admin-metrics"></div><section class="admin-section"><div class="admin-section-heading"><div><h2>Event Submissions</h2><p class="admin-section-description"><strong>Source</strong> is the publishing channel, <strong>Category</strong> is the event topic, and <strong>EO (Event Organizer)</strong> is the responsible person or group. Organizer roles are shown beneath the EO.</p></div><a href="AdminApproval.html">Open Review Queue</a></div><div class="dashboard-table-controls"><label>Search by event name<input type="search" id="dashboardEventSearch" placeholder="Search event name..." value="${esc(dashboardTableState.query)}"></label><label>Status<select id="dashboardStatusFilter"><option value="">All statuses</option></select></label><label for="dashboardOrganizationFilter">Organization<select id="dashboardOrganizationFilter"><option value="">All organizations</option></select></label><label>Sort by schedule<select id="dashboardScheduleSort"><option value="asc">Earliest first</option><option value="desc">Latest first</option></select></label><button type="button" class="admin-link-button" id="resetDashboardFilters">Reset</button></div><div class="admin-table-wrap"><table class="admin-table"><thead><tr><th scope="col">Event</th><th scope="col">Source</th><th scope="col">Category</th><th scope="col">Event Organizer (EO)</th><th scope="col">Schedule</th><th scope="col">Venue</th><th scope="col">Status</th><th scope="col">Actions</th></tr></thead><tbody id="eventRows"></tbody></table></div><div id="eventsEmpty" class="admin-empty" hidden>No event submissions yet.</div><div class="dashboard-show-more-wrap"><button type="button" class="admin-row-action" id="showMoreEvents" hidden>Show more</button></div></section>`;
       const events = records();
       waitingOnYouCount = events.filter(isActionRequiredForCurrentAdmin).length;
       const all = openItems(events);
@@ -405,6 +414,7 @@ import {
         dashboardTableState.query = event.target.value;
         dashboardTableState.shown = 10;
         updateDashboardRows(events);
+        renderAcademicCalendarAlerts();
       });
       statusFilter.addEventListener("change", (event) => {
         dashboardTableState.status = event.target.value;
@@ -735,12 +745,29 @@ import {
     }`;
   }
 
+  function renderAcademicCalendarAlerts() {
+    const container = root.querySelector("#academicCalendarAlerts");
+    if (!container) return;
+    const alerts = sharedNotificationItems
+      .filter((item) => item.type === "academic_calendar")
+      .sort((a, b) => Number(b.stage === "ongoing") - Number(a.stage === "ongoing") ||
+        (a.sortKey || 0) - (b.sortKey || 0))
+      .slice(0, 3);
+    container.hidden = alerts.length === 0;
+    container.innerHTML = alerts.length
+      ? `<strong>Official dates</strong>${alerts.map((item) =>
+        `<article class="academic-calendar-alert" data-category="${esc(item.category || "other")}"><span>${esc(item.title || "Official date")}</span><small>${esc(item.message || "")}</small></article>`,
+      ).join("")}`
+      : "";
+  }
+
   import("./AdminNotificationData.js")
     .then(({ subscribeAdminNotifications }) => {
       adminNotificationController = subscribeAdminNotifications((state) => {
         sharedNotificationItems = state.items;
         renderNotificationMenu(state.items);
-      });
+        renderAcademicCalendarAlerts();
+      }, { includeAcademicCalendar: true });
     })
     .catch(() => {
       document.querySelectorAll("[data-notification-count]").forEach((badge) => { badge.hidden = true; });
@@ -754,16 +781,18 @@ import {
     if (!isFirebaseConfigured || !db) {
       root.innerHTML =
         '<div class="admin-error">Event data is unavailable. Please contact support.</div>';
+      signalDashboardPageReady();
       return;
     }
-    root.innerHTML = '<div class="admin-loading">Loading event activity…</div>';
+    root.replaceChildren();
     dashboardLoadExpired = false;
     dashboardLoadTimer = setTimeout(() => {
       dashboardLoadExpired = true;
       unsubscribeEvents?.();
       root.innerHTML = '<div class="admin-error" role="alert">Could not load dashboard data in time. <button class="admin-row-action" id="retryDashboardData" type="button">Try again</button></div>';
       root.querySelector("#retryDashboardData")?.addEventListener("click", init);
-    }, 15000);
+      signalDashboardPageReady();
+    }, 9000);
 
     try {
       await authReady;
@@ -818,6 +847,12 @@ import {
         return;
       }
       profile = { ...verifiedProfile, uid: user.uid, email: user.email || "" };
+      mountHelpBot({
+        role: String(profile.roleSuffix || "").trim().toUpperCase() === "OSAS"
+          ? "osas"
+          : "admin",
+        ai: { firebaseConfig: app.options },
+      });
       const name = profile.name || [profile.firstName, profile.middleName, profile.lastName].filter(Boolean).join(" ") || user.displayName || user.email?.split("@")[0] || "";
       document.querySelector("[data-name]").textContent = name.toUpperCase();
       document.querySelector("[data-avatar]").textContent = initials(name);
@@ -835,6 +870,7 @@ import {
           dashboardLoadExpired = false;
           firestoreEvents = snapshot.docs.map(normalizeEvent);
           render();
+          signalDashboardPageReady();
         },
         (error) => {
           unsubscribeEvents?.();

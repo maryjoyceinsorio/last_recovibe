@@ -35,18 +35,24 @@ body {
 .admin-sidebar {
   position: sticky;
   top: 0;
+  left: 0;
   display: flex;
   flex: 0 0 258px;
   flex-direction: column;
   width: 258px;
   height: 100vh;
+  height: 100dvh;
+  min-height: 0;
   padding: 20px 15px;
+  overflow: hidden;
+  box-sizing: border-box;
   background: linear-gradient(180deg, #7a1f2e, #4f1420);
   color: #f4e9e8;
   font-family: Inter, sans-serif;
 }
 .admin-brand {
   display: flex;
+  flex: 0 0 auto;
   align-items: center;
   gap: 11px;
   margin: 0 0 30px;
@@ -80,8 +86,16 @@ body {
   font-size: 10px;
 }
 .admin-sidebar nav {
-  display: grid;
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 0;
+  overflow-y: auto;
   gap: 4px;
+  scrollbar-width: none;
+}
+.admin-sidebar nav::-webkit-scrollbar {
+  display: none;
 }
 .admin-sidebar nav a {
   display: flex;
@@ -130,6 +144,7 @@ body {
 }
 .admin-sidebar footer {
   display: flex;
+  flex: 0 0 auto;
   align-items: center;
   gap: 9px;
   margin-top: auto;
@@ -430,6 +445,7 @@ body {
     position: sticky;
     z-index: 50;
     top: 0;
+    left: 0;
     flex-direction: row;
     align-items: center;
     width: 100%;
@@ -446,8 +462,11 @@ body {
   .admin-sidebar nav {
     display: flex;
     flex: 1;
+    flex-direction: row;
     gap: 2px;
-    overflow: auto;
+    min-width: 0;
+    overflow-x: auto;
+    overflow-y: hidden;
     margin-left: 8px;
   }
   .admin-sidebar nav a {
@@ -472,13 +491,10 @@ body {
   }
   .admin-sidebar footer {
     flex: none;
+    min-width: 180px;
     margin: 0;
     padding: 0;
     border: 0;
-  }
-  .admin-user,
-  .admin-logout {
-    display: none;
   }
   .admin-main {
     padding: 19px 14px 36px;
@@ -1029,6 +1045,152 @@ body {
   flex: 0 0 16px;
   border-radius: 4px;
 }
+.academic-calendar-labels {
+  display: grid;
+  gap: 2px;
+  width: 100%;
+  min-width: 0;
+  margin-top: 2px;
+}
+.admin-day .academic-calendar-labels {
+  grid-column: 1 / -1;
+}
+.admin-academic-overlay {
+  position: fixed;
+  z-index: 1000;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 18px;
+  background: rgb(32 25 26 / 58%);
+}
+.admin-academic-overlay[hidden] {
+  display: none;
+}
+.admin-academic-dialog {
+  position: relative;
+  width: min(1050px, 100%);
+  max-height: min(92vh, 900px);
+  overflow: auto;
+  border: 1px solid var(--admin-line);
+  border-radius: 14px;
+  padding: 24px;
+  background: var(--admin-bg);
+  box-shadow: 0 20px 60px rgb(0 0 0 / 25%);
+}
+.admin-academic-dialog h2,
+.admin-academic-dialog h3 {
+  color: var(--admin-maroon);
+}
+.admin-academic-close {
+  position: sticky;
+  float: right;
+  top: 0;
+  border: 0;
+  background: transparent;
+  color: var(--admin-maroon);
+  font-size: 26px;
+  cursor: pointer;
+}
+.admin-academic-selectors,
+.admin-academic-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 12px;
+  margin: 14px 0;
+}
+.admin-academic-selectors label,
+.admin-academic-paste,
+.admin-academic-upload {
+  display: grid;
+  gap: 6px;
+  color: var(--admin-ink);
+  font-size: 13px;
+  font-weight: 600;
+}
+.admin-academic-selectors select,
+.admin-academic-table input,
+.admin-academic-table select,
+.admin-academic-saved input,
+.admin-academic-saved select,
+.admin-academic-paste textarea {
+  min-width: 0;
+  border: 1px solid var(--admin-line);
+  border-radius: 6px;
+  padding: 8px;
+  background: #fff;
+  color: var(--admin-ink);
+}
+.admin-academic-paste textarea {
+  width: 100%;
+  resize: vertical;
+  font-weight: 400;
+}
+.admin-academic-upload {
+  margin-top: 12px;
+}
+.admin-academic-actions button,
+.admin-academic-saved button {
+  border: 0;
+  border-radius: 6px;
+  padding: 9px 14px;
+  background: var(--admin-maroon);
+  color: #fff;
+  cursor: pointer;
+}
+.admin-academic-actions button:disabled,
+.admin-academic-saved button:disabled {
+  cursor: wait;
+  opacity: 0.6;
+}
+.admin-academic-status {
+  min-height: 1.4em;
+  color: var(--admin-maroon);
+  font-size: 13px;
+}
+.admin-academic-status.is-error {
+  color: #a61b1b;
+}
+.admin-academic-table-wrap {
+  max-width: 100%;
+  overflow: auto;
+}
+.admin-academic-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+.admin-academic-table th,
+.admin-academic-table td {
+  border: 1px solid var(--admin-line);
+  padding: 7px;
+  text-align: left;
+  vertical-align: top;
+}
+.admin-academic-table tr.has-warning {
+  background: #fff1dc;
+}
+.admin-academic-table input[type="text"] {
+  width: 210px;
+}
+.admin-academic-table input[type="date"] {
+  width: 145px;
+}
+.admin-academic-saved {
+  display: grid;
+  gap: 10px;
+}
+.admin-academic-saved-row {
+  display: grid;
+  grid-template-columns: minmax(150px, 2fr) repeat(3, minmax(120px, 1fr)) auto auto;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid var(--admin-line);
+  border-radius: 8px;
+  padding: 10px;
+  background: #fff;
+}
 @media (max-width: 650px) {
   .admin-calendar-layout {
     min-height: 0;
@@ -1058,6 +1220,15 @@ body {
     gap: 6px 8px;
   }
   .admin-calendar-legend > strong {
+    grid-column: 1 / -1;
+  }
+  .admin-academic-dialog {
+    padding: 16px;
+  }
+  .admin-academic-saved-row {
+    grid-template-columns: 1fr 1fr;
+  }
+  .admin-academic-saved-row input:first-child {
     grid-column: 1 / -1;
   }
 }

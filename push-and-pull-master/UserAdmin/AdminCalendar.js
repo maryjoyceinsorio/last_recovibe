@@ -2,6 +2,14 @@ import { loadCalendarData } from "../calendarDataService.js";
 import { auth, db } from "../UserStudent/firebaseConfig.js";
 import { onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
 import { doc, getDoc } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+import { parseAcademicCalendar } from "../academicCalendarParser.js";
+import {
+  deleteCalendarEntry,
+  getSemesterEntries,
+  saveCalendarEntries,
+  updateCalendarEntry,
+} from "../academicCalendarStore.js";
+import { isOsasReviewer } from "../correctionAccess.js";
 
 (() => {
   "use strict";
@@ -31,7 +39,13 @@ import { doc, getDoc } from "https://www.gstatic.com/firebasejs/10.12.2/firebase
     loadedMonthDataKey = "",
     authUnsubscribe = null,
     authTimeout = null,
-    startupAttempt = 0;
+    startupAttempt = 0,
+    pageLoadSignaled = false;
+  const signalCalendarPageReady = () => {
+    if (pageLoadSignaled) return;
+    pageLoadSignaled = true;
+    window.dispatchEvent(new Event("page-data-ready"));
+  };
   const monthNames = [
     "January",
     "February",
@@ -46,6 +60,18 @@ import { doc, getDoc } from "https://www.gstatic.com/firebasejs/10.12.2/firebase
     "November",
     "December",
   ];
+  const academicCategoryOptions = [
+    ["holiday", "Holiday"],
+    ["exam", "Exam"],
+    ["enrollment", "Enrollment"],
+    ["deadline", "Deadline"],
+    ["break", "Break"],
+    ["graduation", "Graduation"],
+    ["classes", "Classes"],
+    ["other", "Other"],
+  ];
+  let academicManagerReady = false;
+  let academicPreviewEntries = [];
   const selectedCategories = new Set(
     categoryFilters.map((filter) => filter.dataset.calendarCategory),
   );
@@ -69,6 +95,249 @@ import { doc, getDoc } from "https://www.gstatic.com/firebasejs/10.12.2/firebase
       return fallback;
     }
   }
+    function setAcademicManagerStatus(message, isError = false) {
+      const status = document.getElementById("academicCalendarStatus");
+      if (!status) return;
+      status.textContent = message;
+      status.classList.toggle("is-error", isError);
+    }
+    function academicSemesterDetails() {
+      const startYear = Number(
+        document.getElementById("academicYearSelect").value,
+      );
+      const semester = document.getElementById("academicSemesterSelect").value;
+      const endYear = startYear + 1;
+      const semesterLabel =
+        `${semester === "summer" ? "Summer" : `${semester} Semester`} AY ${startYear}-${endYear}`;
+      return {
+        semesterId: `${startYear}-${endYear}-${semester}`,
+        semesterLabel,
+      };
+    }
+    function createAcademicCategorySelect(value) {
+      const select = document.createElement("select");
+      academicCategoryOptions.forEach(([category, label]) => {
+        const option = document.createElement("option");
+        option.value = category;
+        option.textContent = label;
+        select.appendChild(option);
+      });
+      select.value = academicCategoryOptions.some(([category]) => category === value)
+        ? value
+        : "other";
+      return select;
+    }
+    function renderAcademicPreview(entries) {
+      const body = document.getElementById("academicCalendarPreview");
+      if (!body) return;
+      body.replaceChildren();
+      entries.forEach((entry, index) => {
+        const row = document.createElement("tr");
+        if (entry.warnings?.length) row.classList.add("has-warning");
+        const includeCell = document.createElement("td");
+        const include = document.createElement("input");
+        include.type = "checkbox";
+        include.checked = entry.include !== false;
+        include.dataset.entryIndex = String(index);
+        includeCell.appendChild(include);
+        const titleCell = document.createElement("td");
+        const title = document.createElement("input");
+        title.type = "text";
+        title.value = String(entry.title || "");
+        title.dataset.entryIndex = String(index);
+        titleCell.appendChild(title);
+        const startCell = document.createElement("td");
+        const startDate = document.createElement("input");
+        startDate.type = "date";
+        startDate.value = entry.startDate || "";
+        startDate.dataset.entryIndex = String(index);
+        startCell.appendChild(startDate);
+        const endCell = document.createElement("td");
+        const endDate = document.createElement("input");
+        endDate.type = "date";
+        endDate.value = entry.endDate || "";
+        endDate.dataset.entryIndex = String(index);
+        endCell.appendChild(endDate);
+        const categoryCell = document.createElement("td");
+        const category = createAcademicCategorySelect(entry.category);
+        category.dataset.entryIndex = String(index);
+        categoryCell.appendChild(category);
+        const warningCell = document.createElement("td");
+        warningCell.textContent = (entry.warnings || []).join("; ");
+        row.append(
+          includeCell,
+          titleCell,
+          startCell,
+          endCell,
+          categoryCell,
+          warningCell,
+        );
+        body.appendChild(row);
+      });
+    }
+    async function loadSavedAcademicEntries() {
+      const savedList = document.getElementById("academicCalendarSaved");
+      if (!savedList) return;
+      savedList.replaceChildren();
+      const { semesterId } = academicSemesterDetails();
+      setAcademicManagerStatus("Loading saved entries…");
+      try {
+        const entries = await getSemesterEntries(db, semesterId);
+        if (!entries.length) {
+          const empty = document.createElement("p");
+          empty.textContent = "No saved entries for this semester.";
+          savedList.appendChild(empty);
+        }
+        entries.forEach((entry) => {
+          const row = document.createElement("div");
+          row.className = "admin-academic-saved-row";
+          const title = document.createElement("input");
+          title.type = "text";
+          title.value = String(entry.title || "");
+          title.setAttribute("aria-label", "Entry title");
+          const startDate = document.createElement("input");
+          startDate.type = "date";
+          startDate.value = entry.startDate || "";
+          startDate.setAttribute("aria-label", "Start date");
+          const endDate = document.createElement("input");
+          endDate.type = "date";
+          endDate.value = entry.endDate || "";
+          endDate.setAttribute("aria-label", "End date");
+          const category = createAcademicCategorySelect(entry.category);
+          category.setAttribute("aria-label", "Category");
+          const update = document.createElement("button");
+          update.type = "button";
+          update.textContent = "Update";
+          update.addEventListener("click", async () => {
+            await withAcademicManagerSaving(async () => {
+              await updateCalendarEntry(db, auth, entry.id, {
+                title: title.value,
+                startDate: startDate.value,
+                endDate: endDate.value,
+                category: category.value,
+              });
+              await loadSavedAcademicEntries();
+              setAcademicManagerStatus("Entry updated.");
+            });
+          });
+          const remove = document.createElement("button");
+          remove.type = "button";
+          remove.textContent = "Delete";
+          remove.addEventListener("click", async () => {
+            if (!window.confirm(`Delete "${entry.title}" from this semester?`)) return;
+            await withAcademicManagerSaving(async () => {
+              await deleteCalendarEntry(db, auth, entry.id);
+              await loadSavedAcademicEntries();
+              setAcademicManagerStatus("Entry deleted.");
+            });
+          });
+          row.append(title, startDate, endDate, category, update, remove);
+          savedList.appendChild(row);
+        });
+      } catch (error) {
+        setAcademicManagerStatus(error.message || String(error), true);
+      }
+    }
+    async function withAcademicManagerSaving(action) {
+      const panel = document.getElementById("academicCalendarManager");
+      const controls = [...panel.querySelectorAll("button, input, select, textarea")];
+      const previousStates = controls.map((control) => control.disabled);
+      controls.forEach((control) => { control.disabled = true; });
+      try {
+        await action();
+      } catch (error) {
+        setAcademicManagerStatus(error.message || String(error), true);
+      } finally {
+        controls.forEach((control, index) => {
+          control.disabled = previousStates[index];
+        });
+      }
+    }
+    function setupAcademicManager() {
+      if (academicManagerReady) return;
+      academicManagerReady = true;
+      const panel = document.getElementById("academicCalendarManager");
+      const button = document.getElementById("manageAcademicCalendar");
+      const close = document.getElementById("academicManagerClose");
+      const yearSelect = document.getElementById("academicYearSelect");
+      const semesterSelect = document.getElementById("academicSemesterSelect");
+      const currentYear = new Date().getFullYear();
+      for (let year = currentYear - 5; year <= currentYear + 5; year += 1) {
+        const option = document.createElement("option");
+        option.value = String(year);
+        option.textContent = String(year);
+        yearSelect.appendChild(option);
+      }
+      yearSelect.value = String(currentYear);
+      const closePanel = () => { panel.hidden = true; };
+      button.addEventListener("click", () => {
+        panel.hidden = false;
+        loadSavedAcademicEntries();
+      });
+      close.addEventListener("click", closePanel);
+      panel.addEventListener("click", (event) => {
+        if (event.target === panel) closePanel();
+      });
+      document.addEventListener("keydown", (event) => {
+        if (event.key === "Escape" && !panel.hidden) closePanel();
+      });
+      yearSelect.addEventListener("change", loadSavedAcademicEntries);
+      semesterSelect.addEventListener("change", loadSavedAcademicEntries);
+      document.getElementById("academicCalendarParse").addEventListener("click", () => {
+        try {
+          const academicYear = Number(yearSelect.value);
+          academicPreviewEntries = parseAcademicCalendar(
+            document.getElementById("academicCalendarText").value,
+            { academicYear, yearStartMonth: 6 },
+          );
+          renderAcademicPreview(academicPreviewEntries);
+          setAcademicManagerStatus(`${academicPreviewEntries.length} entries parsed.`);
+        } catch (error) {
+          setAcademicManagerStatus(error.message || String(error), true);
+        }
+      });
+      document.getElementById("academicCalendarSave").addEventListener("click", () => {
+        const body = document.getElementById("academicCalendarPreview");
+        const entries = [...body.querySelectorAll("tr")].map((row, index) => {
+          const fields = row.querySelectorAll("input, select");
+          return {
+            ...academicPreviewEntries[index],
+            include: fields[0].checked,
+            title: fields[1].value,
+            startDate: fields[2].value,
+            endDate: fields[3].value,
+            category: fields[4].value,
+          };
+        });
+        void withAcademicManagerSaving(async () => {
+          const result = await saveCalendarEntries(db, auth, {
+            ...academicSemesterDetails(),
+            entries,
+          });
+          await loadSavedAcademicEntries();
+          setAcademicManagerStatus(`${result} entries saved.`);
+        });
+      });
+      document.getElementById("academicCalendarImage").addEventListener("change", async (event) => {
+        const image = event.target.files?.[0];
+        if (!image) return;
+        await withAcademicManagerSaving(async () => {
+          setAcademicManagerStatus("Recognizing image text…");
+          const tesseractModule = await import(
+            "https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.esm.min.js"
+          );
+          const recognize = tesseractModule.recognize ||
+            tesseractModule.default?.recognize;
+          if (typeof recognize !== "function") {
+            throw new Error("Image text recognition could not be initialized.");
+          }
+          const result = await recognize(image, "eng");
+          document.getElementById("academicCalendarText").value =
+            String(result.data?.text || "");
+          setAcademicManagerStatus("Recognized text is ready to review and correct before parsing.");
+        });
+      });
+    }
   async function verifyAdmin(user) {
     const [adminResult, userResult] = await Promise.allSettled([
       getDoc(doc(db, "adminUser", user.uid)),
@@ -95,6 +364,10 @@ import { doc, getDoc } from "https://www.gstatic.com/firebasejs/10.12.2/firebase
     const roleElement = document.querySelector("[data-role]");
     roleElement.textContent = getApprovalPosition(profile);
     roleElement.title = roleElement.textContent;
+    const manageButton = document.getElementById("manageAcademicCalendar");
+    const canManageAcademicCalendar = await isOsasReviewer(db, auth);
+    if (manageButton) manageButton.hidden = !canManageAcademicCalendar;
+    if (canManageAcademicCalendar) setupAcademicManager();
     return true;
   }
   function getApprovalPosition(adminProfile, requireRecognizedStage = false) {
@@ -152,6 +425,7 @@ import { doc, getDoc } from "https://www.gstatic.com/firebasejs/10.12.2/firebase
     statusElement.hidden = false;
     calendarLayout.hidden = true;
     statusElement.querySelector("#retryCalendar").addEventListener("click", start);
+    signalCalendarPageReady();
   }
   function start() {
     stopAuthWait();
@@ -176,7 +450,7 @@ import { doc, getDoc } from "https://www.gstatic.com/firebasejs/10.12.2/firebase
       if (finish()) {
         showStartError(new Error("Calendar startup timed out."));
       }
-    }, 15000);
+    }, 9000);
     authUnsubscribe = onAuthStateChanged(auth, async (user) => {
       if (finished || attempt !== startupAttempt) return;
       if (!user) {
@@ -202,6 +476,7 @@ import { doc, getDoc } from "https://www.gstatic.com/firebasejs/10.12.2/firebase
           } else if (verified && loaded) {
             calendarLayout.hidden = false;
             statusElement.hidden = true;
+            signalCalendarPageReady();
           }
         }
       }
@@ -586,19 +861,7 @@ import { doc, getDoc } from "https://www.gstatic.com/firebasejs/10.12.2/firebase
       (item) => String(item.eventId || item.id) === String(id),
     );
     if (!event || event.capacityMode === "N/A") return 0;
-    const capacity = Number(
-      event.maxCapacity ?? event.capacity ?? event.maxSlots,
-    );
-    const open = Number(
-      event.openSlots ??
-        event.slotsOpen ??
-        event.availableSlots ??
-        event.slots ??
-        capacity,
-    );
-    return Number.isFinite(capacity) && Number.isFinite(open)
-      ? Math.max(0, capacity - open)
-      : 0;
+    return Math.max(0, Number(event.registeredCount) || 0);
   }
   function closePopup() {
     if (!activePopup) return;

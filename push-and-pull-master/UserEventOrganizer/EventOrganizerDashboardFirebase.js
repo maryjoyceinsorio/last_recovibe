@@ -6,7 +6,8 @@ import {
   query,
   where,
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
-import { auth, db, isFirebaseConfigured } from "../UserStudent/firebaseConfig.js";
+import { app, auth, db, isFirebaseConfigured } from "../UserStudent/firebaseConfig.js";
+import { mountHelpBot } from "../recoVibeHelpBot.js";
 
 const { toMillis, formatCreatedDate } = window.RecovibeOrganizerDashboardDates;
 const CREATION_DATE_FIELDS = [
@@ -28,9 +29,24 @@ let unsubscribeEvents = null;
 let unsubscribeNotifications = null;
 let unsubscribeAuth = null;
 let organizerEvents = [];
+let academicNotificationItems = [];
+let unsubscribeAcademicNotifications = null;
 let signingOut = false;
+let dashboardPageLoadSignaled = false;
+const pendingInitialDashboardSources = new Set(["events", "notifications"]);
 const dashboardMessages = new Map();
 if (notificationsBadge) notificationsBadge.hidden = true;
+
+function signalDashboardPageReady() {
+  if (dashboardPageLoadSignaled) return;
+  dashboardPageLoadSignaled = true;
+  window.dispatchEvent(new Event("page-data-ready"));
+}
+
+function settleInitialDashboardSource(source) {
+  pendingInitialDashboardSources.delete(source);
+  if (pendingInitialDashboardSources.size === 0) signalDashboardPageReady();
+}
 
 function setDashboardMessage(source, message) {
   if (!dashboardStatus) return;
@@ -38,6 +54,22 @@ function setDashboardMessage(source, message) {
   else dashboardMessages.delete(source);
   dashboardStatus.textContent = [...dashboardMessages.values()].join(" ");
   dashboardStatus.hidden = dashboardMessages.size === 0;
+}
+
+function renderAcademicCalendarAlerts() {
+  const container = document.getElementById("academicCalendarAlerts");
+  if (!container) return;
+  const items = academicNotificationItems
+    .filter((item) => item.type === "academic_calendar")
+    .sort((a, b) => Number(b.stage === "ongoing") - Number(a.stage === "ongoing") ||
+      (a.sortKey || 0) - (b.sortKey || 0))
+    .slice(0, 3);
+  container.hidden = items.length === 0;
+  container.innerHTML = items.length
+    ? `<strong>Official dates</strong>${items.map((item) =>
+      `<article class="academic-calendar-alert" data-category="${escapeHtml(item.category || "other")}"><span>${escapeHtml(item.title || "Official date")}</span><small>${escapeHtml(item.message || "")}</small></article>`,
+    ).join("")}`
+    : "";
 }
 
 const escapeHtml = (value) =>
@@ -442,6 +474,10 @@ function stopDashboardListeners() {
   unsubscribeEvents = null;
   unsubscribeNotifications?.();
   unsubscribeNotifications = null;
+  unsubscribeAcademicNotifications?.();
+  unsubscribeAcademicNotifications = null;
+  academicNotificationItems = [];
+  renderAcademicCalendarAlerts();
 }
 
 function startDashboardListeners(user) {
@@ -460,6 +496,7 @@ function startDashboardListeners(user) {
         organizerEvents = snapshot.docs.map(normalizeEvent);
         setDashboardMessage("events", "");
         renderDashboard();
+        settleInitialDashboardSource("events");
       },
       (error) => {
         console.error("Unable to load organizer dashboard events:", error.code, error.message);
@@ -469,11 +506,13 @@ function startDashboardListeners(user) {
             ? "You don't have permission to view your organizer events."
             : "Could not load your events. Check your connection and try again.",
         );
+        settleInitialDashboardSource("events");
       },
     );
   } catch (error) {
     console.error("Unable to start organizer event listener:", error.code, error.message);
     setDashboardMessage("events", "Could not start loading your events. Please try again.");
+    settleInitialDashboardSource("events");
   }
 
   try {
@@ -487,12 +526,13 @@ function startDashboardListeners(user) {
         const unreadCount = snapshot.docs.filter((notification) => {
           const data = notification.data();
           return data.read !== true && data.isRead !== true;
-        }).length;
+        }).length + academicNotificationItems.filter((item) => !item.read).length;
         if (notificationsBadge) {
           notificationsBadge.textContent = unreadCount > 9 ? "9+" : unreadCount ? String(unreadCount) : "";
           notificationsBadge.hidden = unreadCount === 0;
         }
         setDashboardMessage("notifications", "");
+        settleInitialDashboardSource("notifications");
       },
       (error) => {
         console.error("Unable to load organizer notifications:", error.code, error.message);
@@ -502,16 +542,20 @@ function startDashboardListeners(user) {
             ? "You don't have permission to view your notification count."
             : "Could not update your notification count.",
         );
+        settleInitialDashboardSource("notifications");
       },
     );
   } catch (error) {
     console.error("Unable to start organizer notification listener:", error.code, error.message);
     setDashboardMessage("notifications", "Could not update your notification count.");
+    settleInitialDashboardSource("notifications");
   }
 }
 
 if (!isFirebaseConfigured || !auth || !db) {
   setDashboardMessage("events", "Event data is unavailable. Please contact support.");
+  pendingInitialDashboardSources.clear();
+  signalDashboardPageReady();
 } else {
   auth
     .authStateReady()
@@ -525,19 +569,30 @@ if (!isFirebaseConfigured || !auth || !db) {
             window.location.replace(loginPath);
             return;
           }
+          mountHelpBot({ role: "eventorganizer", ai: { firebaseConfig: app.options } });
           setDashboardMessage("events", "Loading your dashboard...");
           startDashboardListeners(user);
+          if (window.OrganizerNotificationData?.subscribe) {
+            unsubscribeAcademicNotifications = window.OrganizerNotificationData.subscribe((state) => {
+              academicNotificationItems = Array.isArray(state.items) ? state.items : [];
+              renderAcademicCalendarAlerts();
+            });
+          }
           renderDashboard();
         },
         (error) => {
           console.error("Unable to observe organizer authentication state:", error.code, error.message);
           setDashboardMessage("events", "Could not verify your session. Check your connection and try again.");
+          pendingInitialDashboardSources.clear();
+          signalDashboardPageReady();
         },
       );
     })
     .catch((error) => {
       console.error("Unable to initialize organizer authentication state:", error.code, error.message);
       setDashboardMessage("events", "Could not verify your session. Check your connection and try again.");
+      pendingInitialDashboardSources.clear();
+      signalDashboardPageReady();
     });
 }
 

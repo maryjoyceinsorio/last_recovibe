@@ -8,6 +8,8 @@ import { getFirestore } from "https://www.gstatic.com/firebasejs/10.12.2/firebas
 import { getDatabase } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-database.js";
 import { getFunctions } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-functions.js";
 
+const RTDB_URL = "https://recovibe-v1-default-rtdb.asia-southeast1.firebasedatabase.app";
+
 const firebaseConfig = {
   apiKey: "AIzaSyDKozGFtnSiE6EzmSzpxe8-dZv7aH1HfnE",
   authDomain: "recovibe-v1.firebaseapp.com",
@@ -15,7 +17,7 @@ const firebaseConfig = {
   storageBucket: "recovibe-v1.firebasestorage.app",
   messagingSenderId: "79140044760",
   appId: "1:79140044760:web:8523fc92592e3555fefcad",
-  databaseURL: "https://recovibe-v1-default-rtdb.firebaseio.com/",
+  databaseURL: RTDB_URL,
 };
 
 export const isFirebaseConfigured = Object.values(firebaseConfig).every(
@@ -48,7 +50,7 @@ export const db = app ? getFirestore(app) : null;
 let rtdbInstance = null;
 if (app && firebaseConfig.databaseURL) {
   try {
-    rtdbInstance = getDatabase(app, firebaseConfig.databaseURL);
+    rtdbInstance = getDatabase(app, RTDB_URL);
   } catch (error) {
     console.error("[Firebase] Realtime Database initialization failed:", {
       code: error?.code || "unknown",

@@ -5,6 +5,7 @@ import {
   onSnapshot,
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 import {
+  app,
   auth,
   authReady,
   db,
@@ -12,6 +13,7 @@ import {
 } from "../UserStudent/firebaseConfig.js";
 import { startTeacherNotificationData } from "./TeacherNotificationData.js";
 import { teacherEventReadFilters, teacherEventsQuery } from "./TeacherEventQuery.js";
+import { mountHelpBot } from "../recoVibeHelpBot.js";
 
 const DEBUG = false;
 const TIME_ZONE = "Asia/Manila";
@@ -67,6 +69,19 @@ let nextMinuteTimeout = null;
 let minuteInterval = null;
 let active = true;
 let authGeneration = 0;
+let profileReady = false;
+let pageLoadSignaled = false;
+
+function signalDashboardPageReady() {
+  if (
+    pageLoadSignaled ||
+    !profileReady ||
+    state.eventsLoading ||
+    state.notificationLoading
+  ) return;
+  pageLoadSignaled = true;
+  window.dispatchEvent(new Event("page-data-ready"));
+}
 
 function debug(...args) {
   if (DEBUG) console.debug("[Teacher Dashboard]", ...args);
@@ -651,6 +666,17 @@ function renderNotifications() {
   }
 
   const items = mergedNotifications();
+  const academicAlerts = items
+    .filter((item) => item.type === "academic_calendar")
+    .sort((a, b) => Number(b.stage === "ongoing") - Number(a.stage === "ongoing") ||
+      (a.sortKey || 0) - (b.sortKey || 0))
+    .slice(0, 3);
+  const academicHtml = academicAlerts.length
+    ? `<section class="academic-calendar-alerts" aria-label="Official dates"><strong>Official dates</strong>${academicAlerts.map((item) =>
+      `<article class="academic-calendar-alert" data-category="${escapeHTML(item.category || "other")}"><span>${escapeHTML(item.title || "Official date")}</span><small>${escapeHTML(item.message || "")}</small></article>`,
+    ).join("")}</section>`
+    : "";
+  const recentItems = items.filter((item) => item.type !== "academic_calendar");
   const unread = items.filter((item) => !item.read).length;
   dom.unreadCount.textContent = unread > 9 ? "9+" : String(unread);
   dom.unreadCount.hidden = unread === 0;
@@ -664,12 +690,12 @@ function renderNotifications() {
   const warning = state.notificationSourceErrors.length
     ? `<div class="notification-source-warning"><span>${escapeHTML(state.notificationSourceErrors.join(" "))} Some sources may be unavailable.</span><button type="button" data-retry="notifications">Retry</button></div>`
     : "";
-  if (!items.length) {
-    dom.notifications.innerHTML = `${warning}<div class="empty-state">No recent notifications.</div>`;
+  if (!recentItems.length) {
+    dom.notifications.innerHTML = `${academicHtml}${warning}<div class="empty-state">No recent notifications.</div>`;
     return;
   }
 
-  dom.notifications.innerHTML = `${warning}${items.slice(0, 4).map((item) => {
+  dom.notifications.innerHTML = `${academicHtml}${warning}${recentItems.slice(0, 4).map((item) => {
     const unreadClass = item.read ? "" : " is-unread";
     const time = relativeTime(Number(item.createdAtMillis) || 0);
     return `<article class="notification-item${unreadClass}">
@@ -725,6 +751,7 @@ function renderAll() {
   renderComingUp();
   renderCalendar();
   renderNotifications();
+  signalDashboardPageReady();
 }
 
 function recordEvents(snapshot) {
@@ -828,7 +855,11 @@ async function loadProfile(user) {
   state.profile = cached;
   if (user?.displayName) state.profile.displayName = user.displayName;
   updateSidebarProfile();
-  if (!user?.uid || !db) return;
+  if (!user?.uid || !db) {
+    profileReady = true;
+    signalDashboardPageReady();
+    return;
+  }
 
   const uidAtRead = auth.currentUser?.uid;
   try {
@@ -850,6 +881,16 @@ async function loadProfile(user) {
       message: error?.message || String(error),
       uid: uidAtRead,
     });
+  } finally {
+    const profileRole = String(state.profile.role || state.profile.userRole || "")
+      .trim()
+      .toLowerCase();
+    mountHelpBot({
+      role: profileRole === "teacher" ? "teacher" : "default",
+      ai: { firebaseConfig: app.options },
+    });
+    profileReady = true;
+    signalDashboardPageReady();
   }
 }
 
@@ -922,6 +963,7 @@ function onNotificationData(data) {
     ? data.error || "Notifications could not be loaded."
     : "";
   if (!state.notificationLoading) renderNotifications();
+  signalDashboardPageReady();
 }
 
 function setSidebarOpen(open) {

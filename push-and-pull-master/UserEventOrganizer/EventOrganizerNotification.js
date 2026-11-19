@@ -6,6 +6,12 @@ let currentOrganizerUid = "";
 let organizerIdentifiers = new Set();
 const organizerProfile = {};
 let firestoreNotificationError = "";
+let pageLoadSignaled = false;
+function signalNotificationsPageReady() {
+  if (pageLoadSignaled) return;
+  pageLoadSignaled = true;
+  window.dispatchEvent(new Event("page-data-ready"));
+}
 function debug(...args) {
   if (DEBUG) console.debug("[OrganizerNotifications]", ...args);
 }
@@ -306,7 +312,17 @@ function notificationIcon(item) {
 
 function renderNotificationCard(item, inTrash = false) {
   const { date, relative } = notificationTimeLabels(item);
-  const tag = item.tag || item.eventStatus || "";
+  const categoryLabels = {
+    holiday: "Holiday",
+    exam: "Exam",
+    enrollment: "Enrollment",
+    deadline: "Deadline",
+    break: "Break",
+    graduation: "Graduation",
+    classes: "Classes",
+  };
+  const tag = item.tag || item.eventStatus ||
+    (item.type === "academic_calendar" ? categoryLabels[item.category] || "Other" : "");
   const id = escapeHtml(item.id);
   const controls = inTrash
     ? `<button type="button" data-deleted-action="restore" ${pendingNotificationActions.has(item.id) ? "disabled" : ""}>Restore</button><button type="button" data-deleted-action="delete-permanently" ${pendingNotificationActions.has(item.id) ? "disabled" : ""}>Delete forever</button><small>Removed in ${Math.max(0, Math.ceil((item.expiresAt - Date.now()) / 86400000))} days</small>`
@@ -421,6 +437,7 @@ function connectToSharedNotifications() {
   if (!service) {
     firestoreNotificationError = "Notifications could not be initialized. Please try again.";
     renderNotifications();
+    signalNotificationsPageReady();
     return;
   }
   service.subscribe((state) => {
@@ -440,6 +457,7 @@ function connectToSharedNotifications() {
       console.error("[OrganizerNotifications] Could not restore deleted notifications:", error);
     }
     renderNotifications();
+    if (!state.loading) signalNotificationsPageReady();
   });
 }
 

@@ -945,3 +945,23 @@ body.modal-open {
     grid-template-columns: 1fr;
   }
 }
+.academic-calendar-alerts {
+  display: grid;
+  gap: 8px;
+  margin: 0 0 16px;
+  padding: 14px;
+  border: 1px solid rgba(79, 20, 32, 0.12);
+  border-radius: 12px;
+  background: #fffaf0;
+  color: #4f1420;
+}
+.academic-calendar-alerts[hidden] { display: none; }
+.academic-calendar-alert { display: grid; gap: 3px; padding: 8px 10px; border-left: 3px solid #475569; border-radius: 5px; background: #edf1f5; }
+.academic-calendar-alert small { color: #5b5560; }
+.academic-calendar-alert[data-category="holiday"] { border-color: #d97706; background: #fef3e2; }
+.academic-calendar-alert[data-category="exam"] { border-color: #b91c1c; background: #fdecec; }
+.academic-calendar-alert[data-category="enrollment"] { border-color: #2563eb; background: #e8f0fe; }
+.academic-calendar-alert[data-category="deadline"] { border-color: #7c3aed; background: #f1ebfd; }
+.academic-calendar-alert[data-category="break"] { border-color: #15803d; background: #e6f4ea; }
+.academic-calendar-alert[data-category="graduation"] { border-color: #a16207; background: #fbf3d4; }
+.academic-calendar-alert[data-category="classes"] { border-color: #0f766e; background: #e0f5f2; }
