@@ -130,7 +130,7 @@ import { db, isFirebaseConfigured } from "../UserStudent/firebaseConfig.js";
     row.append(cell);
   }
 
-  function renderTable({ tbody, limit }, records) {
+  function renderTable({ tbody, limit }, records, emptyMessage = "No audit activity yet.") {
     tbody.replaceChildren();
     const visibleRecords = limit ? records.slice(0, limit) : records;
     if (!visibleRecords.length) {
@@ -138,7 +138,7 @@ import { db, isFirebaseConfigured } from "../UserStudent/firebaseConfig.js";
       const cell = document.createElement("td");
       cell.className = "user-table-empty";
       cell.colSpan = 4;
-      cell.textContent = "No audit activity yet.";
+      cell.textContent = emptyMessage;
       row.append(cell);
       tbody.append(row);
       return;
@@ -614,6 +614,72 @@ import { db, isFirebaseConfigured } from "../UserStudent/firebaseConfig.js";
   const allAuditTable = tables.find(
     ({ table }) => table.id === "audit-activity-table",
   );
+  const auditSearchParams = new URLSearchParams(window.location.search);
+  let auditUserFilter = (auditSearchParams.get("user") || "").trim();
+  let auditUidFilter = (auditSearchParams.get("uid") || "").trim();
+  let allAuditRecords = [];
+  let auditFilterNotice = null;
+  const auditFilterStyle = document.createElement("style");
+  auditFilterStyle.textContent = `
+    .audit-user-filter-notice{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:0 0 12px;padding:10px 14px;border:1px solid #e6d9bd;border-radius:10px;background:var(--canvas,#faf7f1);color:var(--maroon,#72141c);font:inherit;font-size:13px;font-weight:600;line-height:1.4}
+    .audit-user-filter-clear{min-height:40px;padding:7px 12px;border:1px solid var(--maroon,#72141c);border-radius:8px;background:#fff;color:var(--maroon,#72141c);font:inherit;font-weight:700;cursor:pointer}
+    .audit-user-filter-clear:focus-visible{outline:3px solid var(--gold,#d6ae4a);outline-offset:2px}
+    @media(max-width:520px){.audit-user-filter-notice{align-items:flex-start;flex-direction:column}}
+  `;
+  if (allAuditTable) document.head.appendChild(auditFilterStyle);
+
+  function renderAuditFilterNotice() {
+    if (!allAuditTable?.table) return;
+    auditFilterNotice?.remove();
+    auditFilterNotice = null;
+    if (!auditUserFilter && !auditUidFilter) return;
+
+    const notice = document.createElement("div");
+    notice.className = "audit-user-filter-notice";
+    notice.setAttribute("aria-label", "Audit log user filter");
+    const description = document.createElement("span");
+    description.textContent = `Filtered by user: ${auditUserFilter || auditUidFilter}`;
+    const clearButton = document.createElement("button");
+    clearButton.type = "button";
+    clearButton.className = "audit-user-filter-clear";
+    clearButton.textContent = "Clear filter";
+    clearButton.setAttribute("aria-label", "Clear Audit Logs user filter");
+    clearButton.addEventListener("click", () => {
+      auditUserFilter = "";
+      auditUidFilter = "";
+      const url = new URL(window.location.href);
+      url.searchParams.delete("user");
+      url.searchParams.delete("uid");
+      window.history.replaceState({}, "", `${url.pathname}${url.search}${url.hash}`);
+      renderAuditFilterNotice();
+      renderFilteredAuditTable();
+    });
+    notice.append(description, clearButton);
+    auditFilterNotice = notice;
+    allAuditTable.table.parentElement?.insertAdjacentElement("beforebegin", notice);
+  }
+
+  function recordMatchesAuditUserFilter(record) {
+    const terms = [auditUserFilter, auditUidFilter].map((value) => value.trim().toLowerCase()).filter(Boolean);
+    if (!terms.length) return true;
+    const fields = [record.user, record.targetName, record.targetUid]
+      .map((value) => String(value || "").trim().toLowerCase())
+      .filter(Boolean);
+    return terms.some((term) => fields.some((field) => field.includes(term)));
+  }
+
+  function renderFilteredAuditTable() {
+    if (!allAuditTable) return;
+    const filteredRecords = allAuditRecords.filter(recordMatchesAuditUserFilter);
+    const isFiltered = Boolean(auditUserFilter || auditUidFilter);
+    renderTable(
+      allAuditTable,
+      filteredRecords,
+      isFiltered ? "No activity found for this user." : "No audit activity yet.",
+    );
+  }
+
+  renderAuditFilterNotice();
 
   if (recentTable) {
     unsubscribers.push(
@@ -649,7 +715,9 @@ import { db, isFirebaseConfigured } from "../UserStudent/firebaseConfig.js";
           const records = snapshot.docs.map(normalizeRecord);
           recordsById.clear();
           records.forEach((record) => recordsById.set(record.id, record));
-          renderTable(allAuditTable, records);
+          allAuditRecords = records;
+          renderAuditFilterNotice();
+          renderFilteredAuditTable();
           initialTableSources.add(allAuditTable.table.id);
           signalPageLoadIfReady();
         },

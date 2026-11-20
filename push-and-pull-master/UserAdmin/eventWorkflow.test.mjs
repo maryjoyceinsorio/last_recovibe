@@ -7,6 +7,7 @@ import {
   getEventStage,
   getStages,
   isFullyApproved,
+  resolveApprovalStages,
 } from "../eventWorkflow.js";
 
 const approvedHistory = (stages) => stages.map((stage) => ({
@@ -157,4 +158,120 @@ test("legacy proposals without approvalSteps keep the full chain and infer from 
   assert.deepEqual(getStages(event), ["org_adv", "sir_abelida", "hap", "osas"]);
   assert.equal(getCurrentStageKey(event), "osas");
   assert.equal(getEventStage(event).currentStageKey, "osas");
+});
+
+const customStages = [
+  {
+    id: "council-a1",
+    name: "Council Review",
+    required: true,
+    reviewerName: "Council Admin",
+    reviewerEmail: "council@example.edu",
+    order: 0,
+  },
+  {
+    id: "osas-b2",
+    name: "OSAS Review",
+    required: true,
+    reviewerName: "OSAS",
+    reviewerEmail: "",
+    order: 1,
+  },
+];
+
+test("resolveApprovalStages selects custom stages for an organization", () => {
+  const resolved = resolveApprovalStages({
+    approvalStages: EVENT_APPROVAL_STAGES,
+    approvalStagesByOrg: { CSC: { stages: customStages } },
+  }, "CSC");
+
+  assert.equal(resolved.source, "organization");
+  assert.deepEqual(resolved.stages.map((stage) => stage.id), ["council-a1", "osas-b2"]);
+});
+
+test("resolveApprovalStages falls back when an organization has no custom stages", () => {
+  const settings = { approvalStages: EVENT_APPROVAL_STAGES };
+
+  assert.deepEqual(resolveApprovalStages(settings, "ACES"), {
+    source: "default",
+    stages: EVENT_APPROVAL_STAGES.map((stage, order) => ({
+      ...stage,
+      id: stage.key,
+      name: stage.label,
+      required: true,
+      reviewerName: stage.label,
+      reviewerEmail: "",
+      order,
+    })),
+  });
+});
+
+test("resolveApprovalStages rejects malformed and empty custom lists", () => {
+  const defaults = [{ id: "default", name: "Default Review", required: true }];
+  for (const stages of [
+    [],
+    [{ ...customStages[0], required: "yes" }],
+    [{ ...customStages[0], order: 1 }],
+    [{ ...customStages[0], reviewerEmail: "not-an-email" }],
+  ]) {
+    const resolved = resolveApprovalStages({
+      approvalStages: defaults,
+      approvalStagesByOrg: { IBITS: { stages } },
+    }, "IBITS");
+    assert.equal(resolved.source, "default");
+    assert.equal(resolved.stages[0].id, "default");
+  }
+});
+
+test("resolveApprovalStages normalizes organization-code case and whitespace", () => {
+  const resolved = resolveApprovalStages({
+    approvalStages: [],
+    approvalStagesByOrg: { IBITS: { stages: customStages } },
+  }, "  ibits  ");
+
+  assert.equal(resolved.source, "organization");
+  assert.equal(resolved.stages[0].id, "council-a1");
+});
+
+test("adding an organization entry does not alter global default stages", () => {
+  const defaults = [{ id: "default-a", name: "Default Review", required: true }];
+  const settings = {
+    approvalStages: JSON.parse(JSON.stringify(defaults)),
+    approvalStagesByOrg: {},
+  };
+  settings.approvalStagesByOrg.IBITS = { stages: customStages };
+
+  assert.deepEqual(settings.approvalStages, defaults);
+  assert.equal(resolveApprovalStages(settings, "IBITS").source, "organization");
+  assert.equal(resolveApprovalStages(settings, "ACES").stages[0].id, "default-a");
+});
+
+test("dynamic proposal snapshots advance and finish without fixed stage names", () => {
+  const stages = [
+    { id: "csc-a", name: "Council", required: true, reviewerName: "Council", reviewerEmail: "", order: 0 },
+    { id: "csc-b", name: "Faculty", required: true, reviewerName: "Faculty", reviewerEmail: "", order: 1 },
+    { id: "csc-c", name: "Final Review", required: true, reviewerName: "Final Review", reviewerEmail: "", order: 2 },
+  ];
+  let event = {
+    stagesSource: "organization",
+    approvalStages: stages,
+    approvalSteps: stages.map((stage) => stage.id),
+    approvalCurrentStage: "csc-a",
+    approvalCurrentStep: 0,
+    approvalHistory: [],
+  };
+
+  for (const [index, stage] of stages.entries()) {
+    const update = buildApprovalUpdate(event, {
+      stageKey: stage.id,
+      decidedBy: `reviewer-${index}`,
+      now: index + 10,
+    });
+    event = { ...event, ...update };
+  }
+
+  assert.equal(event.status, "approved");
+  assert.equal(event.approvalCurrentStage, null);
+  assert.equal(event.approvalHistory.length, 3);
+  assert.equal(isFullyApproved(event), true);
 });

@@ -26,7 +26,13 @@ function log(...args) {
 }
 
 function normalize(value) {
-  return String(value ?? "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+  const normalized = String(value ?? "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+  if (
+    normalized === "piie" ||
+    normalized === "piee" ||
+    normalized.includes("philippineinstituteofindustrialengineers")
+  ) return "piie";
+  return normalized;
 }
 
 function dateValue(value) {
@@ -81,6 +87,7 @@ function valuesFrom(source, keys) {
 const PROFILE_ORG_FIELDS = [
   "organizationCode", "organizationId", "orgCode", "orgId", "organization",
   "organizationName", "orgName", "organizations", "orgIds", "assignedOrgs",
+  "assignedOrganizations", "adviserOrganizations", "organizationCodes", "orgCodes",
   "adviserOf", "courseOrganization", "courseOrganizations",
 ];
 const APPROVER_ORG_FIELDS = PROFILE_ORG_FIELDS.filter((field) =>
@@ -95,6 +102,11 @@ function organizationValues(item) {
   const values = valuesFrom(item, EVENT_ORG_FIELDS);
   valuesFrom(item, ["organizationCodes", "orgIds", "targetOrganizations", "partnerOrganizations"])
     .forEach((value) => values.push(value));
+  return [...new Set(values.map(normalize).filter(Boolean))];
+}
+
+function profileOrganizationValues(profile) {
+  const values = valuesFrom(profile, PROFILE_ORG_FIELDS);
   return [...new Set(values.map(normalize).filter(Boolean))];
 }
 
@@ -151,6 +163,7 @@ async function loadIdentity(user) {
     getDoc(doc(db, "adminUser", user.uid)),
     getDoc(doc(db, "users", user.uid)),
     getDoc(doc(db, "approverOrganizations", user.uid)),
+    getDoc(doc(db, "system_settings", "global_config")),
   ]);
   const adminProfile = profileResults[0].status === "fulfilled" && profileResults[0].value.exists()
     ? profileResults[0].value.data() || {}
@@ -161,10 +174,50 @@ async function loadIdentity(user) {
   const approverProfile = profileResults[2].status === "fulfilled" && profileResults[2].value.exists()
     ? profileResults[2].value.data() || {}
     : {};
+  const globalConfig = profileResults[3].status === "fulfilled" && profileResults[3].value.exists()
+    ? profileResults[3].value.data() || {}
+    : {};
+  const emailMatchedOrganizations = [];
+  if (Array.isArray(globalConfig.organizations)) {
+    globalConfig.organizations.forEach((organization) => {
+      if (!organization || typeof organization !== "object") return;
+      const adviserEmails = [
+        organization.adviserEmail ||
+        organization.adviser?.email ||
+        organization.reviewerEmail ||
+        organization.email ||
+        "",
+        ...(Array.isArray(organization.adviserEmails) ? organization.adviserEmails : []),
+      ].flatMap((value) => typeof value === "object"
+        ? [value.email, value.reviewerEmail, value.adviserEmail]
+        : [value],
+      ).map((value) => String(value || "").trim().toLowerCase()).filter(Boolean);
+      const adviserEmail = adviserEmails.find((email) =>
+        email === String(user.email || "").trim().toLowerCase(),
+      ) || "";
+      if (String(user.email || "").trim().toLowerCase() &&
+          adviserEmail === String(user.email || "").trim().toLowerCase()) {
+        emailMatchedOrganizations.push(
+          organization.code || organization.organizationCode || organization.orgCode ||
+          organization.id || organization.organization || organization.name,
+        );
+      }
+    });
+  }
   if (profileResults.every((result) => result.status === "rejected")) {
     throw profileResults[0].reason;
   }
-  const profile = { ...userProfile, ...adminProfile };
+  const profile = {
+    ...userProfile,
+    ...approverProfile,
+    ...adminProfile,
+    organizations: [
+      ...(Array.isArray(adminProfile.organizations) ? adminProfile.organizations : []),
+      ...(Array.isArray(userProfile.organizations) ? userProfile.organizations : []),
+      ...(Array.isArray(approverProfile.organizations) ? approverProfile.organizations : []),
+      ...emailMatchedOrganizations,
+    ].filter(Boolean),
+  };
   const accountRole = normalize(profile.role || profile.userRole || "");
   const approvalRole = normalize(profileRole(profile));
   const allowedRoles = [
@@ -183,6 +236,7 @@ async function loadIdentity(user) {
     ...valuesFrom(approverProfile, APPROVER_ORG_FIELDS),
     ...valuesFrom(adminProfile, PROFILE_ORG_FIELDS),
     ...valuesFrom(userProfile, PROFILE_ORG_FIELDS),
+    ...emailMatchedOrganizations,
   ].filter(Boolean);
   const myOrgs = new Set(rawOrgs.map(normalize).filter(Boolean));
   const orgQueryValues = [...new Set(rawOrgs.flatMap((value) => [
@@ -206,12 +260,26 @@ async function loadIdentity(user) {
 function isRelevantForMe(item, context) {
   if (context.systemWide) return true;
   if (item.openToAll === true) return true;
-  if (isCurrentStageApprover(item, context.profile, context.uid)) return true;
-  const orgValues = [
-    item.orgId,
-    ...(Array.isArray(item.orgIds) ? item.orgIds : []),
-    ...(Array.isArray(item.organizationCodes) ? item.organizationCodes : []),
-  ].map(normalize).filter(Boolean);
+  const orgValues = organizationValues(item);
+  const stageEmail = getCurrentStageReviewerEmail(item);
+  if (
+    !stageEmail &&
+    isAdviserProfile(context.profile) &&
+    currentApprovalStageKey(item) === "org_adv"
+  ) {
+    return orgValues.length > 0 && orgValues.some((value) => context.myOrgs.has(value));
+  }
+  if (stageEmail) {
+    const orgMatches = orgValues.length > 0 && orgValues.some((value) => context.myOrgs.has(value));
+    return stageEmail === String(context.profile.email || "").trim().toLowerCase() && orgMatches;
+  }
+  if (isCurrentStageApprover(item, context.profile, context.uid)) {
+    const currentStage = currentApprovalStageKey(item);
+    if (currentStage === "org_adv" && isAdviserProfile(context.profile)) {
+      return orgValues.length > 0 && orgValues.some((value) => context.myOrgs.has(value));
+    }
+    return true;
+  }
   if (orgValues.length) return orgValues.some((value) => context.myOrgs.has(value));
   return [item.recipientUid, item.userId].some((value) => String(value || "") === context.uid) ||
     isSystemAnnouncement(item);
@@ -314,6 +382,9 @@ function profileApprovalStageKeys(profile) {
 function currentApprovalStageKey(event) {
   const stages = getStages(event);
   if (!stages.length) return null;
+  if (["organization", "default"].includes(event.stagesSource)) {
+    return getCurrentStageKey(event);
+  }
   const declaredStage = [
     event.approvalCurrentStage,
     event.currentApproverStage,
@@ -338,7 +409,7 @@ function currentApprovalStageKey(event) {
 }
 
 function stageEntryFor(event, stageKey) {
-  return stageEntries(event).find(([key, entry]) => [
+  return stageEntries(event).find(([key, entry]) => key === stageKey || [
     key,
     entry.key,
     entry.roleKey,
@@ -346,6 +417,22 @@ function stageEntryFor(event, stageKey) {
     entry.name,
     entry.label,
   ].some((value) => approvalStageKey(value) === stageKey))?.[1] || null;
+}
+
+function getCurrentStageReviewerEmail(event) {
+  const stages = getStages(event);
+  const currentStage = currentApprovalStageKey(event);
+  if (!currentStage || !stages.includes(currentStage) ||
+      ["approved", "rejected", "revision", "cancelled", "canceled"].includes(eventStatus(event))) {
+    return "";
+  }
+  const stage = stageEntryFor(event, currentStage);
+  const assignments = event.approverAssignments?.[currentStage] || {};
+  return String(
+    stage?.reviewerEmail || stage?.assignedReviewerEmail || stage?.approverEmail ||
+    stage?.assignedEmail || assignments.reviewerEmail || assignments.approverEmail ||
+    assignments.email || "",
+  ).trim().toLowerCase();
 }
 
 function isCurrentStageApprover(event, profile, uid) {
@@ -402,9 +489,32 @@ function isCurrentStageApprover(event, profile, uid) {
     event[`${currentStage}ReviewerEmail`] ||
     "",
   ).trim().toLowerCase();
-  if (assignedUid) return assignedUid === uid;
-  if (assignedEmail) return assignedEmail === String(profile.email || "").trim().toLowerCase();
-  return profileApprovalStageKeys(profile).has(currentStage);
+  if (assignedEmail || assignedUid) {
+    return Boolean(
+      (assignedEmail && assignedEmail === String(profile.email || "").trim().toLowerCase()) ||
+      (assignedUid && assignedUid === uid),
+    );
+  }
+  const stageRoleKey = [
+    stage?.key,
+    stage?.roleKey,
+    stage?.name,
+    stage?.label,
+    stage?.reviewer,
+    stage?.reviewerName,
+    currentStage,
+    ...(Array.isArray(stage?.aliases) ? stage.aliases : []),
+  ].map(approvalStageKey).find(Boolean);
+  const profileStageKeys = profileApprovalStageKeys(profile);
+  const profileMatchesStage = profileStageKeys.has(currentStage) ||
+    Boolean(stageRoleKey && profileStageKeys.has(stageRoleKey));
+  if (!profileMatchesStage) return false;
+  if (currentStage === "org_adv" && profileStageKeys.has("org_adv")) {
+    const orgValues = organizationValues(event);
+    const profileOrgValues = new Set(profileOrganizationValues(profile));
+    return orgValues.some((value) => profileOrgValues.has(value));
+  }
+  return true;
 }
 
 function isAdviserProfile(profile) {

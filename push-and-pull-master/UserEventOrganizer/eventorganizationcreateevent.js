@@ -10,11 +10,9 @@ import { httpsCallable } from "https://www.gstatic.com/firebasejs/10.12.2/fireba
 import { ref, onValue, off, update, get, push, set, remove } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-database.js";
 import { addDoc, collection, doc, getDoc, getDocs, onSnapshot, serverTimestamp, updateDoc } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 import { deleteObject, getDownloadURL, getStorage, ref as storageRef, uploadBytes } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-storage.js";
-import { EVENT_APPROVAL_STAGES, getStages } from "../eventWorkflow.js";
+import { getStages, resolveApprovalStages } from "../eventWorkflow.js";
 
 const FAVORITES_LIMIT = 5;
-// null allows every organizer to skip; otherwise list organization ID/code values, never display names.
-const ADVISER_STEP_SKIPPABLE_FOR = null;
 const storage = app ? getStorage(app) : null;
 
 function sanitizeRtdbValue(value) {
@@ -180,43 +178,70 @@ const DEFAULT_APPROVAL_STAGES = [
 function normalizeApprovalStages(stages) {
   const source = Array.isArray(stages) && stages.length ? stages : DEFAULT_APPROVAL_STAGES;
   return source
-    .filter((stage) => stage && typeof stage === "object")
-    .map((stage, index) => ({
-      ...stage,
-      id: String(stage.id || stage.key || `stage-${index + 1}`),
-      name: String(stage.name || stage.label || `Stage ${index + 1}`)
-        .replace(/Property Cuspdian/gi, "Property Custodian"),
-      reviewer: String(stage.reviewer || stage.name || stage.label || "")
-        .replace(/Property Cuspdian/gi, "Property Custodian"),
-      reviewerEmail: String(stage.reviewerEmail || stage.email || "").trim().toLowerCase(),
-      required: stage.required !== false,
-    }));
+    .filter((stage) => stage && typeof stage === "object" && !Array.isArray(stage))
+    .map((stage, index) => {
+      const id = String(stage.id || stage.key || "").trim();
+      const name = String(stage.name || stage.label || "").trim()
+        .replace(/Property Cuspdian/gi, "Property Custodian");
+      const reviewer = String(stage.reviewer || stage.name || stage.label || "")
+        .trim()
+        .replace(/Property Cuspdian/gi, "Property Custodian");
+      return {
+        ...stage,
+        id: id || `stage-${index + 1}`,
+        name: name || `Stage ${index + 1}`,
+        reviewer: reviewer || name || `Stage ${index + 1}`,
+        reviewerName: String(stage.reviewerName || stage.reviewer || stage.name || stage.label || "").trim(),
+        reviewerEmail: String(stage.reviewerEmail || stage.email || "").trim().toLowerCase(),
+        required: typeof stage.required === "boolean" ? stage.required : true,
+        order: index,
+        aliases: Array.isArray(stage.aliases)
+          ? stage.aliases.filter((alias) => typeof alias === "string").map((alias) => alias.trim()).filter(Boolean)
+          : [],
+      };
+    });
 }
 
 let systemApprovalStages = normalizeApprovalStages(DEFAULT_APPROVAL_STAGES);
+let approvalSettingsSnapshot = {
+  approvalStages: systemApprovalStages,
+  approvalStagesByOrg: {},
+};
+let systemApprovalStagesSource = "default";
 
 function loadCachedApprovalStages() {
   try {
+    const cachedSettings = localStorage.getItem("recovibeSystemSettings");
+    if (cachedSettings) {
+      const parsedSettings = JSON.parse(cachedSettings);
+      if (parsedSettings && typeof parsedSettings === "object") {
+        approvalSettingsSnapshot = parsedSettings;
+      }
+    }
     const cached = localStorage.getItem("recovibe_approval_stages");
     if (cached) {
       const parsed = JSON.parse(cached);
       if (Array.isArray(parsed) && parsed.length > 0) {
-        systemApprovalStages = normalizeApprovalStages(parsed);
+        approvalSettingsSnapshot.approvalStages = parsed;
       }
     }
+    systemApprovalStages = normalizeApprovalStages(
+      resolveApprovalStages(approvalSettingsSnapshot, "").stages,
+    );
   } catch {}
 }
 loadCachedApprovalStages();
 
 const PARTNER_ORGS_POOL = [
   { id: "aces", name: "ACES", subtitle: "Association of Computer Engineering Students" },
-  { id: "csc", name: "CSC", subtitle: "Central Student Council" },
+  { id: "hrss", name: "HRSS", subtitle: "Human Resource Students Society" },
   { id: "ibits", name: "IBITS", subtitle: "Institute of Bachelors in Information Technology Studies" },
-  { id: "hrss", name: "HRSS", subtitle: "HRSS" },
-  { id: "piie", name: "PIIE", subtitle: "Philippine Institute of Industrial Engineers" },
-  { id: "sms", name: "SMS", subtitle: "SMS" },
-  { id: "yes", name: "YES", subtitle: "YES" },
+  { id: "piie", name: "PIIE", subtitle: "Philippine Institute of Industrial Engineers – PUP Biñan Student Chapter" },
+  { id: "sms", name: "SMS", subtitle: "Samahan ng mga Mag-aaral ng Sikolohiya" },
+  { id: "yes", name: "YES", subtitle: "Young Educators' Society" },
 ];
+
+const TARGET_ORGANIZATIONS = ["ACES", "HRSS", "IBITS", "PIIE", "SMS", "YES"];
 
 let partnerOrgsPool = [...PARTNER_ORGS_POOL];
 
@@ -296,12 +321,33 @@ loadCachedOrganizations();
 
   const teacherName = String(teacherProfile.name || teacherProfile.fullName || "").trim();
   const organizerOrgName = String(organizerProfile.organization || organizerProfile.orgName || organizerProfile.name || "").trim();
+  function getOrganizationAcronym(value) {
+    const normalized = String(value || "").trim().toUpperCase().replace(/[^A-Z0-9]/g, "");
+    const organization = PARTNER_ORGS_POOL.find((item) =>
+      [item.id, item.name, item.subtitle].some(
+        (candidate) => String(candidate || "").trim().toUpperCase().replace(/[^A-Z0-9]/g, "") === normalized,
+      ),
+    );
+    return organization?.name || "";
+  }
   let organizerOrganizationIdentifier = [
     organizerProfile.organizationId,
     organizerProfile.orgId,
     organizerProfile.organizationCode,
     organizerProfile.orgCode,
   ].find((value) => String(value || "").trim()) || "";
+  const organizerDisplayValue = isOrganizerPage
+    ? [
+        organizerProfile.organizationCode,
+        organizerProfile.orgCode,
+        organizerProfile.organizationId,
+        organizerProfile.orgId,
+        organizerProfile.organization,
+        organizerProfile.organizationName,
+        organizerProfile.orgName,
+        organizerOrgName,
+      ].map(getOrganizationAcronym).find(Boolean) || organizerOrgName
+    : teacherName;
   let organizerAccountProfileUid = "";
   let organizerAccountProfilePromise = null;
 
@@ -382,7 +428,7 @@ loadCachedOrganizations();
 
   async function getOrganizerOrganizationCode(organizerUid) {
     const profile = await loadOrganizerAccountProfile(organizerUid);
-    const organizationCode = String(
+    const rawOrganizationCode = String(
       profile.organizationCode ||
       profile.orgCode ||
       profile.organization ||
@@ -390,19 +436,18 @@ loadCachedOrganizations();
       profile.orgName ||
       "",
     ).trim().replace(/\s+/g, " ").toUpperCase();
+    const normalizedOrganizationCode = rawOrganizationCode
+      .replace(/[^A-Z0-9]/g, "");
+    const organizationCode =
+      normalizedOrganizationCode === "PIIE" ||
+      normalizedOrganizationCode === "PIEE" ||
+      normalizedOrganizationCode.includes("PHILIPPINEINSTITUTEOFINDUSTRIALENGINEERS")
+        ? "PIIE"
+        : rawOrganizationCode;
     if (!organizationCode) {
       throw new Error("Your organizer profile must have an organization assigned before submitting an event.");
     }
     return organizationCode;
-  }
-
-  function canSkipAdviserStep() {
-    if (ADVISER_STEP_SKIPPABLE_FOR === null) return true;
-    if (!Array.isArray(ADVISER_STEP_SKIPPABLE_FOR) || !organizerOrganizationIdentifier) return false;
-    const organizationId = String(organizerOrganizationIdentifier).trim().toLowerCase();
-    return ADVISER_STEP_SKIPPABLE_FOR.some((value) =>
-      String(value || "").trim().toLowerCase() === organizationId,
-    );
   }
 
   const storageKeyEvents = isOrganizerPage ? "recovibeOrganizerEvents" : "recovibeTeacherEvents";
@@ -566,17 +611,14 @@ loadCachedOrganizations();
     "Ladderize",
   ];
   const TARGET_DEPARTMENTS = [
+    "BSCpE",
+    "BSBA-HRM",
     "BSIT",
-    "BSCPE",
-    "BSBA",
-    "BSOA",
-    "BSHM",
+    "DIT",
     "BSIE",
-    "BS Psychology",
-    "BSBA HRM",
-    "BSED Secondary",
-    "BSED Elementary (Elem)",
-    "BSED Social Science",
+    "BSP",
+    "BEEd",
+    "BSEd",
   ];
   const ORGANIZATION_DEPARTMENT_MAP = {
     ibits: "BSIT",
@@ -721,6 +763,7 @@ loadCachedOrganizations();
     deadlineManuallyEdited: false,
     targetAudience: "Open to All",
     targetDepartments: [],
+    targetOrganizations: [],
     targetYearLevels: [],
     targetSections: [],
     isCollaboration: false,
@@ -736,6 +779,42 @@ loadCachedOrganizations();
     reuseError: null,
     selectedApprovers: systemApprovalStages.map((s) => s.id),
   };
+
+  function getCurrentApprovalOrganizationCode(explicitCode = "") {
+    if (explicitCode) {
+      const raw = String(explicitCode).trim().toUpperCase();
+      const normalized = raw.replace(/[^A-Z0-9]/g, "");
+      if (normalized === "PIIE" || normalized === "PIEE" ||
+          normalized.includes("PHILIPPINEINSTITUTEOFINDUSTRIALENGINEERS")) return "PIIE";
+      return raw;
+    }
+    const profile = isOrganizerPage ? organizerProfile : teacherProfile;
+    const raw = String(
+      profile.organizationCode ||
+      profile.orgCode ||
+      profile.organization ||
+      profile.organizationName ||
+      profile.orgName ||
+      (isOrganizerPage ? organizerOrganizationIdentifier : ""),
+    ).trim().toUpperCase();
+    const normalized = raw.replace(/[^A-Z0-9]/g, "");
+    if (normalized === "PIIE" || normalized === "PIEE" ||
+        normalized.includes("PHILIPPINEINSTITUTEOFINDUSTRIALENGINEERS")) return "PIIE";
+    return raw;
+  }
+
+  function applyApprovalStagesForOrganization(code) {
+    const resolved = resolveApprovalStages(approvalSettingsSnapshot, code);
+    const selected = new Set((state.selectedApprovers || []).map(String));
+    systemApprovalStages = normalizeApprovalStages(resolved.stages);
+    systemApprovalStagesSource = resolved.source;
+    state.selectedApprovers = systemApprovalStages
+      .filter((stage) => stage.required || selected.has(stage.id) || selected.has(stage.name))
+      .map((stage) => stage.id);
+    renderApprovers();
+  }
+
+  applyApprovalStagesForOrganization(getCurrentApprovalOrganizationCode());
 
   const autoPartnerTargetDepartments = new Set();
   function getPartnerOrganizationDepartment(organization) {
@@ -780,8 +859,11 @@ loadCachedOrganizations();
             organization?.name,
           ],
     );
+    const selectedAudienceOrganizations = [...document.querySelectorAll(".ce-target-organization:checked")]
+      .map((input) => String(input.value || "").trim())
+      .filter((organization) => TARGET_ORGANIZATIONS.includes(organization));
     const seen = new Set();
-    return organizations
+    const partnerOrganizations = organizations
       .map((organization) => String(organization || "").trim())
       .filter((organization) => {
         const key = organization.toLowerCase();
@@ -789,6 +871,7 @@ loadCachedOrganizations();
         seen.add(key);
         return true;
       });
+    return [...new Set([...selectedAudienceOrganizations, ...partnerOrganizations])];
   }
   function syncPartnerTargetDepartments() {
     const associatedDepartments = getAssociatedOrganizationDepartments();
@@ -1046,13 +1129,14 @@ loadCachedOrganizations();
         onSnapshot(doc(db, "system_settings", "global_config"), (docSnap) => {
           if (docSnap.exists()) {
             const data = docSnap.data() || {};
+            approvalSettingsSnapshot = data;
             if (Array.isArray(data.approvalStages) && data.approvalStages.length > 0) {
-              const stages = normalizeApprovalStages(data.approvalStages);
-              systemApprovalStages = stages;
               try {
-                localStorage.setItem("recovibe_approval_stages", JSON.stringify(stages));
+                localStorage.setItem("recovibe_approval_stages", JSON.stringify(data.approvalStages));
               } catch {}
-              renderApprovers();
+            }
+            if (!state.editingEventId) {
+              applyApprovalStagesForOrganization(getCurrentApprovalOrganizationCode());
             }
 
             if (Array.isArray(data.organizations) && data.organizations.length > 0) {
@@ -2086,15 +2170,6 @@ loadCachedOrganizations();
     const initialRegStart = getManilaDateTimeString(Date.now() + 15 * 60 * 1000);
     const initialRegEnd = calculateAutoRegistrationEnd(defaultEventDate);
     const initialMaxRegEnd = calculateMaxRegistrationEnd(defaultEventDate);
-    const organizingDepartment = getOrganizingDepartment();
-    const savedTargetDepartments = state.targetDepartments
-      .map(normalizeTargetDepartment)
-      .filter(Boolean);
-    const defaultTargetDepartments = savedTargetDepartments.length
-      ? savedTargetDepartments
-      : organizingDepartment
-        ? [organizingDepartment]
-        : [];
 
     return `
       ${state.isCopied && state.copiedFrom ? `
@@ -2143,7 +2218,7 @@ loadCachedOrganizations();
                   <input type="text"
                          id="eventOrganizer"
                          name="eventOrganizer"
-                         value="${escapeHTML(readOnlyOrganizerValue)}"
+                         value="${escapeHTML(organizerDisplayValue)}"
                          readonly
                          class="ce-input--readonly">
                 </div>
@@ -2419,10 +2494,10 @@ loadCachedOrganizations();
                 <div class="ce-field ce-field--full" id="targetAudienceDetails" hidden>
                   <div class="ce-fields-grid">
                     <fieldset class="ce-field" id="wrap-targetDepartments">
-                      <legend>Target Department</legend>
+                      <legend>Target Organization</legend>
                       <div class="ce-audience-options">
-                        ${[...new Set([...TARGET_DEPARTMENTS, ...defaultTargetDepartments])].map((department) => `
-                          <label><input type="checkbox" class="ce-target-department" value="${escapeHTML(department)}" ${defaultTargetDepartments.includes(department) ? "checked" : ""}> ${escapeHTML(department)}</label>
+                        ${TARGET_ORGANIZATIONS.map((organization) => `
+                          <label><input type="checkbox" class="ce-target-organization" value="${escapeHTML(organization)}" ${state.targetOrganizations.includes(organization) ? "checked" : ""}> ${escapeHTML(organization)}</label>
                         `).join("")}
                       </div>
                       <p class="ce-error" id="error-targetDepartments" hidden></p>
@@ -3044,6 +3119,11 @@ loadCachedOrganizations();
 
     state.targetAudience = normalizeTargetAudience(ev.targetAudience);
     state.targetDepartments = Array.isArray(ev.targetDepartments) ? [...ev.targetDepartments] : [];
+    state.targetOrganizations = Array.isArray(ev.targetOrganizations)
+      ? [...ev.targetOrganizations]
+      : Array.isArray(ev.targetOrgs)
+        ? [...ev.targetOrgs]
+        : [];
     state.targetYearLevels = Array.isArray(ev.targetYearLevels)
       ? [...ev.targetYearLevels]
       : ev.targetYear && ev.targetYear !== "All Levels"
@@ -3255,9 +3335,6 @@ loadCachedOrganizations();
                   document.querySelector("#adminDocsList input:not(:valid)")?.focus();
                   return;
                 }
-                if (isOrganizerPage && Array.isArray(ADVISER_STEP_SKIPPABLE_FOR)) {
-                  await loadOrganizerAccountProfile(auth?.currentUser?.uid);
-                }
                 if (!validateForm()) {
                   closeModal();
                   const message = "Please resolve all marked errors before submitting.";
@@ -3279,6 +3356,12 @@ loadCachedOrganizations();
                 const organizerOrganizationCode = isOrganizerPage
                   ? await getOrganizerOrganizationCode(organizerUid)
                   : "";
+                if (isOrganizerPage) {
+                  applyApprovalStagesForOrganization(organizerOrganizationCode);
+                  if (!validateForm()) {
+                    throw new Error("The organization approval stages changed. Review the selected approvers and try again.");
+                  }
+                }
 
                 submissionStage = "building Firestore event";
                 const formPayload = serializeEvent("pending");
@@ -3294,15 +3377,14 @@ loadCachedOrganizations();
                   creatorRole: currentRole,
                   ...(organizerOrganizationCode
                     ? {
-                        organizationCode: organizerOrganizationCode,
-                        organizerOrganization: organizerOrganizationCode,
-                      }
-                    : {}),
-                  ...(isOrganizerPage
-                    ? {
-                        approvalSteps: formPayload.approvalSteps,
-                        approvalCurrentStage: formPayload.approvalSteps[0] || null,
-                        approvalCurrentStep: 0,
+                              organizationCode: organizerOrganizationCode,
+                              organizerOrganization: organizerOrganizationCode,
+                        orgCode: organizerOrganizationCode,
+                        orgId: organizerOrganizationCode,
+                        organization: organizerOrganizationCode,
+                        organizationName: organizerOrganizationCode,
+                        organizerOrg: organizerOrganizationCode,
+                        approvalStatus: "pending",
                       }
                     : {}),
                   startAt: `${formPayload.date || ""} ${formPayload.timeStart || ""}`.trim(),
@@ -3703,6 +3785,18 @@ loadCachedOrganizations();
       if (!link) return;
       const href = link.getAttribute("href");
       if (!href || href.startsWith("#") || href.startsWith("javascript:") || href.startsWith("mailto:") || href.startsWith("tel:")) return;
+      if (link.dataset.rvLogoutConfirmed === "true") {
+        state.dirty = false;
+        const leaveModal = document.getElementById("ceConfirmModal");
+        if (
+          leaveModal &&
+          !leaveModal.hidden &&
+          leaveModal.querySelector("#confirmModalTitle")?.textContent.trim() === "Unsaved Changes"
+        ) {
+          leaveModal.querySelector("#confirmModalCancelBtn")?.click();
+        }
+        return;
+      }
       if (state.dirty && !state.isActionBusy) {
         e.preventDefault();
         const form = document.getElementById("createEventMainForm");
@@ -3735,41 +3829,16 @@ loadCachedOrganizations();
   }
 
   function getFormApprovalStageOptions() {
-    const configuredStages = systemApprovalStages.map((stage, index) => {
-      const identities = [stage.key, stage.id, stage.name, stage.label, stage.reviewer]
-        .map((value) => String(value || "").toLowerCase().replace(/[^a-z0-9]/g, ""));
-      const canonicalStage = EVENT_APPROVAL_STAGES.find((candidate) =>
-        [candidate.key, candidate.label]
-          .some((value) => identities.includes(String(value).toLowerCase().replace(/[^a-z0-9]/g, ""))),
-      );
-      return {
-        stage,
-        key: canonicalStage?.key || EVENT_APPROVAL_STAGES[index]?.key || null,
-      };
-    });
-
-    return EVENT_APPROVAL_STAGES.map((canonicalStage, index) => {
-      const configured = configuredStages.find((candidate) => candidate.key === canonicalStage.key);
-      const stage = configured?.stage || DEFAULT_APPROVAL_STAGES[index];
-      const canSkipAdviser = isOrganizerPage &&
-        canonicalStage.key === "org_adv" &&
-        canSkipAdviserStep();
-      const required = canonicalStage.key === "osas"
-        ? true
-        : canonicalStage.key === "org_adv"
-          ? !canSkipAdviser
-          : Boolean(stage.required);
-      return {
-        ...stage,
-        key: canonicalStage.key,
-        name: String(stage.name || canonicalStage.label)
-          .replace(/Property Cuspdian/gi, "Property Custodian"),
-        reviewer: String(stage.reviewer || stage.name || canonicalStage.label)
-          .replace(/Property Cuspdian/gi, "Property Custodian"),
-        canSkipAdviser,
-        required,
-      };
-    });
+    return systemApprovalStages.map((stage) => ({
+      ...stage,
+      key: stage.id,
+      name: String(stage.name || "Approval stage")
+        .replace(/Property Cuspdian/gi, "Property Custodian"),
+      reviewer: String(stage.reviewerName || stage.reviewer || stage.name || "")
+        .replace(/Property Cuspdian/gi, "Property Custodian"),
+      reviewerName: String(stage.reviewerName || stage.reviewer || ""),
+      required: stage.required === true,
+    }));
   }
 
   function getSelectedApprovalStages() {
@@ -3784,26 +3853,21 @@ loadCachedOrganizations();
 
   function getApprovalStepsValidationError() {
     const selectedStages = getSelectedApprovalStages();
-    const approvalSteps = selectedStages.map((stage) => stage.key);
-    const canonicalSteps = EVENT_APPROVAL_STAGES
-      .map((stage) => stage.key)
-      .filter((stageKey) => approvalSteps.includes(stageKey));
-    if (!approvalSteps.length) return "At least one approver step must remain selected.";
-    if (approvalSteps.length !== selectedStages.length ||
-        approvalSteps.some((stageKey, index) => stageKey !== canonicalSteps[index])) {
+    const selectedIds = selectedStages.map((stage) => stage.id);
+    const configuredIds = systemApprovalStages
+      .filter((stage) => selectedIds.includes(stage.id))
+      .map((stage) => stage.id);
+    if (!selectedIds.length) return "At least one approver step must remain selected.";
+    if (selectedIds.some((stageId, index) => stageId !== configuredIds[index])) {
       return "Approval steps must follow the configured stage order.";
-    }
-    if (approvalSteps[approvalSteps.length - 1] !== "osas") {
-      return "OSAS must remain selected as the final approval step.";
     }
     return "";
   }
 
   function getApprovalStepsForSubmission() {
-    const selectedStageKeys = getSelectedApprovalStages().map((stage) => stage.key);
-    const approvalSteps = getStages({ approvalSteps: selectedStageKeys });
+    const approvalSteps = getSelectedApprovalStages().map((stage) => stage.id);
     const error = getApprovalStepsValidationError();
-    if (error || approvalSteps.length !== selectedStageKeys.length) {
+    if (error || approvalSteps.length !== getSelectedApprovalStages().length) {
       throw new Error(error || "The approval chain contains an invalid stage.");
     }
     return approvalSteps;
@@ -3861,7 +3925,7 @@ loadCachedOrganizations();
         countText.textContent = `${checkedIds.length} approver${checkedIds.length === 1 ? "" : "s"} selected`;
       }
       if (hintText) {
-        hintText.textContent = `Approvals run sequentially in ${checkedIds.length} steps. OSAS is always last. Unticked approvers are skipped and the rest are numbered by position.`;
+        hintText.textContent = `Approvals run sequentially in ${checkedIds.length} steps. Unticked optional approvers are skipped and the rest are numbered by position.`;
       }
 
       if (errEl) {
@@ -3910,31 +3974,6 @@ loadCachedOrganizations();
       const input = document.getElementById(`approver-${stage.id}`);
       if (input && !stage.required) {
         input.addEventListener("change", () => {
-          if (stage.canSkipAdviser && !input.checked) {
-            if (!document.getElementById("ceConfirmModal")) {
-              input.checked = true;
-              updateStepTags();
-              showToast("Confirmation is unavailable; adviser approval remains selected.");
-              return;
-            }
-            showConfirmModal({
-              title: "Skip Adviser Approval?",
-              text: "Skip the Organization Adviser's approval for this proposal?",
-              confirmText: "Skip",
-              cancelText: "Cancel",
-              triggerEl: input,
-              onConfirm: (closeModal) => {
-                closeModal();
-                updateStepTags();
-                state.dirty = true;
-              },
-              onCancel: () => {
-                input.checked = true;
-                updateStepTags();
-              },
-            });
-            return;
-          }
           updateStepTags();
           state.dirty = true;
         });
@@ -5719,6 +5758,7 @@ loadCachedOrganizations();
     const isCollabCheckbox = document.getElementById("isCollaboration");
     const partnerBody = document.getElementById("partnerBody");
     const departmentInputs = [...document.querySelectorAll(".ce-target-department")];
+    const organizationInputs = [...document.querySelectorAll(".ce-target-organization")];
     let previousDepartmentSelection = null;
     let lastAudience = "";
     const updateAudienceControls = () => {
@@ -5766,7 +5806,11 @@ loadCachedOrganizations();
         .map((input) => input.value);
       const yearLevels = [...document.querySelectorAll(".ce-target-year:checked")]
         .map((input) => input.value);
+      const organizations = organizationInputs
+        .filter((input) => input.checked)
+        .map((input) => input.value);
       state.targetDepartments = needsAudienceDetails ? departments : [];
+      state.targetOrganizations = needsAudienceDetails ? organizations : [];
       state.targetYearLevels = needsAudienceDetails ? yearLevels : [];
       if (!needsAudienceDetails) {
         state.targetSections = [];
@@ -5798,7 +5842,7 @@ loadCachedOrganizations();
       });
     }
 
-    document.querySelectorAll(".ce-target-department, .ce-target-year, #targetAllYears")
+    document.querySelectorAll(".ce-target-department, .ce-target-organization, .ce-target-year, #targetAllYears")
       .forEach((input) => {
         input.addEventListener("change", () => {
           if (input.id === "targetAllYears" && input.checked) {
@@ -7049,7 +7093,7 @@ loadCachedOrganizations();
       if (!inputEl) {
         if (id === "approvalDocs") inputEl = document.getElementById("dropzoneApproval");
         else if (id === "participantDocs") inputEl = document.getElementById("participantDocsLinks");
-        else if (id === "targetDepartments") inputEl = document.querySelector(".ce-target-department");
+        else if (id === "targetDepartments") inputEl = document.querySelector(".ce-target-organization");
         else if (id === "facultyChips") inputEl = document.getElementById("facultySearchInput");
         else if (id === "facultyInCharge") inputEl = document.getElementById("facultyInChargeSearchInput");
       }
@@ -7438,7 +7482,7 @@ loadCachedOrganizations();
       if (id === "approvalDocs") inputEl = document.getElementById("dropzoneApproval");
       else if (id === "participantDocs") inputEl = document.getElementById("participantDocsLinks");
       else if (id === "approvers") inputEl = document.getElementById("approverList");
-      else if (id === "targetDepartments") inputEl = document.querySelector(".ce-target-department");
+      else if (id === "targetDepartments") inputEl = document.querySelector(".ce-target-organization");
       else if (id === "facultyChips") inputEl = document.getElementById("facultySearchInput");
       else if (id === "facultyInCharge") inputEl = document.getElementById("facultyInChargeSearchInput");
     }
@@ -7457,9 +7501,27 @@ loadCachedOrganizations();
   function serializeEvent(status) {
     const form = document.getElementById("createEventMainForm");
     const selectedApprovalStages = getSelectedApprovalStages();
-    const approvalSteps = isOrganizerPage
-      ? getApprovalStepsForSubmission()
-      : null;
+    const approvalSteps = getApprovalStepsForSubmission();
+    const approvalSnapshot = state.editingEventId
+      ? {}
+      : {
+          approvalStages: selectedApprovalStages.map((stage, order) => ({
+            id: String(stage.id || stage.key || `stage-${order + 1}`),
+            name: String(stage.name || stage.label || `Stage ${order + 1}`).trim(),
+            required: stage.required === true,
+            reviewerName: String(stage.reviewerName || stage.reviewer || "").trim(),
+            reviewerEmail: String(stage.reviewerEmail || "").trim().toLowerCase(),
+            order,
+            aliases: Array.isArray(stage.aliases)
+              ? stage.aliases.filter((alias) => typeof alias === "string").map((alias) => alias.trim()).filter(Boolean)
+              : [],
+          })),
+          approvalSteps,
+          approvalCurrentStage: approvalSteps[0] || null,
+          approvalCurrentStep: 0,
+          approvalHistory: [],
+          stagesSource: systemApprovalStagesSource,
+        };
     const id = state.editingEventId || `${isOrganizerPage ? "org" : "tch"}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
     const nowISO = new Date().toISOString();
 
@@ -7591,12 +7653,7 @@ loadCachedOrganizations();
       approvers: isOrganizerPage
         ? selectedApprovalStages.map((stage) => stage.id)
         : [...state.selectedApprovers],
-      approvalStages: isOrganizerPage
-        ? selectedApprovalStages.map(({ notRequired, ...stage }) => stage)
-        : systemApprovalStages.filter((stage) =>
-            state.selectedApprovers.includes(stage.id) || stage.required,
-          ),
-      ...(isOrganizerPage ? { approvalSteps } : {}),
+      ...approvalSnapshot,
       status, // "Draft", "Pending Approval", or "Published"
       createdAt: nowISO,
       updatedAt: nowISO,

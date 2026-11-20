@@ -4,8 +4,9 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="theme-color" content="#72141c" />
-    <title>Audit Activities | RecoVibe Super Admin</title>
+    <title>Audit Logs | RecoVibe Super Admin</title>
     <link rel="stylesheet" href="superadmin.css" />
+    <link rel="stylesheet" href="SuperAdminAuditLogs.css" />
   <style id="page-preloader-style">
     html[data-page-loading="true"] [data-page-load-container] { position: relative; }
     #userAvatar:empty,
@@ -107,59 +108,81 @@
       <span class="page-preloader-spinner" aria-hidden="true"></span>
       <span>Loading...</span>
     </div>
-        <header class="audit-log-page-heading">
-          <h1>Audit Activities</h1>
-        </header>
-        <section class="audit-log-card" aria-labelledby="audit-log-title">
-          <h2 class="visually-hidden" id="audit-log-title">All audit activity</h2>
-          <div class="audit-table-wrap audit-log-table-wrap">
-            <table class="audit-table audit-log-table" id="audit-activity-table" data-audit-table>
-              <caption class="visually-hidden">Super Admin audit activity records</caption>
-              <thead>
-                <tr>
-                  <th scope="col">Timestamp</th>
-                  <th scope="col">User</th>
-                  <th scope="col">Action</th>
-                  <th scope="col"><span class="visually-hidden">Details</span></th>
-                </tr>
-              </thead>
-              <tbody id="audit-activity-rows"></tbody>
-            </table>
-          </div>
-        </section>
-      </main>
-    </div>
+        <div class="audit-log-content">
+          <header class="audit-log-page-heading">
+            <div>
+              <h1>Audit Logs</h1>
+              <p>Review Super Admin account and system activity.</p>
+            </div>
+            <button type="button" class="audit-export-button" id="audit-export-csv">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m0 0 4-4m-4 4-4-4M5 17v3h14v-3" /></svg>
+              <span>Export CSV</span>
+            </button>
+          </header>
 
-    <dialog class="audit-dialog" id="audit-detail-modal" aria-labelledby="audit-modal-title">
-      <div class="audit-dialog-content">
-        <header class="audit-dialog-header">
-          <p class="audit-dialog-kicker">Audit Activity Details</p>
-          <h2 id="audit-modal-title"></h2>
-        </header>
-        <div class="audit-detail-body">
-          <dl class="audit-detail-grid">
-            <div id="row-action"><dt>Action:</dt><dd id="audit-detail-action"></dd></div>
-            <div id="row-performed-by"><dt>Performed By:</dt><dd id="audit-detail-performed-by"></dd></div>
-            <div id="row-date-time"><dt>Date &amp; Time:</dt><dd id="audit-detail-date-time"></dd></div>
-            <div id="row-category"><dt>Category:</dt><dd id="audit-detail-category"></dd></div>
-            <div id="row-event" hidden><dt>Event:</dt><dd id="audit-detail-event"></dd></div>
-            <div id="row-organizer" hidden><dt>Event Organizer:</dt><dd><span id="audit-detail-organizer"></span><small class="audit-organizer-role" id="audit-detail-organizer-role"></small></dd></div>
-            <div id="row-previous-status" hidden><dt>Previous Status:</dt><dd id="audit-detail-previous-status"></dd></div>
-            <div id="row-new-status" hidden><dt>New Status:</dt><dd id="audit-detail-new-status"></dd></div>
-          </dl>
-          <section class="audit-detail-description" id="audit-description-section" hidden>
-            <h3>Additional Details:</h3>
-            <p id="audit-detail-description"></p>
+          <section class="audit-log-panel" aria-labelledby="audit-log-title">
+            <h2 class="visually-hidden" id="audit-log-title">Audit log entries</h2>
+            <div class="audit-filter-grid">
+              <label class="audit-filter-field audit-search-field" for="audit-search">
+                <span>Search</span>
+                <input id="audit-search" type="search" placeholder="Action, person, or account" autocomplete="off" />
+              </label>
+              <label class="audit-filter-field" for="audit-actor-filter">
+                <span>Actor</span>
+                <select id="audit-actor-filter"><option value="">All actors</option></select>
+              </label>
+              <label class="audit-filter-field" for="audit-date-filter">
+                <span>Date range</span>
+                <select id="audit-date-filter">
+                  <option value="today">Today</option>
+                  <option value="7days">Last 7 days</option>
+                  <option value="30days">Last 30 days</option>
+                  <option value="all" selected>All time</option>
+                  <option value="custom">Custom</option>
+                </select>
+              </label>
+            </div>
+            <div class="audit-custom-date-range" id="audit-custom-date-range" hidden>
+              <label class="audit-filter-field" for="audit-custom-start">
+                <span>Start date</span>
+                <input id="audit-custom-start" type="date" />
+              </label>
+              <label class="audit-filter-field" for="audit-custom-end">
+                <span>End date</span>
+                <input id="audit-custom-end" type="date" />
+              </label>
+            </div>
+
+            <div class="audit-filter-summary">
+              <div class="audit-category-filters" id="audit-category-filters" role="group" aria-label="Filter by category"></div>
+              <p class="audit-result-count" id="audit-result-count" aria-live="polite">0 of 0 entries</p>
+            </div>
+
+            <div class="audit-user-filter-chip" id="audit-user-filter-chip" hidden>
+              <span id="audit-user-filter-text"></span>
+              <button type="button" id="audit-user-filter-clear" aria-label="Clear user filter">×</button>
+            </div>
+
+            <div class="audit-log-list" id="audit-log-list" aria-live="polite"></div>
+            <div class="audit-state-panel" id="audit-empty-state" hidden>
+              <strong>No logs match your filters</strong>
+              <button type="button" class="audit-secondary-button" id="audit-clear-filters">Clear filters</button>
+            </div>
+            <div class="audit-state-panel audit-state-panel--error" id="audit-error-state" role="alert" hidden>
+              <strong id="audit-error-text"></strong>
+              <button type="button" class="audit-secondary-button" id="audit-retry">Retry</button>
+            </div>
+            <div class="audit-state-panel audit-state-panel--error audit-events-warning" id="audit-events-warning" role="alert" hidden>
+              <strong id="audit-events-warning-text"></strong>
+              <button type="button" class="audit-secondary-button" id="audit-retry-events">Retry Published Events</button>
+            </div>
+            <button type="button" class="audit-load-more" id="audit-load-more" hidden>Load more</button>
           </section>
         </div>
-        <div class="audit-dialog-actions">
-          <a class="audit-dialog-button view-event-button" id="audit-view-event" href="#" hidden>View Event</a>
-          <button class="audit-dialog-button close-audit-button" id="audit-close-modal" type="button">Close</button>
-        </div>
-      </div>
-    </dialog>
+      </main>
+    </div>
     <script type="module" src="superAdminGuard.js"></script>
-    <script type="module" src="SuperAdminDashboard.js"></script>
+    <script type="module" src="SuperAdminAuditLogs.js"></script>
     <script>
     (() => {
       const root = document.documentElement;
@@ -274,6 +297,7 @@
        confirm.textContent = "Log out";
        cancel.focus();
      };
+     window.addEventListener("superadmin-logout-reset", finishFailedLogout);
      document.addEventListener("click", (event) => {
        const target = event.target instanceof Element ? event.target.closest("a, button") : null;
        if (!target) return;
@@ -333,9 +357,9 @@
        pollId = window.setInterval(checkLogoutState, 100);
        logoutControl.dataset.rvLogoutProceed = "true";
        logoutControl.dataset.rvLogoutConfirmed = "true";
+       timeoutId = window.setTimeout(finishFailedLogout, 15000);
        logoutControl.click();
        delete logoutControl.dataset.rvLogoutConfirmed;
-       timeoutId = window.setTimeout(finishFailedLogout, 15000);
      });
      window.addEventListener("pagehide", () => {
        window.clearTimeout(timeoutId);

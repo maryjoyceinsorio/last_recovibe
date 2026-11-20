@@ -51,12 +51,11 @@ loadCachedApprovalStages();
 
 const PARTNER_ORGS_POOL = [
   { id: "aces", name: "ACES", subtitle: "Association of Computer Engineering Students" },
-  { id: "csc", name: "CSC", subtitle: "Central Student Council" },
+  { id: "hrss", name: "HRSS", subtitle: "Human Resource Students Society" },
   { id: "ibits", name: "IBITS", subtitle: "Institute of Bachelors in Information Technology Studies" },
-  { id: "hrss", name: "HRSS", subtitle: "HRSS" },
-  { id: "piie", name: "PIIE", subtitle: "Philippine Institute of Industrial Engineers" },
-  { id: "sms", name: "SMS", subtitle: "SMS" },
-  { id: "yes", name: "YES", subtitle: "YES" },
+  { id: "piie", name: "PIIE", subtitle: "Philippine Institute of Industrial Engineers – PUP Biñan Student Chapter" },
+  { id: "sms", name: "SMS", subtitle: "Samahan ng mga Mag-aaral ng Sikolohiya" },
+  { id: "yes", name: "YES", subtitle: "Young Educators' Society" },
 ];
 
 let partnerOrgsPool = [...PARTNER_ORGS_POOL];
@@ -311,17 +310,14 @@ loadCachedOrganizations();
     "Ladderize",
   ];
   const TARGET_DEPARTMENTS = [
+    "BSCpE",
+    "BSBA-HRM",
     "BSIT",
-    "BSCPE",
-    "BSBA",
-    "BSOA",
-    "BSHM",
+    "DIT",
     "BSIE",
-    "BS Psychology",
-    "BSBA HRM",
-    "BSED Secondary",
-    "BSED Elementary (Elem)",
-    "BSED Social Science",
+    "BSP",
+    "BEEd",
+    "BSEd",
   ];
   const ORGANIZATION_DEPARTMENT_MAP = {
     ibits: "BSIT",

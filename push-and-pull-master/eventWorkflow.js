@@ -37,7 +37,98 @@ function canonicalStageKey(value) {
   )?.key || STAGE_KEY_ALIASES.get(normalized) || null;
 }
 
+function normalizeConfiguredStages(stages) {
+  return stages.map((stage, index) => ({
+    ...stage,
+    id: String(stage.id || stage.key || `stage-${index + 1}`),
+    name: String(stage.name || stage.label || `Stage ${index + 1}`),
+    required: stage.required !== false,
+    reviewerName: String(stage.reviewerName || stage.reviewer || stage.label || stage.name || ""),
+    reviewerEmail: String(stage.reviewerEmail || stage.email || "").trim().toLowerCase(),
+    order: index,
+  }));
+}
+
+function isValidOrganizationStages(stages) {
+  if (!Array.isArray(stages) || stages.length < 1 || stages.length > 8) return false;
+  const ids = new Set();
+  const names = new Set();
+  let hasRequiredStage = false;
+  return stages.every((stage, index) => {
+    if (!stage || typeof stage !== "object" || Array.isArray(stage)) return false;
+    const id = typeof stage.id === "string" ? stage.id.trim() : "";
+    const name = typeof stage.name === "string" ? stage.name.trim() : "";
+    const reviewerName = typeof stage.reviewerName === "string" ? stage.reviewerName : "";
+    const reviewerEmail = typeof stage.reviewerEmail === "string" ? stage.reviewerEmail.trim() : "";
+    const nameKey = name.toLocaleLowerCase();
+    const validEmail = !reviewerEmail ||
+      /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(reviewerEmail);
+    if (
+      !id ||
+      ids.has(id) ||
+      name.length < 2 ||
+      name.length > 60 ||
+      names.has(nameKey) ||
+      reviewerName.length > 80 ||
+      typeof stage.required !== "boolean" ||
+      stage.order !== index ||
+      !validEmail
+    ) return false;
+    ids.add(id);
+    names.add(nameKey);
+    hasRequiredStage ||= stage.required;
+    return true;
+  }) && hasRequiredStage;
+}
+
+export function resolveApprovalStages(settings, organizationCode) {
+  const code = String(organizationCode || "").trim().toUpperCase();
+  const fallbackStages = Array.isArray(settings?.approvalStages) && settings.approvalStages.length
+    ? settings.approvalStages
+    : EVENT_APPROVAL_STAGES.map((stage, index) => ({
+        id: stage.key,
+        name: stage.label,
+        reviewerName: stage.label,
+        required: true,
+        order: index,
+      }));
+  const customEntry = code && ![".", "/", "[", "]", "*", "~"].some((character) => code.includes(character))
+    ? settings?.approvalStagesByOrg?.[code]
+    : null;
+  if (isValidOrganizationStages(customEntry?.stages)) {
+    return {
+      source: "organization",
+      stages: normalizeConfiguredStages(customEntry.stages),
+    };
+  }
+  return {
+    source: "default",
+    stages: normalizeConfiguredStages(fallbackStages),
+  };
+}
+
+function hasStageSnapshot(proposal) {
+  return Boolean(
+    proposal &&
+    ["organization", "default"].includes(proposal.stagesSource) &&
+    Array.isArray(proposal.approvalStages),
+  );
+}
+
+function getSnapshotStages(proposal) {
+  const stages = normalizeConfiguredStages(
+    proposal.approvalStages.filter((stage) => stage && typeof stage === "object"),
+  ).sort((left, right) => left.order - right.order);
+  const selectedIds = Array.isArray(proposal.approvalSteps)
+    ? new Set(proposal.approvalSteps.map(String))
+    : null;
+  return stages.filter((stage) => !selectedIds || selectedIds.has(stage.id));
+}
+
 export function getStages(proposal) {
+  if (hasStageSnapshot(proposal)) {
+    return getSnapshotStages(proposal).map((stage) => stage.id);
+  }
   if (!proposal || !Object.prototype.hasOwnProperty.call(proposal, "approvalSteps")) {
     return EVENT_APPROVAL_STAGES.map((stage) => stage.key);
   }
@@ -57,7 +148,9 @@ export function getCurrentStageKey(proposal) {
   const stageKeys = getStages(proposal);
   if (!stageKeys.length) return null;
 
-  const explicitStageKey = canonicalStageKey(proposal?.approvalCurrentStage);
+  const rawCurrentStage = String(proposal?.approvalCurrentStage || "").trim();
+  if (rawCurrentStage && stageKeys.includes(rawCurrentStage)) return rawCurrentStage;
+  const explicitStageKey = canonicalStageKey(rawCurrentStage);
   if (explicitStageKey && stageKeys.includes(explicitStageKey)) {
     return explicitStageKey;
   }
@@ -66,7 +159,11 @@ export function getCurrentStageKey(proposal) {
   if (history.some((entry) => {
     const entryStage = [entry?.stage, entry?.stageKey, entry?.key]
       .find((value) => String(value || "").trim());
-    return Boolean(canonicalStageKey(entryStage));
+    return Boolean(
+      hasStageSnapshot(proposal)
+        ? stageKeys.some((key) => normalizeStageKey(key) === normalizeStageKey(entryStage))
+        : canonicalStageKey(entryStage),
+    );
   })) {
     return getEventStage(proposal).currentStageKey;
   }
@@ -79,9 +176,12 @@ export function getCurrentStageKey(proposal) {
   const step = rawStep === "" || rawStep === null || rawStep === undefined
     ? NaN
     : Number(rawStep);
-  return Number.isInteger(step) && step >= 0 && step < stageKeys.length
-    ? stageKeys[step]
-    : getEventStage(proposal).currentStageKey;
+  if (Number.isInteger(step) && step >= 0) {
+    if (step === 0) return stageKeys[0];
+    const oneBasedIndex = step - 1;
+    if (oneBasedIndex >= 0 && oneBasedIndex < stageKeys.length) return stageKeys[oneBasedIndex];
+  }
+  return getEventStage(proposal).currentStageKey;
 }
 
 function getStageHistoryEntries(event, stageKey) {
@@ -89,26 +189,32 @@ function getStageHistoryEntries(event, stageKey) {
   return (Array.isArray(event?.approvalHistory) ? event.approvalHistory : [])
     .filter((entry) => {
       if (!entry || typeof entry !== "object") return false;
-      const entryStage = [entry.stage, entry.stageKey, entry.key]
+      const entryStage = [entry.stage, entry.stageKey, entry.key, entry.stageId]
         .find((value) => String(value || "").trim());
       return normalizeStageKey(entryStage) === normalizedKey;
     });
 }
 
 export function getEventStage(event) {
+  const dynamicStages = hasStageSnapshot(event) ? getSnapshotStages(event) : null;
   const stages = getStages(event).map((stageKey, index) => {
-    const stage = EVENT_APPROVAL_STAGES.find((candidate) => candidate.key === stageKey);
-    const approvedEntries = getStageHistoryEntries(event, stage.key)
+    const stage = dynamicStages
+      ? dynamicStages.find((candidate) => candidate.id === stageKey)
+      : EVENT_APPROVAL_STAGES.find((candidate) => candidate.key === stageKey);
+    if (!stage) return null;
+    const approvedEntries = getStageHistoryEntries(event, stage.key || stage.id)
       .filter((entry) => normalizeDecision(entry.decision) === "approved");
     const approvedEntry = approvedEntries[approvedEntries.length - 1] || null;
     return {
       ...stage,
+      key: stage.key || stage.id,
+      label: stage.label || stage.name,
       index,
       step: index + 1,
       approved: Boolean(approvedEntry),
       approvedEntry,
     };
-  });
+  }).filter(Boolean);
   const currentStageIndex = stages.findIndex((stage) => !stage.approved);
   const firstIncompleteIndex = currentStageIndex < 0
     ? stages.length - 1
@@ -141,7 +247,10 @@ export function buildApprovalUpdate(event, {
 }) {
   const workflow = getEventStage(event);
   const activeStageKeys = getStages(event);
-  const stage = EVENT_APPROVAL_STAGES.find(
+  const dynamicStage = hasStageSnapshot(event)
+    ? workflow.stages.find((candidate) => candidate.key === stageKey)
+    : null;
+  const stage = dynamicStage || EVENT_APPROVAL_STAGES.find(
     (candidate) => normalizeStageKey(candidate.key) === normalizeStageKey(stageKey),
   );
   if (!stage) throw new Error(`Unknown approval stage: ${stageKey}`);
@@ -167,7 +276,7 @@ export function buildApprovalUpdate(event, {
       ...history,
       {
         stage: stage.key,
-        stageLabel: stage.label,
+        stageLabel: stage.label || stage.name,
         decision: "approved",
         note: "",
         decidedBy,

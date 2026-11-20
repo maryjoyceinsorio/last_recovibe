@@ -216,6 +216,7 @@
        confirm.textContent = "Log out";
        cancel.focus();
      };
+     window.addEventListener("superadmin-logout-reset", finishFailedLogout);
      document.addEventListener("click", (event) => {
        const target = event.target instanceof Element ? event.target.closest("a, button") : null;
        if (!target) return;
@@ -275,9 +276,9 @@
        pollId = window.setInterval(checkLogoutState, 100);
        logoutControl.dataset.rvLogoutProceed = "true";
        logoutControl.dataset.rvLogoutConfirmed = "true";
+       timeoutId = window.setTimeout(finishFailedLogout, 15000);
        logoutControl.click();
        delete logoutControl.dataset.rvLogoutConfirmed;
-       timeoutId = window.setTimeout(finishFailedLogout, 15000);
      });
      window.addEventListener("pagehide", () => {
        window.clearTimeout(timeoutId);

@@ -1,14 +1,14 @@
 import { deleteApp, getApp, initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
 import {
   createUserWithEmailAndPassword,
-  deleteUser,
   getAuth,
+  onAuthStateChanged,
+  sendPasswordResetEmail,
   signOut,
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
 import {
   addDoc,
   collection,
-  deleteDoc,
   doc,
   getDoc,
   onSnapshot,
@@ -16,1431 +16,1230 @@ import {
   setDoc,
   updateDoc,
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
-import { db, isFirebaseConfigured } from "../UserStudent/firebaseConfig.js";
+import { auth, db, isFirebaseConfigured } from "../UserStudent/firebaseConfig.js";
+import { logoutSuperAdmin } from "./superAdminLogout.js";
 
 (() => {
   "use strict";
 
-  const tableBody = document.getElementById("user-table-tbody");
-  let pageLoadSignaled = false;
-  const pendingInitialUserSources = new Set(["users", "staff"]);
-  function settleInitialUserSource(source) {
-    pendingInitialUserSources.delete(source);
-    if (!pendingInitialUserSources.size && !pageLoadSignaled) {
-      pageLoadSignaled = true;
-      window.dispatchEvent(new Event("page-data-ready"));
-    }
-  }
-  const roleDialog = document.getElementById("account-type-dialog");
-  const createDialog = document.getElementById("create-user-dialog");
-  const detailsDialog = document.getElementById("user-details-modal-backdrop");
-  const createForm = document.getElementById("create-user-form");
-  const staffAuthFields = document.getElementById("staff-auth-fields");
-  const passwordInput = document.getElementById("new-user-password");
-  const passwordConfirmationInput = document.getElementById(
-    "new-user-password-confirmation",
-  );
-  const passwordToggles = [
-    {
-      input: passwordInput,
-      button: passwordInput.closest(".sa-password-toggle").querySelector("button"),
-      showLabel: "Show password",
-      hideLabel: "Hide password",
-      visible: false,
-      timer: null,
-      selectionStart: null,
-      selectionEnd: null,
-      selectionDirection: "none",
-    },
-    {
-      input: passwordConfirmationInput,
-      button: passwordConfirmationInput.closest(".sa-password-toggle").querySelector("button"),
-      showLabel: "Show confirm password",
-      hideLabel: "Hide confirm password",
-      visible: false,
-      timer: null,
-      selectionStart: null,
-      selectionEnd: null,
-      selectionDirection: "none",
-    },
-  ];
-  const statusButton = document.getElementById("toggle-user-status-button");
-  const deleteButton = document.getElementById("delete-user-button");
-  const editButton = document.getElementById("edit-user-button");
-  const editDialog = document.getElementById("edit-user-dialog");
-  const editForm = document.getElementById("edit-user-form");
-  const confirmDialog = document.getElementById("confirm-edit-dialog");
-  const confirmSaveButton = document.getElementById("confirm-save-edit-button");
-  const cancelConfirmButton = document.getElementById(
-    "cancel-confirm-edit-button",
-  );
-  const confirmSummary = document.getElementById("confirm-changes-summary");
-  const confirmMessage = document.getElementById("confirm-edit-message");
-  const statusConfirmDialog = document.getElementById("confirm-status-dialog");
-  const statusConfirmTitle = document.getElementById("confirm-status-title");
-  const statusConfirmMessage = document.getElementById("confirm-status-message");
-  const statusConfirmActionButton = document.getElementById(
-    "confirm-status-action-button",
-  );
-  const cancelStatusConfirmButton = document.getElementById(
-    "cancel-confirm-status-button",
-  );
-  const deleteConfirmDialog = document.getElementById("confirm-delete-dialog");
-  const deleteConfirmTitle = document.getElementById("confirm-delete-title");
-  const deleteConfirmMessage = document.getElementById("confirm-delete-message");
-  const deleteConfirmActionButton = document.getElementById(
-    "confirm-delete-action-button",
-  );
-  const cancelDeleteConfirmButton = document.getElementById(
-    "cancel-confirm-delete-button",
-  );
-  const toast = document.getElementById("user-management-status");
-  const searchInput = document.getElementById("user-search-input");
-  let searchQuery = "";
-  let studentsList = [];
-  let staffList = [];
-  let selectedUserId = null;
-  let selectedUserCollection = null;
-  let pendingEditPayload = null;
-  let pendingEditChanges = [];
-  let unsubscribeStudents;
-  let unsubscribeStaff;
+  const PAGE_SIZE = 10;
+  const ALLOWED_ROLES = ["Student", "Event Organizer", "Admin", "Teacher", "Super Admin"];
+  const MAIN = document.getElementById("main-content");
+  const BODY = document.getElementById("user-table-tbody");
+  const TOAST = document.getElementById("user-management-status");
+  const LOAD_ERROR = document.getElementById("user-load-error");
+  const LOAD_ERROR_MESSAGE = document.getElementById("user-load-error-message");
+  const RETRY_BUTTON = document.getElementById("retry-user-load");
+  const SEARCH_INPUT = document.getElementById("user-search-input");
+  const RESULT_COUNT = document.getElementById("user-result-count");
+  const PAGINATION_SUMMARY = document.getElementById("user-pagination-summary");
+  const PREVIOUS_BUTTON = document.getElementById("previous-user-page");
+  const NEXT_BUTTON = document.getElementById("next-user-page");
+  const CREATE_BUTTON = document.getElementById("create-user-button");
+  const DETAILS_DIALOG = document.getElementById("user-details-modal-backdrop");
+  const CREATE_DIALOG = document.getElementById("create-user-dialog");
+  const ACCOUNT_TYPE_DIALOG = document.getElementById("account-type-dialog");
+  const ROLE_CHANGE_DIALOG = document.getElementById("change-role-dialog");
+  const ACTION_CONFIRM_DIALOG = document.getElementById("action-confirm-dialog");
+  const CREATE_FORM = document.getElementById("create-user-form");
+  const ROLE_CHANGE_FORM = document.getElementById("change-role-form");
+  const CREATE_ROLE_INPUT = document.getElementById("new-user-role-value");
+  const CREATE_ROLE_SELECT = document.getElementById("new-user-role");
+  const CREATE_FIRST_NAME_INPUT = document.getElementById("new-user-first-name");
+  const CREATE_MIDDLE_NAME_INPUT = document.getElementById("new-user-middle-name");
+  const CREATE_LAST_NAME_INPUT = document.getElementById("new-user-last-name");
+  const CREATE_NO_MIDDLE_NAME_INPUT = document.getElementById("new-user-no-middle-name");
+  const CREATE_EMAIL_INPUT = document.getElementById("new-user-email");
+  const CREATE_ACCOUNT_INPUT = document.getElementById("new-user-account");
+  const CREATE_PASSWORD_INPUT = document.getElementById("new-user-password");
+  const CREATE_PASSWORD_CONFIRMATION_INPUT = document.getElementById("new-user-password-confirmation");
+  const CREATE_ORGANIZATION_INPUT = document.getElementById("new-user-organization");
+  const CREATE_SUFFIX_INPUT = document.getElementById("new-user-role-suffix");
+  const CREATE_AUTH_FIELDS = document.getElementById("staff-auth-fields");
+  const CREATE_ORGANIZATION_FIELD = document.getElementById("field-user-organization");
+  const CREATE_SUFFIX_FIELD = document.getElementById("field-user-suffix");
+  const CREATE_ACCOUNT_LABEL = document.getElementById("new-user-account-label");
+  const STATUS_ACTION_BUTTON = document.getElementById("toggle-user-status-button");
+  const ROLE_ACTION_BUTTON = document.getElementById("change-user-role-button");
+  const RESET_ACTION_BUTTON = document.getElementById("send-password-reset-button");
+  const AUDIT_LINK = document.getElementById("view-user-activity");
+  const ROLE_SELECT = document.getElementById("change-user-role-select");
+  const ROLE_HINT = document.getElementById("role-change-hint");
+  const CONFIRM_TITLE = document.getElementById("action-confirm-title");
+  const CONFIRM_MESSAGE = document.getElementById("action-confirm-message");
+  const CONFIRM_BUTTON = document.getElementById("confirm-action-button");
+  const CANCEL_CONFIRM_BUTTON = document.getElementById("cancel-action-confirm");
+  const DETAILS_CLOSE_BUTTON = DETAILS_DIALOG?.querySelector("[data-close-dialog]");
 
-  function resetPasswordHideTimer(toggle) {
-    if (toggle.timer) clearTimeout(toggle.timer);
-    toggle.timer = toggle.visible
-      ? setTimeout(() => setPasswordVisibility(toggle, false), 30000)
-      : null;
+  let users = [];
+  let adminUsers = [];
+  let sourceLoaded = { users: false, adminUser: false };
+  let sourceErrors = { users: "", adminUser: "" };
+  let unsubscribeUsers = null;
+  let unsubscribeAdminUsers = null;
+  let authUnsubscribe = null;
+  let currentAdmin = null;
+  let currentAdminName = "";
+  let selectedUserKey = "";
+  let roleFilter = "All";
+  let suspendedOnly = false;
+  let sortKey = "name";
+  let sortDirection = "asc";
+  let currentPage = 1;
+  let searchTimer = null;
+  let toastTimer = null;
+  let pageReadySignaled = false;
+  let accountNumberManuallyEdited = false;
+  let pendingAction = null;
+
+  function esc(value) {
+    return String(value ?? "")
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#39;");
   }
 
-  function setPasswordVisibility(toggle, visible, restoreFocus = false) {
-    const selectionStart =
-      toggle.selectionStart === null
-        ? toggle.input.selectionStart
-        : toggle.selectionStart;
-    const selectionEnd =
-      toggle.selectionEnd === null ? toggle.input.selectionEnd : toggle.selectionEnd;
-    const selectionDirection = toggle.selectionDirection;
-    toggle.visible = visible;
-    toggle.input.type = visible ? "text" : "password";
-    toggle.button.closest(".sa-password-toggle").classList.toggle("is-visible", visible);
-    toggle.button.setAttribute("aria-label", visible ? toggle.hideLabel : toggle.showLabel);
-    toggle.button.setAttribute("aria-pressed", String(visible));
-
-    if (restoreFocus) {
-      requestAnimationFrame(() => {
-        if (!createDialog.open) return;
-        toggle.input.focus({ preventScroll: true });
-        if (selectionStart !== null && selectionEnd !== null) {
-          toggle.input.setSelectionRange(selectionStart, selectionEnd, selectionDirection);
-          toggle.selectionStart = selectionStart;
-          toggle.selectionEnd = selectionEnd;
-        }
-      });
-    }
-
-    resetPasswordHideTimer(toggle);
+  function profileName(profile, user) {
+    return String(
+      [profile.firstName, profile.middleName, profile.lastName].filter(Boolean).join(" ")
+        || profile.fullName
+        || profile.name
+        || user.displayName
+        || user.email
+        || "Super Admin",
+    );
   }
 
-  function resetPasswordToggles() {
-    passwordToggles.forEach((toggle) => setPasswordVisibility(toggle, false));
+  function renderSidebarProfile(profile, user) {
+    const fullName = profileName(profile, user);
+    const sidebarName = document.getElementById("sidebar-user-name");
+    const sidebarRole = document.getElementById("sidebar-user-role");
+    const sidebarAvatar = document.getElementById("sidebar-user-avatar");
+    if (sidebarName) sidebarName.textContent = fullName;
+    if (sidebarRole) sidebarRole.textContent = "Super Admin account";
+    if (sidebarAvatar) sidebarAvatar.textContent = fullName.trim().charAt(0).toUpperCase() || "S";
   }
 
-  passwordToggles.forEach((toggle) => {
-    toggle.input.addEventListener("blur", () => {
-      toggle.selectionStart = toggle.input.selectionStart;
-      toggle.selectionEnd = toggle.input.selectionEnd;
-      toggle.selectionDirection = toggle.input.selectionDirection;
-    });
-    toggle.button.addEventListener("mousedown", (event) => {
-      toggle.selectionStart = toggle.input.selectionStart;
-      toggle.selectionEnd = toggle.input.selectionEnd;
-      toggle.selectionDirection = toggle.input.selectionDirection;
-      event.preventDefault();
-    });
-    toggle.button.addEventListener("click", () => {
-      setPasswordVisibility(toggle, !toggle.visible, true);
-    });
-    [toggle.input, toggle.button].forEach((element) => {
-      ["input", "keydown", "keyup", "pointerdown", "pointerup"].forEach((eventName) => {
-        element.addEventListener(eventName, () => {
-          toggle.selectionStart = toggle.input.selectionStart;
-          toggle.selectionEnd = toggle.input.selectionEnd;
-          toggle.selectionDirection = toggle.input.selectionDirection;
-        });
-      });
-    });
-  });
-
-  ["input", "keydown", "pointerdown"].forEach((eventName) => {
-    createForm.addEventListener(eventName, () => {
-      passwordToggles.forEach((toggle) => {
-        if (toggle.visible) resetPasswordHideTimer(toggle);
-      });
-    });
-  });
-
-  document.addEventListener("visibilitychange", () => {
-    if (document.hidden) resetPasswordToggles();
-  });
-
-  function showMessage(message, isError = false) {
-    if (!toast) return;
-    toast.textContent = message;
-    toast.dataset.state = isError ? "error" : "success";
-    toast.hidden = false;
+  function normalizedText(value) {
+    return String(value ?? "").trim().toLowerCase();
   }
 
-  function stringValue(value, fallback = "") {
-    return value == null ? fallback : String(value);
+  function normalizedRole(value) {
+    const role = normalizedText(value).replace(/[_-]+/g, " ").replace(/\s+/g, " ");
+    const roles = {
+      student: "Student",
+      "event organizer": "Event Organizer",
+      eventorganizer: "Event Organizer",
+      admin: "Admin",
+      teacher: "Teacher",
+      "super admin": "Super Admin",
+      superadmin: "Super Admin",
+    };
+    return roles[role] || "Unknown";
   }
 
-  function sanitizeOrgSuffix(val) {
-    if (!val) return "";
-    return String(val)
-      .trim()
-      .replace(/\s+/g, "-")
-      .replace(/[^A-Za-z0-9-]/g, "")
-      .toUpperCase();
+  function statusFor(data) {
+    const source = data.status ?? (data.isActive === false ? "Inactive" : "Active");
+    const status = String(source || "Active").trim();
+    const canonical = {
+      active: "Active",
+      suspended: "Suspended",
+      inactive: "Inactive",
+      disabled: "Disabled",
+    };
+    return canonical[normalizedText(status)] || status || "Active";
   }
 
-  function getNextAccountNumberForRole(role, orgValue = "") {
-    const allUsers = [...studentsList, ...staffList];
-    const roleLower = String(role || "").toLowerCase().trim();
-
-    if (roleLower === "teacher") {
-      let maxNum = 0;
-      allUsers.forEach((u) => {
-        const acc = String(
-          u.accountNumber || u.accountNo || u.studentNumber || u.studentNo || "",
-        ).trim();
-        const match = acc.match(/^teacher\s*[-_]?\s*(\d+)/i);
-        if (match) {
-          const num = parseInt(match[1], 10);
-          if (!isNaN(num) && num > maxNum) maxNum = num;
-        }
-      });
-      return `Teacher-${String(maxNum + 1).padStart(3, "0")}`;
-    }
-
-    if (roleLower === "super admin") {
-      let maxNum = 0;
-      allUsers.forEach((u) => {
-        const acc = String(
-          u.accountNumber || u.accountNo || u.studentNumber || u.studentNo || "",
-        ).trim();
-        const match = acc.match(/^sa\s*[-_]?\s*(\d+)/i);
-        if (match) {
-          const num = parseInt(match[1], 10);
-          if (!isNaN(num) && num > maxNum) maxNum = num;
-        }
-      });
-      const numStr = String(maxNum + 1).padStart(3, "0");
-      const suffix = sanitizeOrgSuffix(orgValue);
-      return suffix ? `SA-${numStr}-${suffix}` : `SA-${numStr}`;
-    }
-
-    if (roleLower === "event organizer") {
-      let maxNum = 0;
-      allUsers.forEach((u) => {
-        const acc = String(
-          u.accountNumber || u.accountNo || u.studentNumber || u.studentNo || "",
-        ).trim();
-        const match = acc.match(/^eo\s*[-_]?\s*(\d+)/i);
-        if (match) {
-          const num = parseInt(match[1], 10);
-          if (!isNaN(num) && num > maxNum) maxNum = num;
-        }
-      });
-      const numStr = String(maxNum + 1).padStart(3, "0");
-      const org = sanitizeOrgSuffix(orgValue);
-      return org ? `EO-${numStr}-${org}` : `EO-${numStr}`;
-    }
-
-    if (roleLower === "admin") {
-      let maxNum = 0;
-      allUsers.forEach((u) => {
-        const acc = String(
-          u.accountNumber || u.accountNo || u.studentNumber || u.studentNo || "",
-        ).trim();
-        const match = acc.match(/^admin\s*[-_]?\s*(\d+)/i);
-        if (match) {
-          const num = parseInt(match[1], 10);
-          if (!isNaN(num) && num > maxNum) maxNum = num;
-        }
-      });
-      const numStr = String(maxNum + 1).padStart(3, "0");
-      const org = sanitizeOrgSuffix(orgValue);
-      return org ? `Admin-${numStr}-${org}` : `Admin-${numStr}`;
-    }
-
-    return "";
-  }
-
-  function setAccountCredentialFields(role) {
-    const requiresAuth = Boolean(role);
-    staffAuthFields.hidden = !requiresAuth;
-    passwordInput.required = requiresAuth;
-    passwordConfirmationInput.required = requiresAuth;
-    if (!requiresAuth) {
-      passwordInput.value = "";
-      passwordConfirmationInput.value = "";
-    }
-
-    const orgField = document.getElementById("field-user-organization");
-    if (orgField) {
-      orgField.hidden = ["Teacher", "Super Admin"].includes(role);
-    }
-
-    const suffixField = document.getElementById("field-user-suffix");
-    if (suffixField) {
-      suffixField.hidden = !["Event Organizer", "Admin", "Super Admin"].includes(role);
-    }
-
-    const accountLabel = document.getElementById("new-user-account-label");
-    if (accountLabel) {
-      accountLabel.textContent = role === "Student" ? "Account / Student Number" : "Account Number";
-    }
-
-    const accountInput = document.getElementById("new-user-account");
-    if (accountInput) {
-      accountInput.readOnly = role !== "Student";
-    }
-
-    const contactInput = document.getElementById("new-user-contact");
-    if (contactInput && !contactInput.value) {
-      contactInput.value = "09";
-    }
-  }
-
-  function authErrorMessage(error) {
-    if (error?.code === "auth/email-already-in-use") {
-      return "An account already exists with this email address.";
-    }
-    if (error?.code === "auth/weak-password") {
-      return "Password must contain at least 6 characters.";
-    }
-    if (error?.code === "auth/invalid-email") {
-      return "Enter a valid email address.";
-    }
-    return error?.message || "Could not create the account.";
-  }
-
-  async function provisionUserAccount(email, password, targetCollection, profile) {
-    const appName = `recovibe-staff-provision-${Date.now()}-${Math.random()
-      .toString(36)
-      .slice(2)}`;
-    const provisioningApp = initializeApp(getApp().options, appName);
-    const provisioningAuth = getAuth(provisioningApp);
-    let userCredential;
-
-    try {
-      userCredential = await createUserWithEmailAndPassword(
-        provisioningAuth,
-        email,
-        password,
-      );
-      await setDoc(
-        doc(db, targetCollection, userCredential.user.uid),
-        { ...profile, uid: userCredential.user.uid },
-      );
-      return userCredential.user.uid;
-    } catch (error) {
-      if (userCredential?.user) {
-        try {
-          await deleteUser(userCredential.user);
-        } catch (cleanupError) {
-          console.error("[UserManagement] Auth rollback after profile write failure failed:", {
-            code: cleanupError?.code || "unknown",
-            message: cleanupError?.message || String(cleanupError),
-          });
-        }
-      }
-      throw error;
-    } finally {
-      try {
-        await signOut(provisioningAuth);
-      } catch (signOutError) {
-        console.warn("Unable to sign out provisioning Auth session:", signOutError);
-      }
-      try {
-        await deleteApp(provisioningApp);
-      } catch (cleanupError) {
-        console.warn("Unable to clean up provisioning Firebase app:", cleanupError);
-      }
-    }
-  }
-
-  function normalizeUser(userId, data, collectionName) {
-    const familyFirstName = [data.lastName, data.firstName]
-      .map((value) => stringValue(value).trim())
-      .filter(Boolean)
-      .join(" ");
-    const fullName =
-      data.fullName || familyFirstName || data.name || data.displayName || "Unnamed User";
-    const accountNumber =
-      data.accountNumber ||
-      data.studentNumber ||
-      data.accountNo ||
-      data.studentNo ||
-      "—";
-    const status = data.status || (data.isActive ? "Active" : "Inactive");
-
+  function normalizeUser(snapshot, collectionName) {
+    const data = snapshot.data() || {};
+    const firstLast = [data.firstName, data.lastName].filter(Boolean).join(" ").trim();
+    const fullName = String(data.fullName || firstLast || data.name || data.displayName || "Unnamed user").trim();
     return {
-      ...data,
-      id: userId,
+      id: snapshot.id,
+      uid: String(data.uid || snapshot.id),
       collectionName,
-      fullName: stringValue(fullName, "Unnamed User"),
-      accountNumber: stringValue(accountNumber, "—"),
-      email: stringValue(data.email, "—"),
-      role: stringValue(data.role || (collectionName === "users" ? "Student" : "Staff")),
-      status,
-      contactNumber: stringValue(data.contactNumber || data.phone),
-      department: stringValue(data.department || data.course || data.program),
-      yearSection: stringValue(data.yearSection || data.section),
-      organization: stringValue(data.organization || data.org),
+      data,
+      fullName,
+      email: String(data.email || ""),
+      accountNumber: String(data.accountNumber || data.studentNumber || data.accountNo || data.studentNo || ""),
+      role: normalizedRole(data.role || data.userRole || (collectionName === "users" ? "Student" : "")),
+      status: statusFor(data),
     };
   }
 
-  function createCell(label, value, emphasize = false) {
-    const cell = document.createElement("td");
-    cell.dataset.label = label;
-    if (emphasize) {
-      const strong = document.createElement("strong");
-      strong.textContent = value;
-      cell.append(strong);
-    } else {
-      cell.textContent = value;
-    }
-    return cell;
+  function userKey(user) {
+    return `${user.collectionName}:${user.id}`;
   }
 
-  function renderUsers() {
-    const allUsers = [...studentsList, ...staffList];
-    tableBody.replaceChildren();
-    if (!allUsers.length) {
-      const row = document.createElement("tr");
-      const cell = document.createElement("td");
-      cell.colSpan = 6;
-      cell.className = "user-table-empty";
-      cell.textContent = "No user accounts to display.";
-      row.append(cell);
-      tableBody.append(row);
-      return;
+  function getAllUsers() {
+    return users.concat(adminUsers);
+  }
+
+  function getCurrentUser(key) {
+    return getAllUsers().find((user) => userKey(user) === key) || null;
+  }
+
+  function isSuspended(user) {
+    return normalizedText(user.status) === "suspended";
+  }
+
+  function isActive(user) {
+    return normalizedText(user.status) === "active";
+  }
+
+  function isOwnAccount(user) {
+    return Boolean(currentAdmin && (user.uid === currentAdmin.uid || user.id === currentAdmin.uid));
+  }
+
+  function activeSuperAdminCount() {
+    return adminUsers.filter((user) => user.role === "Super Admin" && isActive(user)).length;
+  }
+
+  function isLastActiveSuperAdmin(user) {
+    return user.role === "Super Admin" && isActive(user) && activeSuperAdminCount() <= 1;
+  }
+
+  function canChangeToRole(user, role) {
+    if (!ALLOWED_ROLES.includes(role)) return false;
+    if (user.collectionName === "users") return role === "Student";
+    return role !== "Student";
+  }
+
+  function showToast(message, type) {
+    if (!TOAST) return;
+    TOAST.textContent = String(message);
+    TOAST.dataset.state = type || "success";
+    TOAST.hidden = false;
+    window.clearTimeout(toastTimer);
+    toastTimer = window.setTimeout(() => {
+      TOAST.hidden = true;
+    }, 6500);
+  }
+
+  function signalPageReady() {
+    if (pageReadySignaled) return;
+    pageReadySignaled = true;
+    window.dispatchEvent(new Event("page-data-ready"));
+  }
+
+  function setLoadError(message, retryPage) {
+    if (LOAD_ERROR_MESSAGE) LOAD_ERROR_MESSAGE.textContent = message;
+    if (LOAD_ERROR) LOAD_ERROR.hidden = false;
+    if (RETRY_BUTTON) {
+      RETRY_BUTTON.onclick = retryPage ? () => window.location.reload() : () => subscribeUserCollections();
     }
+    signalPageReady();
+  }
 
-    const q = searchQuery.trim().toLowerCase();
-    const filteredUsers = q
-      ? allUsers.filter((user) => {
-          return (
-            String(user.fullName || "").toLowerCase().includes(q) ||
-            String(user.accountNumber || "").toLowerCase().includes(q) ||
-            String(user.email || "").toLowerCase().includes(q) ||
-            String(user.role || "").toLowerCase().includes(q) ||
-            String(user.status || "").toLowerCase().includes(q) ||
-            String(user.department || "").toLowerCase().includes(q) ||
-            String(user.organization || "").toLowerCase().includes(q)
-          );
-        })
-      : allUsers;
+  function clearLoadError() {
+    if (LOAD_ERROR) LOAD_ERROR.hidden = true;
+    if (LOAD_ERROR_MESSAGE) LOAD_ERROR_MESSAGE.textContent = "";
+  }
 
-    if (!filteredUsers.length) {
-      const row = document.createElement("tr");
-      const cell = document.createElement("td");
-      cell.colSpan = 6;
-      cell.className = "user-table-empty";
-      cell.textContent = `No users found matching "${searchQuery.trim()}".`;
-      row.append(cell);
-      tableBody.append(row);
-      return;
-    }
+  function getRoleClass(role) {
+    return normalizedText(role).replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "unknown";
+  }
 
-    filteredUsers.forEach((user) => {
-      const row = document.createElement("tr");
-      row.id = `user-row-${user.collectionName}-${user.id.replace(/[^a-zA-Z0-9_-]/g, "-")}`;
-      row.dataset.id = user.id;
-      row.dataset.collection = user.collectionName;
-      row.append(
-        createCell("User", user.fullName, true),
-        createCell("Account No.", user.accountNumber, true),
-        createCell("Email", user.email),
-        createCell("Role", user.role === "student" ? "Student" : user.role),
-      );
-      const statusCell = document.createElement("td");
-      statusCell.dataset.label = "Status";
-      const statusPill = document.createElement("span");
-      const statusClass = user.status.toLowerCase().replace(/[^a-z0-9]+/g, "-");
-      statusPill.className = `user-status-pill status-${statusClass}`;
-      statusPill.textContent = user.status;
-      statusCell.append(statusPill);
-      row.append(statusCell);
-
-      const actionCell = document.createElement("td");
-      actionCell.dataset.label = "Action";
-      const viewButton = document.createElement("button");
-      viewButton.className = "user-view-button";
-      viewButton.type = "button";
-      viewButton.dataset.id = user.id;
-      viewButton.dataset.collection = user.collectionName;
-      viewButton.textContent = "View";
-      viewButton.setAttribute("aria-label", `View ${user.fullName}`);
-      actionCell.append(viewButton);
-      row.append(actionCell);
-      tableBody.append(row);
+  function renderSummary(allUsers) {
+    const count = (role) => allUsers.filter((user) => user.role === role).length;
+    const summary = {
+      "summary-total": allUsers.length,
+      "summary-students": count("Student"),
+      "summary-organizers": count("Event Organizer"),
+      "summary-staff": allUsers.filter((user) => ["Admin", "Teacher", "Super Admin"].includes(user.role)).length,
+      "summary-suspended": allUsers.filter(isSuspended).length,
+    };
+    Object.entries(summary).forEach(([id, value]) => {
+      const element = document.getElementById(id);
+      if (element) element.textContent = String(value);
     });
   }
 
-  function handleUsersSnapshot(collectionName, snapshot) {
-    const mappedUsers = snapshot.docs
-      .filter(
-        (userDocument) =>
-          collectionName !== "users" ||
-          String(userDocument.data().role || userDocument.data().userRole || "")
-            .trim()
-            .toLowerCase() === "student",
-      )
-      .map((userDocument) =>
-        normalizeUser(userDocument.id, userDocument.data(), collectionName),
-      );
-    if (collectionName === "users") {
-      studentsList = mappedUsers;
+  function matchesFilters(user) {
+    const searchTerm = normalizedText(SEARCH_INPUT?.value);
+    const matchesSearch = !searchTerm || [user.fullName, user.email, user.accountNumber]
+      .some((value) => normalizedText(value).includes(searchTerm));
+    const matchesRole = roleFilter === "All" || user.role === roleFilter;
+    const matchesStatus = !suspendedOnly || isSuspended(user);
+    return matchesSearch && matchesRole && matchesStatus;
+  }
+
+  function filteredUsers() {
+    const collator = new Intl.Collator(undefined, { sensitivity: "base", numeric: true });
+    return getAllUsers()
+      .filter(matchesFilters)
+      .sort((a, b) => {
+        let comparison = 0;
+        if (sortKey === "role") comparison = collator.compare(a.role, b.role);
+        else if (sortKey === "status") comparison = collator.compare(a.status, b.status);
+        else comparison = collator.compare(a.fullName, b.fullName);
+        return sortDirection === "asc" ? comparison : -comparison;
+      });
+  }
+
+  function renderSkeletonRows() {
+    if (!BODY) return;
+    BODY.innerHTML = "";
+    for (let index = 0; index < 5; index += 1) {
+      const row = document.createElement("tr");
+      row.className = "user-skeleton-row";
+      for (let column = 0; column < 5; column += 1) {
+        const cell = document.createElement("td");
+        const skeleton = document.createElement("span");
+        skeleton.className = "user-skeleton";
+        skeleton.setAttribute("aria-hidden", "true");
+        cell.appendChild(skeleton);
+        row.appendChild(cell);
+      }
+      BODY.appendChild(row);
+    }
+  }
+
+  function renderEmptyState() {
+    if (!BODY) return;
+    const row = document.createElement("tr");
+    const cell = document.createElement("td");
+    cell.colSpan = 5;
+    cell.className = "user-empty-cell";
+    cell.innerHTML = `<div class="user-empty-state"><span class="user-empty-icon" aria-hidden="true">⌕</span><p>${esc("No users match your filters")}</p><button class="user-clear-filters" type="button">Clear filters</button></div>`;
+    cell.querySelector(".user-clear-filters")?.addEventListener("click", clearFilters);
+    row.appendChild(cell);
+    BODY.appendChild(row);
+  }
+
+  function renderLoadFailureRow() {
+    if (!BODY) return;
+    const row = document.createElement("tr");
+    const cell = document.createElement("td");
+    cell.colSpan = 5;
+    cell.className = "user-empty-cell";
+    cell.textContent = "User data could not be loaded. Retry to try again.";
+    row.appendChild(cell);
+    BODY.appendChild(row);
+  }
+
+  function renderUserRow(user) {
+    const row = document.createElement("tr");
+    row.dataset.userKey = userKey(user);
+    if (userKey(user) === selectedUserKey) row.classList.add("is-selected");
+
+    const userCell = document.createElement("td");
+    userCell.className = "user-identity-cell";
+    const avatar = document.createElement("span");
+    avatar.className = "user-avatar";
+    avatar.setAttribute("aria-hidden", "true");
+    avatar.textContent = user.fullName.split(/\s+/).filter(Boolean).slice(0, 2).map((part) => part[0]).join("").toUpperCase() || "?";
+    const identity = document.createElement("span");
+    identity.className = "user-identity-copy";
+    const name = document.createElement("strong");
+    name.textContent = user.fullName;
+    const email = document.createElement("span");
+    email.className = "user-row-email";
+    email.textContent = user.email || "No email on file";
+    identity.append(name, email);
+    userCell.append(avatar, identity);
+
+    const accountCell = document.createElement("td");
+    accountCell.className = "user-account-cell";
+    const account = document.createElement("span");
+    account.textContent = user.accountNumber || "—";
+    accountCell.appendChild(account);
+
+    const roleCell = document.createElement("td");
+    const rolePill = document.createElement("span");
+    rolePill.className = `user-role-pill role--${getRoleClass(user.role)}`;
+    rolePill.textContent = user.role;
+    roleCell.appendChild(rolePill);
+
+    const statusCell = document.createElement("td");
+    const statusPill = document.createElement("span");
+    statusPill.className = `user-status-pill ${isSuspended(user) ? "status--suspended" : isActive(user) ? "status--active" : "status--inactive"}`;
+    statusPill.textContent = user.status;
+    statusCell.appendChild(statusPill);
+
+    const actionCell = document.createElement("td");
+    const viewButton = document.createElement("button");
+    viewButton.className = "user-view-button";
+    viewButton.type = "button";
+    viewButton.textContent = "View";
+    viewButton.setAttribute("aria-label", `View details for ${user.fullName}`);
+    viewButton.addEventListener("click", () => openUserDetails(userKey(user)));
+    actionCell.appendChild(viewButton);
+
+    row.append(userCell, accountCell, roleCell, statusCell, actionCell);
+    return row;
+  }
+
+  function renderPagination(total) {
+    const pages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+    currentPage = Math.min(Math.max(currentPage, 1), pages);
+    const first = total ? (currentPage - 1) * PAGE_SIZE + 1 : 0;
+    const last = Math.min(currentPage * PAGE_SIZE, total);
+    if (PAGINATION_SUMMARY) PAGINATION_SUMMARY.textContent = `Showing ${first} to ${last} of ${total}`;
+    if (PREVIOUS_BUTTON) PREVIOUS_BUTTON.disabled = currentPage <= 1 || !sourceLoaded.users || !sourceLoaded.adminUser;
+    if (NEXT_BUTTON) NEXT_BUTTON.disabled = currentPage >= pages || !sourceLoaded.users || !sourceLoaded.adminUser;
+  }
+
+  function renderSortState() {
+    document.querySelectorAll(".user-sort-button").forEach((button) => {
+      const header = button.closest("th");
+      const marker = button.querySelector("span");
+      const active = button.dataset.sort === sortKey;
+      if (header) header.setAttribute("aria-sort", active ? (sortDirection === "asc" ? "ascending" : "descending") : "none");
+      if (marker) marker.textContent = active ? (sortDirection === "asc" ? "↑" : "↓") : "↕";
+    });
+  }
+
+  function renderUsers() {
+    if (!BODY) return;
+    const allUsers = getAllUsers();
+    const ready = sourceLoaded.users && sourceLoaded.adminUser;
+    const errors = Object.values(sourceErrors).filter(Boolean);
+    const results = filteredUsers();
+    renderSummary(allUsers);
+    renderSortState();
+
+    if (RESULT_COUNT) {
+      RESULT_COUNT.textContent = ready
+        ? `${results.length} ${results.length === 1 ? "user" : "users"}${roleFilter !== "All" || suspendedOnly || normalizedText(SEARCH_INPUT?.value) ? " matching filters" : ""}`
+        : "Loading users…";
+    }
+    if (MAIN) MAIN.setAttribute("aria-busy", String(!ready));
+    if (CREATE_BUTTON) CREATE_BUTTON.disabled = !ready || errors.length > 0;
+    if (errors.length) {
+      setLoadError(errors.join(" "), false);
     } else {
-      staffList = mappedUsers;
+      clearLoadError();
+    }
+
+    BODY.replaceChildren();
+    if (!ready) {
+      renderSkeletonRows();
+      renderPagination(0);
+      return;
+    }
+    if (results.length === 0) {
+      if (errors.length && allUsers.length === 0) renderLoadFailureRow();
+      else renderEmptyState();
+      renderPagination(0);
+      return;
+    }
+
+    const start = (currentPage - 1) * PAGE_SIZE;
+    results.slice(start, start + PAGE_SIZE).forEach((user) => BODY.appendChild(renderUserRow(user)));
+    renderPagination(results.length);
+    if (DETAILS_DIALOG?.open && selectedUserKey && !results.some((user) => userKey(user) === selectedUserKey)) {
+      closeDetails();
+    } else if (DETAILS_DIALOG?.open && selectedUserKey) {
+      updateDetailsPanel();
+    }
+  }
+
+  function clearFilters() {
+    if (SEARCH_INPUT) SEARCH_INPUT.value = "";
+    roleFilter = "All";
+    suspendedOnly = false;
+    currentPage = 1;
+    document.querySelectorAll("[data-role-filter]").forEach((button) => {
+      const active = button.dataset.roleFilter === "All";
+      button.classList.toggle("is-active", active);
+      button.setAttribute("aria-pressed", String(active));
+    });
+    const suspendedButton = document.getElementById("suspended-only-filter");
+    if (suspendedButton) {
+      suspendedButton.classList.remove("is-active");
+      suspendedButton.setAttribute("aria-pressed", "false");
     }
     renderUsers();
-
-    const selectedUser = [...studentsList, ...staffList].find(
-      (user) =>
-        user.id === selectedUserId &&
-        user.collectionName === selectedUserCollection,
-    );
-    if (selectedUser && detailsDialog.open) populateDetails(selectedUser);
   }
 
-  function displayValue(value) {
-    return value?.trim() || "Not provided";
+  function roleBadgeClass(element, role) {
+    element.className = `user-role-pill role--${getRoleClass(role)}`;
   }
 
-  function populateDetails(user) {
-    document.getElementById("user-details-name").textContent = user.fullName;
-    document.getElementById("user-details-role").textContent = user.role;
-    document.getElementById("user-details-status").textContent = user.status;
-    document.getElementById("user-detail-full-name").textContent = user.fullName;
-    document.getElementById("user-detail-account-number").textContent = user.accountNumber;
-    document.getElementById("user-detail-email").textContent = user.email;
-    document.getElementById("user-detail-contact").textContent = displayValue(
-      user.contactNumber,
-    );
-    document.getElementById("user-detail-department").textContent = displayValue(
-      user.department,
-    );
-    document.getElementById("user-detail-year-section").textContent = displayValue(
-      user.yearSection,
-    );
-    document.getElementById("user-detail-organization").textContent = displayValue(
-      user.organization,
-    );
-    document.getElementById("user-detail-role").textContent = user.role;
-    statusButton.textContent =
-      user.status === "Active" ? "Suspend Account" : "Activate Account";
-    document.getElementById("view-user-activity").href =
-      `SuperAdminAuditLogs.html?user=${encodeURIComponent(user.id)}`;
+  function setRoleChoices(user) {
+    if (!ROLE_SELECT) return;
+    const lastSuperAdmin = isLastActiveSuperAdmin(user);
+    Array.from(ROLE_SELECT.options).forEach((option) => {
+      const sameCollection = canChangeToRole(user, option.value);
+      const wouldDemoteLastSuperAdmin = lastSuperAdmin && option.value !== "Super Admin";
+      option.disabled = !sameCollection || wouldDemoteLastSuperAdmin;
+      option.title = !sameCollection
+        ? "Changing to this role requires moving the profile to another collection, which is not supported."
+        : wouldDemoteLastSuperAdmin
+          ? "The last active superadmin cannot be demoted."
+          : "";
+    });
+    ROLE_SELECT.value = user.role;
+    if (ROLE_HINT) {
+      ROLE_HINT.textContent = user.collectionName === "users"
+        ? "This profile is stored in users. Only Student is safe to assign without moving profile data."
+        : "This profile is stored in adminUser. Student requires a different collection and is disabled.";
+      if (lastSuperAdmin) ROLE_HINT.textContent += " The last active superadmin cannot be demoted.";
+    }
+    const submit = ROLE_CHANGE_FORM?.querySelector('button[type="submit"]');
+    if (submit) submit.disabled = true;
   }
 
-  async function openDetails(userId, collectionName) {
+  function updateRoleSubmitState() {
+    const user = selectedUserKey ? getCurrentUser(selectedUserKey) : null;
+    const submit = ROLE_CHANGE_FORM?.querySelector('button[type="submit"]');
+    if (!user || !submit || !ROLE_SELECT) return;
+    submit.disabled = ROLE_SELECT.value === user.role || !canChangeToRole(user, ROLE_SELECT.value)
+      || (isLastActiveSuperAdmin(user) && ROLE_SELECT.value !== "Super Admin");
+  }
+
+  function updateDetailsPanel() {
+    const user = getCurrentUser(selectedUserKey);
+    if (!user || !DETAILS_DIALOG) return;
+    const name = document.getElementById("user-details-name");
+    const avatar = document.getElementById("user-details-avatar");
+    const role = document.getElementById("user-details-role");
+    const status = document.getElementById("user-details-status");
+    const email = document.getElementById("user-detail-email");
+    const account = document.getElementById("user-detail-account-number");
+    const roleValue = document.getElementById("user-detail-role");
+    const statusValue = document.getElementById("user-detail-status-value");
+    if (name) name.textContent = user.fullName;
+    if (avatar) avatar.textContent = user.fullName.split(/\s+/).filter(Boolean).slice(0, 2).map((part) => part[0]).join("").toUpperCase() || "?";
+    if (role) {
+      role.textContent = user.role;
+      roleBadgeClass(role, user.role);
+    }
+    if (status) {
+      status.textContent = user.status;
+      status.className = `user-status-pill ${isSuspended(user) ? "status--suspended" : isActive(user) ? "status--active" : "status--inactive"}`;
+    }
+    if (email) email.textContent = user.email || "No email on file";
+    if (account) account.textContent = user.accountNumber || "—";
+    if (roleValue) roleValue.textContent = user.role;
+    if (statusValue) statusValue.textContent = user.status;
+
+    const ownAccount = isOwnAccount(user);
+    const lastSuperAdmin = isLastActiveSuperAdmin(user);
+    const canToggleStatus = !ownAccount && !(lastSuperAdmin && isActive(user));
+    if (STATUS_ACTION_BUTTON) {
+      STATUS_ACTION_BUTTON.textContent = isActive(user) ? "Suspend account" : "Reactivate account";
+      STATUS_ACTION_BUTTON.classList.toggle("danger", isActive(user));
+      STATUS_ACTION_BUTTON.classList.toggle("primary", !isActive(user));
+      STATUS_ACTION_BUTTON.disabled = !canToggleStatus;
+      STATUS_ACTION_BUTTON.title = ownAccount
+        ? "You cannot suspend or reactivate your own account."
+        : lastSuperAdmin && isActive(user)
+          ? "The last active superadmin cannot be suspended."
+          : "";
+    }
+    const hasSafeRole = ALLOWED_ROLES.some((candidate) => candidate !== user.role
+      && canChangeToRole(user, candidate)
+      && !(lastSuperAdmin && candidate !== "Super Admin"));
+    if (ROLE_ACTION_BUTTON) {
+      ROLE_ACTION_BUTTON.disabled = ownAccount || !hasSafeRole;
+      ROLE_ACTION_BUTTON.title = ownAccount
+        ? "You cannot change your own role."
+        : hasSafeRole
+          ? ""
+          : lastSuperAdmin
+            ? "The last active superadmin cannot be demoted."
+            : "Changing this role requires moving the profile to another collection.";
+    }
+    if (RESET_ACTION_BUTTON) {
+      RESET_ACTION_BUTTON.disabled = !user.email;
+      RESET_ACTION_BUTTON.title = user.email ? "" : "No email address is on file.";
+    }
+    const safetyNote = document.getElementById("user-safety-note");
+    if (safetyNote) {
+      safetyNote.textContent = ownAccount
+        ? "Your own account cannot be suspended, deactivated, or demoted here."
+        : lastSuperAdmin && isActive(user)
+          ? "This is the last active superadmin and cannot be suspended or demoted."
+          : "";
+    }
+    if (AUDIT_LINK) {
+      const params = new URLSearchParams();
+      params.set("user", user.fullName);
+      params.set("uid", user.uid || user.id);
+      AUDIT_LINK.href = `SuperAdminAuditLogs.html?${params.toString()}`;
+    }
+  }
+
+  function openUserDetails(key) {
+    selectedUserKey = key;
+    renderUsers();
+    updateDetailsPanel();
+    if (!DETAILS_DIALOG?.open) DETAILS_DIALOG?.showModal();
+    DETAILS_CLOSE_BUTTON?.focus();
+  }
+
+  function closeDetails() {
+    if (DETAILS_DIALOG?.open) DETAILS_DIALOG.close();
+    selectedUserKey = "";
+    renderUsers();
+  }
+
+  function showConfirm(action, title, message, confirmText) {
+    pendingAction = action;
+    if (CONFIRM_TITLE) CONFIRM_TITLE.textContent = title;
+    if (CONFIRM_MESSAGE) CONFIRM_MESSAGE.textContent = message;
+    if (CONFIRM_BUTTON) CONFIRM_BUTTON.textContent = confirmText || "Confirm";
+    if (!ACTION_CONFIRM_DIALOG?.open) ACTION_CONFIRM_DIALOG?.showModal();
+  }
+
+  function currentUserForAction(action) {
+    return getCurrentUser(action.userKey);
+  }
+
+  function userActionError(error, operation) {
+    const code = String(error?.code || "");
+    if (code.includes("permission-denied")) return `Permission denied while ${operation}. Check the Firestore rules for this collection.`;
+    if (code.includes("auth/email-already-in-use")) return "That email address is already associated with an Auth account.";
+    if (code.includes("auth/weak-password")) return "The temporary password must be at least 8 characters.";
+    if (code.includes("auth/invalid-email")) return "Enter a valid email address.";
+    if (code.includes("auth/user-not-found")) return "No Auth account was found for this email address.";
+    return `${operation} failed${error?.message ? `: ${error.message}` : "."}`;
+  }
+
+  async function writeAuditEntry({ action, target, summary, changes }) {
     try {
-      const snapshot = await getDoc(doc(db, collectionName, userId));
-      if (!snapshot.exists()) {
-        showMessage("This user record no longer exists.", true);
-        return;
-      }
-      const user = normalizeUser(snapshot.id, snapshot.data(), collectionName);
-      selectedUserId = snapshot.id;
-      selectedUserCollection = collectionName;
-      populateDetails(user);
-      detailsDialog.showModal();
+      await addDoc(collection(db, "audit_logs"), {
+        timestamp: serverTimestamp(),
+        user: currentAdminName || currentAdmin?.email || currentAdmin?.uid || "Super Admin",
+        action,
+        category: "User Management",
+        targetUid: target.uid || target.id,
+        targetName: target.fullName,
+        summary,
+        changes,
+      });
     } catch (error) {
-      console.error("Unable to fetch user document:", error);
-      showMessage("Could not load user details. Please try again.", true);
+      console.warn("User Management audit entry could not be written.", error);
     }
   }
 
-  async function createUser(event) {
-    event.preventDefault();
-    const values = new FormData(createForm);
-    const role = stringValue(values.get("role")).trim();
-    const isAuthAccount = Boolean(role);
-    setAccountCredentialFields(role);
-    passwordConfirmationInput.setCustomValidity(
-      isAuthAccount &&
-        passwordConfirmationInput.value !== passwordInput.value
-        ? "Passwords do not match."
-        : "",
-    );
-    if (!createForm.reportValidity()) return;
-
-    const firstName = stringValue(values.get("firstName")).trim();
-    const lastName = stringValue(values.get("lastName")).trim();
-    const noMiddleCheckbox = document.getElementById("new-user-no-middle-name");
-    const noMiddle = Boolean(noMiddleCheckbox?.checked || values.get("noMiddleName"));
-    const middleName = noMiddle ? "" : stringValue(values.get("middleName")).trim();
-    const fullName = [firstName, middleName, lastName].filter(Boolean).join(" ");
-
-    const roleSuffix = stringValue(values.get("roleSuffix")).trim().toUpperCase();
-    const organization = stringValue(values.get("organizationDepartment")).trim();
-    let accountNo = stringValue(values.get("accountNumber")).trim();
-    if (!accountNo && role !== "Student") {
-      accountNo = getNextAccountNumberForRole(role, roleSuffix || organization);
+  async function confirmStatusChange(action) {
+    const user = currentUserForAction(action);
+    if (!user) throw new Error("The selected user is no longer available. Refresh the list and try again.");
+    if (isOwnAccount(user)) throw new Error("You cannot suspend or reactivate your own account.");
+    if (action.status === "Suspended" && isLastActiveSuperAdmin(user)) {
+      throw new Error("The last active superadmin cannot be suspended.");
     }
+    await updateDoc(doc(db, user.collectionName, user.id), {
+      status: action.status,
+      isActive: action.status === "Active",
+      updatedAt: serverTimestamp(),
+      updatedBy: currentAdmin.uid,
+    });
+    await writeAuditEntry({
+      action: action.status === "Suspended" ? "suspend" : "reactivate",
+      target: user,
+      summary: `${user.fullName} was ${action.status === "Suspended" ? "suspended" : "reactivated"}.`,
+      changes: [
+        { field: "status", from: user.status, to: action.status },
+        { field: "isActive", from: Boolean(user.data.isActive), to: action.status === "Active" },
+      ],
+    });
+    showToast(`${user.fullName} was ${action.status === "Suspended" ? "suspended" : "reactivated"}.`);
+  }
 
-    const email = stringValue(values.get("email")).trim().toLowerCase();
-    const contactNumber = stringValue(values.get("contactNumber")).trim();
-    const password = passwordInput.value;
-    const targetCollection = role === "Student" ? "users" : "adminUser";
+  async function confirmRoleChange(action) {
+    const user = currentUserForAction(action);
+    if (!user) throw new Error("The selected user is no longer available. Refresh the list and try again.");
+    if (isOwnAccount(user)) throw new Error("You cannot change your own role.");
+    if (!canChangeToRole(user, action.role)) {
+      throw new Error("This role change would require moving the profile to a different collection. No data was changed.");
+    }
+    if (isLastActiveSuperAdmin(user) && action.role !== "Super Admin") {
+      throw new Error("The last active superadmin cannot be demoted.");
+    }
+    await updateDoc(doc(db, user.collectionName, user.id), {
+      role: action.role,
+      updatedAt: serverTimestamp(),
+      updatedBy: currentAdmin.uid,
+    });
+    await writeAuditEntry({
+      action: "role_change",
+      target: user,
+      summary: `${user.fullName}'s role changed from ${user.role} to ${action.role}.`,
+      changes: [{ field: "role", from: user.role, to: action.role }],
+    });
+    showToast(`${user.fullName}'s role was changed to ${action.role}.`);
+  }
 
-    const user = {
+  function duplicateProfileEmail(email) {
+    const normalizedEmail = normalizedText(email);
+    return getAllUsers().some((user) => normalizedText(user.email) === normalizedEmail);
+  }
+
+  function duplicateAccountNumber(accountNumber) {
+    const normalizedAccount = normalizedText(accountNumber);
+    return normalizedAccount && getAllUsers().some((user) => normalizedText(user.accountNumber) === normalizedAccount);
+  }
+
+  function validateCreateUser() {
+    if (!CREATE_FORM?.reportValidity()) return false;
+    const role = CREATE_ROLE_INPUT?.value;
+    const email = CREATE_EMAIL_INPUT?.value.trim();
+    const accountNumber = CREATE_ACCOUNT_INPUT?.value.trim();
+    const password = CREATE_PASSWORD_INPUT?.value || "";
+    if (!ALLOWED_ROLES.includes(role)) {
+      showToast("Choose a valid account role.", "error");
+      return false;
+    }
+    if (password.length < 8) {
+      CREATE_PASSWORD_INPUT?.setCustomValidity("Use at least 8 characters.");
+      CREATE_PASSWORD_INPUT?.reportValidity();
+      return false;
+    }
+    CREATE_PASSWORD_INPUT?.setCustomValidity("");
+    if (password !== CREATE_PASSWORD_CONFIRMATION_INPUT?.value) {
+      CREATE_PASSWORD_CONFIRMATION_INPUT?.setCustomValidity("Passwords do not match.");
+      CREATE_PASSWORD_CONFIRMATION_INPUT?.reportValidity();
+      return false;
+    }
+    CREATE_PASSWORD_CONFIRMATION_INPUT?.setCustomValidity("");
+    if (duplicateProfileEmail(email)) {
+      CREATE_EMAIL_INPUT?.setCustomValidity("An account with this email is already in the loaded profiles.");
+      CREATE_EMAIL_INPUT?.reportValidity();
+      return false;
+    }
+    CREATE_EMAIL_INPUT?.setCustomValidity("");
+    if (duplicateAccountNumber(accountNumber)) {
+      CREATE_ACCOUNT_INPUT?.setCustomValidity("This account number is already in use.");
+      CREATE_ACCOUNT_INPUT?.reportValidity();
+      return false;
+    }
+    CREATE_ACCOUNT_INPUT?.setCustomValidity("");
+    return true;
+  }
+
+  function profileDataForCreate({
+    role,
+    fullName,
+    firstName,
+    middleName,
+    lastName,
+    email,
+    accountNumber,
+    contactNumber,
+    organization,
+    roleSuffix,
+  }) {
+    const profile = {
       fullName,
-      name: fullName,
       firstName,
       lastName,
-      middleName,
       email,
-      contactNumber,
-      organization: ["Teacher", "Super Admin"].includes(role) ? "" : organization,
-      department: ["Teacher", "Super Admin"].includes(role) ? "" : organization,
-      roleSuffix: ["Event Organizer", "Admin", "Super Admin"].includes(role) ? roleSuffix : "",
-      role: role === "Student" ? "student" : role,
-      uid: "",
-      accountNo,
-      accountNumber: accountNo,
-      studentNumber: accountNo,
+      accountNumber,
+      role,
       status: "Active",
       isActive: true,
       createdAt: serverTimestamp(),
     };
+    if (middleName) profile.middleName = middleName;
+    if (roleSuffix) profile.roleSuffix = roleSuffix;
+    if (contactNumber) profile.contactNumber = contactNumber;
+    if (organization) {
+      profile.organization = organization;
+      profile.department = organization;
+      profile.organizationDepartment = organization;
+    }
+    if (role === "Student") {
+      profile.studentNumber = accountNumber;
+      if (organization) profile.program = organization;
+    }
+    return profile;
+  }
 
-    const submitButton = createForm.querySelector('[type="submit"]');
-    submitButton.disabled = true;
+  async function createAuthAndProfile(data) {
+    let secondaryApp = null;
+    let secondaryAuth = null;
     try {
-      const createdUserId = await provisionUserAccount(
-        email,
-        password,
-        targetCollection,
-        user,
-      );
-      createForm.reset();
-      createDialog.close();
-      if (role !== "Student") {
+      secondaryApp = initializeApp(getApp().options, `user-management-create-${Date.now()}`);
+      secondaryAuth = getAuth(secondaryApp);
+      const credential = await createUserWithEmailAndPassword(secondaryAuth, data.email, data.password);
+      const uid = credential.user.uid;
+      const collectionName = data.role === "Student" ? "users" : "adminUser";
+      const profile = profileDataForCreate(data);
+      try {
+        await setDoc(doc(db, collectionName, uid), { ...profile, uid });
+      } catch (profileError) {
+        const wrappedError = new Error(`The Auth account was created, but the ${collectionName} profile could not be written.`);
+        wrappedError.code = profileError?.code || "profile-write-failed";
+        wrappedError.createdUid = uid;
+        wrappedError.cause = profileError;
+        throw wrappedError;
+      }
+      return { uid, collectionName, profile };
+    } finally {
+      if (secondaryAuth) {
         try {
-          await appendUserAudit(
-            `Created new ${role} account for ${fullName}`,
-            createdUserId,
-            targetCollection,
-          );
-          showMessage(`${role} account created.`);
-        } catch (auditError) {
-          console.error("Staff account created, but its audit log could not be saved:", auditError);
-          showMessage("Account created, but its audit record could not be saved.", true);
+          await signOut(secondaryAuth);
+        } catch (error) {
+          console.warn("The temporary account-creation Auth session could not be signed out.", error);
         }
-      } else {
-        showMessage("Student account created.");
       }
-    } catch (error) {
-      console.error("[UserManagement] User account/profile creation failed:", {
-        code: error?.code || "unknown",
-        message: error?.message || String(error),
-      });
-      showMessage(
-        isAuthAccount
-          ? authErrorMessage(error)
-          : "Could not create the user. Please try again.",
-        true,
-      );
-    } finally {
-      submitButton.disabled = false;
-    }
-  }
-
-  function superAdminIdentifier() {
-    const tag =
-      document.querySelector(".account-badge")?.textContent.trim() || "SA1";
-    const name =
-      document.getElementById("superadmin-name")?.textContent.trim() ||
-      "Super Admin";
-    return `${tag} – ${name}`;
-  }
-
-  function escapeHTML(value) {
-    return String(value ?? "").replace(
-      /[&<>"']/g,
-      (char) =>
-        ({
-          "&": "&amp;",
-          "<": "&lt;",
-          ">": "&gt;",
-          '"': "&quot;",
-          "'": "&#39;",
-        })[char],
-    );
-  }
-
-  async function appendUserAudit(
-    action,
-    targetUserId,
-    targetCollection,
-    details = null,
-  ) {
-    await addDoc(collection(db, "audit_logs"), {
-      timestamp: serverTimestamp(),
-      user: superAdminIdentifier(),
-      action,
-      category: "User Management",
-      targetUserId,
-      ...(targetCollection ? { targetCollection } : {}),
-      ...(details ? { details } : {}),
-    });
-  }
-
-  function openEditUser() {
-    const user = [...studentsList, ...staffList].find(
-      (item) =>
-        item.id === selectedUserId &&
-        item.collectionName === selectedUserCollection,
-    );
-    if (!user) return;
-
-    document.getElementById("edit-user-fullname").value = user.fullName || "";
-    document.getElementById("edit-user-account-number").value =
-      user.accountNumber !== "—" ? user.accountNumber : "";
-    document.getElementById("edit-user-email").value =
-      user.email !== "—" ? user.email : "";
-    const existingContact =
-      user.contactNumber && user.contactNumber !== "—"
-        ? String(user.contactNumber).trim()
-        : "";
-    document.getElementById("edit-user-contact").value = existingContact
-      ? (existingContact.startsWith("09")
-          ? existingContact
-          : "09" + existingContact.replace(/^0+/, ""))
-      : "09";
-    document.getElementById("edit-user-department").value =
-      user.department || "";
-    document.getElementById("edit-user-year-section").value =
-      user.yearSection || "";
-    document.getElementById("edit-user-organization").value =
-      user.organization || "";
-
-    const roleSelect = document.getElementById("edit-user-role");
-    const currentRoleLower = String(user.role || "").toLowerCase().trim();
-    let matched = false;
-    for (const option of roleSelect.options) {
-      if (option.value.toLowerCase() === currentRoleLower) {
-        option.selected = true;
-        matched = true;
-        break;
+      if (secondaryApp) {
+        try {
+          await deleteApp(secondaryApp);
+        } catch (error) {
+          console.warn("The temporary account-creation Firebase app could not be closed.", error);
+        }
       }
     }
-    if (!matched && user.role) {
-      roleSelect.value = user.role;
-    }
-
-    const statusSelect = document.getElementById("edit-user-status");
-    const currentStatusLower = String(user.status || "").toLowerCase().trim();
-    if (currentStatusLower === "suspended") {
-      statusSelect.value = "Suspended";
-    } else if (currentStatusLower === "inactive") {
-      statusSelect.value = "Inactive";
-    } else {
-      statusSelect.value = "Active";
-    }
-
-    editDialog.showModal();
-    document.getElementById("edit-user-fullname").focus();
   }
 
-  function handleEditSubmit(event) {
-    event.preventDefault();
-    const user = [...studentsList, ...staffList].find(
-      (item) =>
-        item.id === selectedUserId &&
-        item.collectionName === selectedUserCollection,
-    );
-    if (!user) return;
-
-    if (!editForm.reportValidity()) return;
-
-    const newFullName = stringValue(
-      document.getElementById("edit-user-fullname").value,
-    ).trim();
-    const newAccountNumber = stringValue(
-      document.getElementById("edit-user-account-number").value,
-    ).trim();
-    const newEmail = stringValue(
-      document.getElementById("edit-user-email").value,
-    )
-      .trim()
-      .toLowerCase();
-    const newContact = stringValue(
-      document.getElementById("edit-user-contact").value,
-    ).trim();
-    const newDepartment = stringValue(
-      document.getElementById("edit-user-department").value,
-    ).trim();
-    const newYearSection = stringValue(
-      document.getElementById("edit-user-year-section").value,
-    ).trim();
-    const newOrganization = stringValue(
-      document.getElementById("edit-user-organization").value,
-    ).trim();
-    const newRole = document.getElementById("edit-user-role").value;
-    const newStatus = document.getElementById("edit-user-status").value;
-
-    const changes = [];
-    if (newFullName !== user.fullName) {
-      changes.push({
-        field: "Full Name",
-        old: user.fullName,
-        next: newFullName,
-      });
-    }
-    const currentAccount = user.accountNumber !== "—" ? user.accountNumber : "";
-    if (newAccountNumber !== currentAccount) {
-      changes.push({
-        field: "Account Number",
-        old: currentAccount || "Not provided",
-        next: newAccountNumber || "Not provided",
-      });
-    }
-    const currentEmail = user.email !== "—" ? user.email : "";
-    if (newEmail !== currentEmail.toLowerCase()) {
-      changes.push({
-        field: "Email",
-        old: currentEmail || "Not provided",
-        next: newEmail || "Not provided",
-      });
-    }
-    if (newContact !== (user.contactNumber || "")) {
-      changes.push({
-        field: "Contact Number",
-        old: user.contactNumber || "Not provided",
-        next: newContact || "Not provided",
-      });
-    }
-    if (newDepartment !== (user.department || "")) {
-      changes.push({
-        field: "Department / Program",
-        old: user.department || "Not provided",
-        next: newDepartment || "Not provided",
-      });
-    }
-    if (newYearSection !== (user.yearSection || "")) {
-      changes.push({
-        field: "Year & Section",
-        old: user.yearSection || "Not provided",
-        next: newYearSection || "Not provided",
-      });
-    }
-    if (newOrganization !== (user.organization || "")) {
-      changes.push({
-        field: "Organization / Department",
-        old: user.organization || "Not provided",
-        next: newOrganization || "Not provided",
-      });
-    }
-    if (newRole.toLowerCase() !== String(user.role || "").toLowerCase()) {
-      changes.push({ field: "Role", old: user.role, next: newRole });
-    }
-    if (newStatus !== user.status) {
-      changes.push({ field: "Status", old: user.status, next: newStatus });
-    }
-
-    pendingEditPayload = {
-      newFullName,
-      newAccountNumber,
-      newEmail,
-      newContact,
-      newDepartment,
-      newYearSection,
-      newOrganization,
-      newRole,
-      newStatus,
-      user,
+  async function createUserAndNotify(action) {
+    const account = await createAuthAndProfile(action.data);
+    const target = {
+      uid: account.uid,
+      id: account.uid,
+      fullName: action.data.fullName,
     };
-    pendingEditChanges = changes;
-
-    confirmMessage.textContent = `Are you sure you want to save the changes made to ${user.fullName}'s account?`;
-    if (changes.length === 0) {
-      confirmSummary.innerHTML =
-        '<p style="margin: 0; color: #51484a; text-align: center; font-style: italic;">No field values were changed. Click Confirm & Save to keep current information.</p>';
-    } else {
-      confirmSummary.innerHTML = changes
-        .map(
-          (item) => `
-            <div class="confirm-change-item">
-              <span class="confirm-change-field">${escapeHTML(item.field)}:</span>
-              <span class="confirm-change-values">
-                <del>${escapeHTML(item.old)}</del> → <strong>${escapeHTML(item.next)}</strong>
-              </span>
-            </div>`,
-        )
-        .join("");
-    }
-
-    confirmDialog.showModal();
-  }
-
-  async function confirmAndSaveEdit() {
-    if (!pendingEditPayload || confirmSaveButton.disabled) return;
-    const {
-      newFullName,
-      newAccountNumber,
-      newEmail,
-      newContact,
-      newDepartment,
-      newYearSection,
-      newOrganization,
-      newRole,
-      newStatus,
-      user,
-    } = pendingEditPayload;
-
-    confirmSaveButton.disabled = true;
-    confirmSaveButton.textContent = "Saving...";
-    if (cancelConfirmButton) cancelConfirmButton.disabled = true;
-
+    await writeAuditEntry({
+      action: "user_created",
+      target,
+      summary: `Created ${action.data.role} account for ${action.data.fullName}.`,
+      changes: [
+        { field: "role", from: "", to: action.data.role },
+        { field: "email", from: "", to: action.data.email },
+        { field: "accountNumber", from: "", to: action.data.accountNumber },
+        { field: "status", from: "", to: "Active" },
+      ],
+    });
     try {
-      const nameParts = newFullName.split(/\s+/).filter(Boolean);
-      const firstName = nameParts[0] || "";
-      const lastName =
-        nameParts.length > 1 ? nameParts[nameParts.length - 1] : "";
-      const middleName = nameParts.slice(1, -1).join(" ");
-
-      const updatePayload = {
-        fullName: newFullName,
-        name: newFullName,
-        firstName,
-        lastName,
-        middleName,
-        email: newEmail,
-        contactNumber: newContact,
-        phone: newContact,
-        department: newDepartment,
-        course: newDepartment,
-        program: newDepartment,
-        yearSection: newYearSection,
-        section: newYearSection,
-        organization: newOrganization,
-        org: newOrganization,
-        role: newRole,
-        status: newStatus,
-        isActive: newStatus === "Active",
-        updatedAt: serverTimestamp(),
-      };
-
-      if (user.collectionName === "users") {
-        updatePayload.studentNumber = newAccountNumber;
-        updatePayload.studentNo = newAccountNumber;
-        updatePayload.accountNo = newAccountNumber;
-      } else {
-        updatePayload.accountNo = newAccountNumber;
-      }
-
-      await updateDoc(doc(db, user.collectionName, user.id), updatePayload);
-
-      const changesSummary = pendingEditChanges
-        .map((ch) => `${ch.field}: ${ch.old} → ${ch.next}`)
-        .join("; ");
-      const auditAction =
-        pendingEditChanges.length > 0
-          ? `Edited user information for ${newFullName} (${newRole}): ${changesSummary}`
-          : `Edited user information for ${newFullName} (${newRole})`;
-
-      try {
-        await appendUserAudit(
-          auditAction,
-          user.id,
-          user.collectionName,
-          changesSummary || "Updated without field modifications",
-        );
-      } catch (auditError) {
-        console.error(
-          "User updated, but audit log could not be saved:",
-          auditError,
-        );
-      }
-
-      confirmDialog.close();
-      editDialog.close();
-      showMessage(`Updated account information for ${newFullName}.`);
-
-      const updatedUser = normalizeUser(
-        user.id,
-        { ...user, ...updatePayload },
-        user.collectionName,
-      );
-      populateDetails(updatedUser);
-    } catch (error) {
-      console.error("Unable to update user information:", error);
-      showMessage("Could not update user information. Please try again.", true);
-    } finally {
-      confirmSaveButton.disabled = false;
-      confirmSaveButton.textContent = "Confirm & Save";
-      if (cancelConfirmButton) cancelConfirmButton.disabled = false;
-      pendingEditPayload = null;
-      pendingEditChanges = [];
-    }
-  }
-
-  function openSuspendConfirmation() {
-    const user = [...studentsList, ...staffList].find(
-      (item) =>
-        item.id === selectedUserId &&
-        item.collectionName === selectedUserCollection,
-    );
-    if (!user || statusButton.disabled || deleteButton.disabled) return;
-    const reactivating =
-      String(user.status || "").toLowerCase() === "suspended";
-
-    if (statusConfirmTitle) {
-      statusConfirmTitle.textContent = reactivating
-        ? "Reactivate Account"
-        : "Suspend Account";
-    }
-    if (statusConfirmMessage) {
-      statusConfirmMessage.textContent = reactivating
-        ? `Are you sure you want to reactivate ${user.fullName}'s account? They will regain access to their account.`
-        : `Are you sure you want to suspend ${user.fullName}'s account? They will temporarily be unable to log in or access the system.`;
-    }
-    if (statusConfirmActionButton) {
-      statusConfirmActionButton.textContent = reactivating
-        ? "Reactivate Account"
-        : "Suspend Account";
-      statusConfirmActionButton.className = reactivating
-        ? "user-modal-button primary"
-        : "user-modal-button danger";
-    }
-    statusConfirmDialog?.showModal();
-  }
-
-  async function confirmAndToggleUserStatus() {
-    const user = [...studentsList, ...staffList].find(
-      (item) =>
-        item.id === selectedUserId &&
-        item.collectionName === selectedUserCollection,
-    );
-    if (!user) return;
-    const reactivating =
-      String(user.status || "").toLowerCase() === "suspended";
-    const nextStatus = reactivating ? "Active" : "Suspended";
-
-    if (statusConfirmActionButton) {
-      statusConfirmActionButton.disabled = true;
-      statusConfirmActionButton.textContent = reactivating
-        ? "Reactivating…"
-        : "Suspending…";
-    }
-    if (cancelStatusConfirmButton) cancelStatusConfirmButton.disabled = true;
-    statusButton.disabled = true;
-    deleteButton.disabled = true;
-
-    try {
-      await updateDoc(doc(db, user.collectionName, user.id), {
-        status: nextStatus,
-        isActive: nextStatus === "Active",
-        updatedAt: serverTimestamp(),
+      await sendPasswordResetEmail(auth, action.data.email);
+      await writeAuditEntry({
+        action: "password_reset_sent",
+        target,
+        summary: `Sent a password reset email to ${action.data.fullName}.`,
+        changes: [{ field: "passwordResetEmail", from: "not sent", to: "sent" }],
       });
-      try {
-        await appendUserAudit(
-          `${reactivating ? "Reactivated" : "Suspended"} account of ${user.fullName}`,
-          user.id,
-          user.collectionName,
-        );
-        showMessage(
-          `${user.fullName}'s account was ${reactivating ? "reactivated" : "suspended"}.`,
-        );
-      } catch (auditError) {
-        console.error(
-          "Status changed, but its audit log could not be saved:",
-          auditError,
-        );
-        showMessage(
-          "Status changed, but its audit log could not be saved.",
-          true,
-        );
-      }
-      statusConfirmDialog?.close();
-      detailsDialog.close();
+      showToast(`Account created. A password reset email was sent to ${action.data.email}.`);
     } catch (error) {
-      console.error("Unable to update user status:", error);
-      showMessage("Could not update user status. Please try again.", true);
-    } finally {
-      statusButton.disabled = false;
-      deleteButton.disabled = false;
-      if (statusConfirmActionButton) {
-        statusConfirmActionButton.disabled = false;
-        statusConfirmActionButton.textContent = reactivating
-          ? "Reactivate Account"
-          : "Suspend Account";
+      showToast(`Account created, but the password reset email could not be sent: ${userActionError(error, "sending the password reset email")} UID: ${account.uid}`, "error");
+    }
+    CREATE_FORM?.reset();
+    accountNumberManuallyEdited = false;
+    CREATE_DIALOG?.close();
+  }
+
+  async function confirmReset(action) {
+    const user = currentUserForAction(action);
+    if (!user?.email) throw new Error("This profile does not have an email address.");
+    await sendPasswordResetEmail(auth, user.email);
+    await writeAuditEntry({
+      action: "password_reset_sent",
+      target: user,
+      summary: `Sent a password reset email to ${user.fullName}.`,
+      changes: [{ field: "passwordResetEmail", from: "not sent", to: "sent" }],
+    });
+    showToast(`Password reset email sent to ${user.email}.`);
+  }
+
+  async function executePendingAction() {
+    if (!pendingAction || !currentAdmin) return;
+    const action = pendingAction;
+    if (CONFIRM_BUTTON) {
+      CONFIRM_BUTTON.disabled = true;
+      CONFIRM_BUTTON.setAttribute("aria-busy", "true");
+    }
+    try {
+      if (action.type === "status") await confirmStatusChange(action);
+      else if (action.type === "role") await confirmRoleChange(action);
+      else if (action.type === "reset") await confirmReset(action);
+      else if (action.type === "create") await createUserAndNotify(action);
+      ACTION_CONFIRM_DIALOG?.close();
+      pendingAction = null;
+      renderUsers();
+      if (selectedUserKey && getCurrentUser(selectedUserKey)) updateDetailsPanel();
+    } catch (error) {
+      if (error?.createdUid) {
+        showToast(`The Auth account exists, but its profile was not saved. UID: ${error.createdUid}. ${userActionError(error, "saving the profile")}`, "error");
+      } else {
+        showToast(userActionError(error, "applying this change"), "error");
       }
-      if (cancelStatusConfirmButton)
-        cancelStatusConfirmButton.disabled = false;
+      console.error("User Management action failed.", error);
+    } finally {
+      if (CONFIRM_BUTTON) {
+        CONFIRM_BUTTON.disabled = false;
+        CONFIRM_BUTTON.removeAttribute("aria-busy");
+      }
     }
   }
 
-  function openDeleteConfirmation() {
-    const user = [...studentsList, ...staffList].find(
-      (item) =>
-        item.id === selectedUserId &&
-        item.collectionName === selectedUserCollection,
-    );
-    if (!user || statusButton.disabled || deleteButton.disabled) return;
-
-    const identifier = user.email !== "—" ? user.email : user.accountNumber;
-    if (deleteConfirmMessage) {
-      deleteConfirmMessage.textContent = `Are you sure you want to permanently delete ${user.fullName}'s account (${identifier})? This action cannot be undone.`;
-    }
-    deleteConfirmDialog?.showModal();
+  function suggestAccountNumber(role, organization, suffix) {
+    const allNumbers = getAllUsers().map((user) => user.accountNumber).filter(Boolean);
+    const rolePrefix = {
+      "Event Organizer": "EO",
+      Admin: "Admin",
+      Teacher: "Teacher",
+      "Super Admin": "SA",
+    }[role];
+    if (!rolePrefix) return "";
+    let sequence = 0;
+    const matcher = new RegExp(`^${rolePrefix.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}[-_ ]?(\\d+)`, "i");
+    allNumbers.forEach((value) => {
+      const match = String(value).match(matcher);
+      if (match) sequence = Math.max(sequence, Number(match[1]) || 0);
+    });
+    const number = String(sequence + 1).padStart(3, "0");
+    if (role === "Event Organizer") return `EO-${number}${organization ? `-${organization.toUpperCase()}` : ""}`;
+    if (role === "Admin") return `Admin-${number}${suffix ? `-${suffix.toUpperCase()}` : ""}`;
+    if (role === "Teacher") return `Teacher-${number}${suffix ? `-${suffix.toUpperCase()}` : ""}`;
+    return `SA-${number}${suffix ? `-${suffix.toUpperCase()}` : ""}`;
   }
 
-  async function confirmAndDeleteUser() {
-    const user = [...studentsList, ...staffList].find(
-      (item) =>
-        item.id === selectedUserId &&
-        item.collectionName === selectedUserCollection,
+  function updateAccountSuggestion(force) {
+    if (!CREATE_ACCOUNT_INPUT || !CREATE_ROLE_INPUT) return;
+    if (!force && accountNumberManuallyEdited) return;
+    const suggestion = suggestAccountNumber(
+      CREATE_ROLE_INPUT.value,
+      CREATE_ORGANIZATION_INPUT?.value.trim(),
+      CREATE_SUFFIX_INPUT?.value.trim(),
     );
-    if (!user) return;
+    if (suggestion) CREATE_ACCOUNT_INPUT.value = suggestion;
+  }
 
-    if (deleteConfirmActionButton) {
-      deleteConfirmActionButton.disabled = true;
-      deleteConfirmActionButton.textContent = "Deleting…";
+  function setCreateRole(role) {
+    if (!ALLOWED_ROLES.includes(role)) return;
+    CREATE_ROLE_INPUT.value = role;
+    if (CREATE_ROLE_SELECT) CREATE_ROLE_SELECT.value = role;
+    if (CREATE_ACCOUNT_INPUT) CREATE_ACCOUNT_INPUT.value = "";
+    if (CREATE_AUTH_FIELDS) CREATE_AUTH_FIELDS.hidden = false;
+    if (CREATE_PASSWORD_INPUT) CREATE_PASSWORD_INPUT.required = true;
+    if (CREATE_PASSWORD_CONFIRMATION_INPUT) CREATE_PASSWORD_CONFIRMATION_INPUT.required = true;
+    const needsOrganization = role === "Student" || role === "Event Organizer";
+    const needsSuffix = ["Admin", "Teacher", "Super Admin"].includes(role);
+    if (CREATE_ORGANIZATION_FIELD) CREATE_ORGANIZATION_FIELD.hidden = !needsOrganization;
+    if (CREATE_SUFFIX_FIELD) CREATE_SUFFIX_FIELD.hidden = !needsSuffix;
+    if (CREATE_ACCOUNT_LABEL) {
+      CREATE_ACCOUNT_LABEL.textContent = role === "Student" ? "Student number" : "Account number";
     }
-    if (cancelDeleteConfirmButton) cancelDeleteConfirmButton.disabled = true;
-    statusButton.disabled = true;
-    deleteButton.disabled = true;
+    if (CREATE_ORGANIZATION_INPUT) CREATE_ORGANIZATION_INPUT.required = role === "Event Organizer";
+    accountNumberManuallyEdited = false;
+    updateAccountSuggestion(true);
+    ACCOUNT_TYPE_DIALOG?.close();
+    if (!CREATE_DIALOG?.open) CREATE_DIALOG?.showModal();
+    CREATE_FIRST_NAME_INPUT?.focus();
+  }
+
+  function startCreateFlow() {
+    if (CREATE_BUTTON?.disabled) return;
+    if (!sourceLoaded.users || !sourceLoaded.adminUser || Object.values(sourceErrors).some(Boolean)) {
+      showToast("Wait for both user collections to load before creating an account.", "error");
+      return;
+    }
+    ACCOUNT_TYPE_DIALOG?.showModal();
+  }
+
+  function subscribeUserCollections() {
+    unsubscribeUsers?.();
+    unsubscribeAdminUsers?.();
+    sourceLoaded = { users: false, adminUser: false };
+    sourceErrors = { users: "", adminUser: "" };
+    users = [];
+    adminUsers = [];
+    clearLoadError();
+    renderUsers();
+
+    const handleSnapshot = (collectionName, snapshot) => {
+      sourceLoaded[collectionName] = true;
+      sourceErrors[collectionName] = "";
+      const normalized = snapshot.docs.map((item) => normalizeUser(item, collectionName));
+      if (collectionName === "users") {
+        users = normalized.filter((user) => user.role === "Student");
+      } else {
+        adminUsers = normalized;
+      }
+      renderUsers();
+      signalPageReady();
+    };
+    const handleError = (collectionName, error) => {
+      sourceLoaded[collectionName] = true;
+      sourceErrors[collectionName] = `${collectionName} collection: ${error?.message || "read failed"}`;
+      console.error(`Unable to load ${collectionName} collection.`, error);
+      renderUsers();
+      signalPageReady();
+    };
 
     try {
-      await deleteDoc(doc(db, user.collectionName, user.id));
-      const identifier = user.email !== "—" ? user.email : user.accountNumber;
-      try {
-        await appendUserAudit(
-          `Permanently deleted account: ${user.fullName} (${identifier})`,
-          user.id,
-          user.collectionName,
-        );
-        showMessage(`${user.fullName}'s account was deleted.`);
-      } catch (auditError) {
-        console.error(
-          "User deleted, but its audit log could not be saved:",
-          auditError,
-        );
-        showMessage(
-          "User deleted, but its audit log could not be saved.",
-          true,
-        );
-      }
-      deleteConfirmDialog?.close();
-      detailsDialog.close();
+      unsubscribeUsers = onSnapshot(
+        collection(db, "users"),
+        (snapshot) => handleSnapshot("users", snapshot),
+        (error) => handleError("users", error),
+      );
+      unsubscribeAdminUsers = onSnapshot(
+        collection(db, "adminUser"),
+        (snapshot) => handleSnapshot("adminUser", snapshot),
+        (error) => handleError("adminUser", error),
+      );
     } catch (error) {
-      console.error("Unable to delete user:", error);
-      showMessage("Could not delete the user. Please try again.", true);
-    } finally {
-      statusButton.disabled = false;
-      deleteButton.disabled = false;
-      if (deleteConfirmActionButton) {
-        deleteConfirmActionButton.disabled = false;
-        deleteConfirmActionButton.textContent = "Delete Account";
-      }
-      if (cancelDeleteConfirmButton)
-        cancelDeleteConfirmButton.disabled = false;
+      unsubscribeUsers?.();
+      unsubscribeAdminUsers?.();
+      unsubscribeUsers = null;
+      unsubscribeAdminUsers = null;
+      sourceLoaded = { users: true, adminUser: true };
+      sourceErrors.users = error?.message || "Unable to subscribe to user records.";
+      sourceErrors.adminUser = error?.message || "Unable to subscribe to admin records.";
+      setLoadError("Unable to load user data. Check your connection and retry.", false);
+      console.error("User Management data subscriptions failed.", error);
+      renderUsers();
     }
   }
 
-  let isAccountManuallyEdited = false;
-  const newUserAccountInput = document.getElementById("new-user-account");
-  const newUserOrgInput = document.getElementById("new-user-organization");
-  const newUserSuffixInput = document.getElementById("new-user-role-suffix");
-  const noMiddleCheckbox = document.getElementById("new-user-no-middle-name");
-  const middleInput = document.getElementById("new-user-middle-name");
-
-  function syncStaffAccountNumber() {
-    const role =
-      document.getElementById("new-user-role-value")?.value ||
-      document.getElementById("new-user-role")?.value ||
-      "";
-    if (!["Event Organizer", "Admin", "Super Admin", "Teacher"].includes(role)) {
+  async function verifySuperAdmin(user) {
+    if (!user) {
+      await signOut(auth).catch(() => {});
+      window.location.replace("SuperAdminLogin.html");
       return;
     }
-    if (!newUserAccountInput) return;
-
-    if (role === "Teacher") {
-      newUserAccountInput.value = getNextAccountNumberForRole("Teacher", "");
-      return;
+    try {
+      const profileSnapshot = await getDoc(doc(db, "adminUser", user.uid));
+      const profile = profileSnapshot.exists() ? profileSnapshot.data() : null;
+      const role = normalizedRole(profile?.role || profile?.userRole);
+      const status = String(profile?.status || (profile?.isActive === false ? "Inactive" : "Active"));
+      if (role !== "Super Admin" || ["suspended", "inactive", "disabled"].includes(normalizedText(status))) {
+        await signOut(auth).catch(() => {});
+        window.location.replace("SuperAdminLogin.html");
+        return;
+      }
+      currentAdmin = user;
+      currentAdminName = profileName(profile, user);
+      renderSidebarProfile(profile, user);
+      subscribeUserCollections();
+    } catch (error) {
+      console.error("Unable to verify Super Admin access.", error);
+      setLoadError("We could not verify your Super Admin access. Check your connection and retry.", true);
     }
-
-    const suffix =
-      newUserSuffixInput?.value?.trim() ||
-      newUserOrgInput?.value?.trim() ||
-      "";
-    newUserAccountInput.value = getNextAccountNumberForRole(role, suffix);
   }
 
-  if (newUserAccountInput) {
-    newUserAccountInput.addEventListener("input", () => {
-      const role =
-        document.getElementById("new-user-role-value")?.value ||
-        document.getElementById("new-user-role")?.value;
-      if (role === "Student") {
-        isAccountManuallyEdited = true;
-      }
+  function setupEvents() {
+    CREATE_BUTTON?.addEventListener("click", startCreateFlow);
+    document.querySelector(".logout-link")?.addEventListener("click", async (event) => {
+      event.preventDefault();
+      const link = event.currentTarget;
+      await logoutSuperAdmin(
+        auth,
+        link,
+        link.getAttribute("href") || "SuperAdminLogin.html",
+      );
     });
-  }
-
-  if (newUserSuffixInput) {
-    newUserSuffixInput.addEventListener("input", () => {
-      const cursor = newUserSuffixInput.selectionStart;
-      newUserSuffixInput.value = newUserSuffixInput.value.toUpperCase();
-      if (cursor != null) {
-        newUserSuffixInput.setSelectionRange(cursor, cursor);
-      }
-      syncStaffAccountNumber();
+    SEARCH_INPUT?.addEventListener("input", () => {
+      window.clearTimeout(searchTimer);
+      searchTimer = window.setTimeout(() => {
+        currentPage = 1;
+        renderUsers();
+      }, 250);
     });
-  }
-
-  if (newUserOrgInput) {
-    newUserOrgInput.addEventListener("input", () => {
-      if (!newUserSuffixInput?.value?.trim()) {
-        syncStaffAccountNumber();
-      }
+    document.querySelectorAll("[data-role-filter]").forEach((button) => {
+      button.addEventListener("click", () => {
+        roleFilter = button.dataset.roleFilter || "All";
+        currentPage = 1;
+        document.querySelectorAll("[data-role-filter]").forEach((pill) => {
+          const active = pill === button;
+          pill.classList.toggle("is-active", active);
+          pill.setAttribute("aria-pressed", String(active));
+        });
+        renderUsers();
+      });
     });
-  }
-
-  function setupContactNumberField(input) {
-    if (!input) return;
-    if (!input.value) {
-      input.value = "09";
-    }
-
-    input.addEventListener("focus", () => {
-      if (!input.value) {
-        input.value = "09";
-      }
-      setTimeout(() => {
-        if (input.selectionStart < 2) {
-          input.setSelectionRange(2, 2);
-        }
-      }, 0);
-    });
-
-    input.addEventListener("click", () => {
-      if (input.selectionStart < 2) {
-        input.setSelectionRange(2, 2);
-      }
-    });
-
-    input.addEventListener("keydown", (event) => {
-      const start = input.selectionStart ?? 0;
-      const end = input.selectionEnd ?? start;
-      if (event.key === "Backspace" && start <= 2 && end <= 2) {
-        event.preventDefault();
-        input.value = "09";
-        input.setSelectionRange(2, 2);
-      }
-    });
-
-    input.addEventListener("input", () => {
-      let raw = input.value.replace(/\D/g, "");
-      if (!raw.startsWith("09")) {
-        if (raw.startsWith("9")) {
-          raw = "0" + raw;
-        } else if (raw.startsWith("0")) {
-          raw = "09" + raw.slice(1);
-        } else {
-          raw = "09" + raw;
-        }
-      }
-      if (raw.length > 11) {
-        raw = raw.slice(0, 11);
-      }
-      input.value = raw;
-    });
-  }
-
-  const newUserContactInput = document.getElementById("new-user-contact");
-  const editUserContactInput = document.getElementById("edit-user-contact");
-  setupContactNumberField(newUserContactInput);
-  setupContactNumberField(editUserContactInput);
-
-  if (noMiddleCheckbox && middleInput) {
-    noMiddleCheckbox.addEventListener("change", () => {
-      if (noMiddleCheckbox.checked) {
-        middleInput.value = "";
-        middleInput.disabled = true;
-      } else {
-        middleInput.disabled = false;
-        middleInput.focus();
-      }
-    });
-  }
-
-  document.getElementById("create-user-button").addEventListener("click", () => {
-    roleDialog.showModal();
-    roleDialog.querySelector("[data-select-role]").focus();
-  });
-
-  roleDialog.querySelectorAll("[data-select-role]").forEach((button) => {
-    button.addEventListener("click", () => {
-      const role = button.dataset.selectRole;
-      document.getElementById("new-user-role").value = role;
-      document.getElementById("new-user-role-value").value = role;
-      setAccountCredentialFields(role);
-      isAccountManuallyEdited = false;
-      if (newUserSuffixInput) newUserSuffixInput.value = "";
-      if (newUserAccountInput) {
-        newUserAccountInput.placeholder =
-          role === "Student" ? "e.g. 2025-00760-BN-1" : "";
-        if (role === "Student") {
-          newUserAccountInput.value = "";
-        }
-      }
-      syncStaffAccountNumber();
-      if (newUserContactInput) {
-        newUserContactInput.value = "09";
-      }
-      roleDialog.close();
-      resetPasswordToggles();
-      createDialog.showModal();
-      (createForm.elements.firstName || createForm.elements.lastName)?.focus();
-    });
-  });
-
-  if (searchInput) {
-    searchInput.addEventListener("input", () => {
-      searchQuery = searchInput.value;
+    document.getElementById("suspended-only-filter")?.addEventListener("click", (event) => {
+      suspendedOnly = !suspendedOnly;
+      const button = event.currentTarget;
+      button.classList.toggle("is-active", suspendedOnly);
+      button.setAttribute("aria-pressed", String(suspendedOnly));
+      currentPage = 1;
       renderUsers();
     });
+    document.querySelectorAll(".user-sort-button").forEach((button) => {
+      button.addEventListener("click", () => {
+        if (sortKey === button.dataset.sort) sortDirection = sortDirection === "asc" ? "desc" : "asc";
+        else {
+          sortKey = button.dataset.sort || "name";
+          sortDirection = "asc";
+        }
+        currentPage = 1;
+        renderUsers();
+      });
+    });
+    PREVIOUS_BUTTON?.addEventListener("click", () => {
+      if (currentPage > 1) {
+        currentPage -= 1;
+        renderUsers();
+      }
+    });
+    NEXT_BUTTON?.addEventListener("click", () => {
+      const pages = Math.ceil(filteredUsers().length / PAGE_SIZE);
+      if (currentPage < pages) {
+        currentPage += 1;
+        renderUsers();
+      }
+    });
+
+    document.querySelectorAll("[data-select-role]").forEach((button) => {
+      button.addEventListener("click", () => setCreateRole(button.dataset.selectRole));
+    });
+    document.querySelectorAll("[data-close-dialog]").forEach((button) => {
+      button.addEventListener("click", () => button.closest("dialog")?.close());
+    });
+    DETAILS_DIALOG?.addEventListener("close", () => {
+      selectedUserKey = "";
+      renderUsers();
+    });
+    CREATE_DIALOG?.addEventListener("close", () => {
+      CREATE_FORM?.reset();
+      if (CREATE_AUTH_FIELDS) CREATE_AUTH_FIELDS.hidden = true;
+      if (CREATE_ORGANIZATION_FIELD) CREATE_ORGANIZATION_FIELD.hidden = false;
+      if (CREATE_SUFFIX_FIELD) CREATE_SUFFIX_FIELD.hidden = true;
+      if (CREATE_MIDDLE_NAME_INPUT) CREATE_MIDDLE_NAME_INPUT.disabled = false;
+      if (CREATE_PASSWORD_INPUT) CREATE_PASSWORD_INPUT.required = false;
+      if (CREATE_PASSWORD_CONFIRMATION_INPUT) CREATE_PASSWORD_CONFIRMATION_INPUT.required = false;
+      if (CREATE_ORGANIZATION_INPUT) CREATE_ORGANIZATION_INPUT.required = false;
+      accountNumberManuallyEdited = false;
+    });
+
+    CREATE_ACCOUNT_INPUT?.addEventListener("input", () => {
+      accountNumberManuallyEdited = true;
+      CREATE_ACCOUNT_INPUT.setCustomValidity("");
+    });
+    CREATE_EMAIL_INPUT?.addEventListener("input", () => CREATE_EMAIL_INPUT.setCustomValidity(""));
+    CREATE_PASSWORD_INPUT?.addEventListener("input", () => CREATE_PASSWORD_INPUT.setCustomValidity(""));
+    CREATE_PASSWORD_CONFIRMATION_INPUT?.addEventListener("input", () => CREATE_PASSWORD_CONFIRMATION_INPUT.setCustomValidity(""));
+    CREATE_ORGANIZATION_INPUT?.addEventListener("input", () => updateAccountSuggestion(false));
+    CREATE_SUFFIX_INPUT?.addEventListener("input", () => updateAccountSuggestion(false));
+
+    CREATE_NO_MIDDLE_NAME_INPUT?.addEventListener("change", () => {
+      if (!CREATE_MIDDLE_NAME_INPUT) return;
+      CREATE_MIDDLE_NAME_INPUT.disabled = CREATE_NO_MIDDLE_NAME_INPUT.checked;
+      if (CREATE_MIDDLE_NAME_INPUT.disabled) CREATE_MIDDLE_NAME_INPUT.value = "";
+    });
+    CREATE_FORM?.addEventListener("submit", (event) => {
+      event.preventDefault();
+      if (!validateCreateUser()) return;
+      const fullName = [
+        CREATE_FIRST_NAME_INPUT?.value.trim(),
+        CREATE_NO_MIDDLE_NAME_INPUT?.checked ? "" : CREATE_MIDDLE_NAME_INPUT?.value.trim(),
+        CREATE_LAST_NAME_INPUT?.value.trim(),
+      ].filter(Boolean).join(" ");
+      const data = {
+        role: CREATE_ROLE_INPUT.value,
+        fullName,
+        firstName: CREATE_FIRST_NAME_INPUT?.value.trim() || "",
+        middleName: CREATE_NO_MIDDLE_NAME_INPUT?.checked ? "" : CREATE_MIDDLE_NAME_INPUT?.value.trim() || "",
+        lastName: CREATE_LAST_NAME_INPUT?.value.trim() || "",
+        email: CREATE_EMAIL_INPUT.value.trim(),
+        accountNumber: CREATE_ACCOUNT_INPUT.value.trim(),
+        password: CREATE_PASSWORD_INPUT.value,
+        contactNumber: document.getElementById("new-user-contact")?.value.trim() || "",
+        organization: CREATE_ORGANIZATION_INPUT?.value.trim() || "",
+        roleSuffix: CREATE_SUFFIX_INPUT?.value.trim() || "",
+      };
+      showConfirm(
+        { type: "create", data },
+        "Create account",
+        `Create an active ${data.role} account for ${data.fullName} (${data.email})? A password reset email will be sent.`,
+        "Create account",
+      );
+    });
+
+    STATUS_ACTION_BUTTON?.addEventListener("click", () => {
+      const user = selectedUserKey ? getCurrentUser(selectedUserKey) : null;
+      if (!user) return;
+      const status = isActive(user) ? "Suspended" : "Active";
+      showConfirm(
+        { type: "status", status, userKey: selectedUserKey },
+        status === "Suspended" ? "Suspend account" : "Reactivate account",
+        `${status === "Suspended" ? "Suspend" : "Reactivate"} ${user.fullName}'s account?`,
+        status === "Suspended" ? "Suspend account" : "Reactivate account",
+      );
+    });
+    ROLE_ACTION_BUTTON?.addEventListener("click", () => {
+      const user = selectedUserKey ? getCurrentUser(selectedUserKey) : null;
+      if (!user || isOwnAccount(user)) return;
+      setRoleChoices(user);
+      ROLE_CHANGE_DIALOG?.showModal();
+      ROLE_SELECT?.focus();
+    });
+    ROLE_SELECT?.addEventListener("change", updateRoleSubmitState);
+    ROLE_CHANGE_FORM?.addEventListener("submit", (event) => {
+      event.preventDefault();
+      const user = selectedUserKey ? getCurrentUser(selectedUserKey) : null;
+      const role = ROLE_SELECT?.value;
+      if (!user || !role || !canChangeToRole(user, role)) return;
+      ROLE_CHANGE_DIALOG?.close();
+      showConfirm(
+        { type: "role", role, userKey: selectedUserKey },
+        "Confirm role change",
+        `Change ${user.fullName}'s role from ${user.role} to ${role}?`,
+        "Confirm role change",
+      );
+    });
+    RESET_ACTION_BUTTON?.addEventListener("click", () => {
+      const user = selectedUserKey ? getCurrentUser(selectedUserKey) : null;
+      if (!user?.email) return;
+      showConfirm(
+        { type: "reset", userKey: selectedUserKey },
+        "Send password reset email",
+        `Send a password reset email to ${user.fullName} at ${user.email}?`,
+        "Send email",
+      );
+    });
+
+    CONFIRM_BUTTON?.addEventListener("click", executePendingAction);
+    CANCEL_CONFIRM_BUTTON?.addEventListener("click", () => {
+      pendingAction = null;
+      ACTION_CONFIRM_DIALOG?.close();
+    });
+    ACTION_CONFIRM_DIALOG?.addEventListener("close", () => {
+      if (pendingAction?.type === "create" && CREATE_DIALOG?.open) CREATE_DIALOG.close();
+      pendingAction = null;
+    });
   }
 
-  createForm.addEventListener("submit", createUser);
-  tableBody.addEventListener("click", (event) => {
-    const viewButton = event.target.closest("button[data-id]");
-    if (viewButton) {
-      openDetails(viewButton.dataset.id, viewButton.dataset.collection);
+  function setupPasswordToggles() {
+    document.querySelectorAll(".sa-password-toggle-button").forEach((toggle) => {
+      const input = document.getElementById(toggle.getAttribute("aria-controls"));
+      if (!input) return;
+      toggle.addEventListener("click", () => {
+        const showing = input.type === "password";
+        input.type = showing ? "text" : "password";
+        toggle.setAttribute("aria-pressed", String(showing));
+        toggle.setAttribute("aria-label", `${showing ? "Hide" : "Show"} ${input.id.endsWith("confirmation") ? "confirm password" : "password"}`);
+        const wrapper = toggle.closest(".sa-password-toggle");
+        wrapper?.classList.toggle("is-visible", showing);
+      });
+    });
+  }
+
+  function init() {
+    setupEvents();
+    setupPasswordToggles();
+    renderUsers();
+    if (!isFirebaseConfigured || !auth || !db) {
+      setLoadError("Firebase is not configured for this page. Check the connection and retry.", true);
+      return;
     }
-  });
-  if (editButton) editButton.addEventListener("click", openEditUser);
-  if (editForm) editForm.addEventListener("submit", handleEditSubmit);
-  if (confirmSaveButton)
-    confirmSaveButton.addEventListener("click", confirmAndSaveEdit);
-  if (cancelConfirmButton) {
-    cancelConfirmButton.addEventListener("click", () => confirmDialog.close());
-  }
-  statusButton.addEventListener("click", openSuspendConfirmation);
-  deleteButton.addEventListener("click", openDeleteConfirmation);
-  if (statusConfirmActionButton)
-    statusConfirmActionButton.addEventListener("click", confirmAndToggleUserStatus);
-  if (deleteConfirmActionButton)
-    deleteConfirmActionButton.addEventListener("click", confirmAndDeleteUser);
-
-  document.querySelectorAll("[data-close-dialog]").forEach((button) => {
-    button.addEventListener("click", () => button.closest("dialog").close());
-  });
-
-  [
-    roleDialog,
-    createDialog,
-    detailsDialog,
-    editDialog,
-    confirmDialog,
-    statusConfirmDialog,
-    deleteConfirmDialog,
-  ].forEach((dialog) => {
-    dialog?.addEventListener("click", (event) => {
-      if (event.target === dialog) dialog.close();
-    });
-  });
-
-  editDialog?.addEventListener("close", () => {
-    editForm.reset();
-    pendingEditPayload = null;
-    pendingEditChanges = [];
-  });
-  confirmDialog?.addEventListener("close", () => {
-    confirmSummary.innerHTML = "";
-  });
-
-  createDialog.addEventListener("close", () => {
-    createForm.reset();
-    resetPasswordToggles();
-    if (noMiddleCheckbox) noMiddleCheckbox.checked = false;
-    if (middleInput) middleInput.disabled = false;
-    isAccountManuallyEdited = false;
-    if (newUserSuffixInput) newUserSuffixInput.value = "";
-    if (newUserContactInput) newUserContactInput.value = "09";
-    setAccountCredentialFields("");
-    passwordConfirmationInput.setCustomValidity("");
-  });
-  detailsDialog.addEventListener("close", () => {
-    selectedUserId = null;
-    selectedUserCollection = null;
-    [
-      "user-details-name",
-      "user-details-role",
-      "user-details-status",
-      "user-detail-full-name",
-      "user-detail-account-number",
-      "user-detail-email",
-      "user-detail-contact",
-      "user-detail-department",
-      "user-detail-year-section",
-      "user-detail-organization",
-      "user-detail-role",
-    ].forEach((id) => {
-      document.getElementById(id).textContent = "";
-    });
-    statusButton.textContent = "Suspend Account";
-    document.getElementById("view-user-activity").href =
-      "SuperAdminAuditLogs.html";
-  });
-
-  if (!isFirebaseConfigured || !db) {
-    tableBody.innerHTML =
-      '<tr><td class="user-table-empty" colspan="6">User data is unavailable. Please check Firebase configuration.</td></tr>';
-    pendingInitialUserSources.clear();
-    settleInitialUserSource("users");
-    return;
+    authUnsubscribe = onAuthStateChanged(
+      auth,
+      (user) => {
+        if (user) void verifySuperAdmin(user);
+        else void verifySuperAdmin(null);
+      },
+      (error) => {
+        console.error("Unable to read the current authentication state.", error);
+        setLoadError("We could not verify your sign-in. Check your connection and retry.", true);
+      },
+    );
   }
 
-  tableBody.replaceChildren();
-  unsubscribeStudents = onSnapshot(
-    collection(db, "users"),
-    (snapshot) => {
-      console.info("[UserManagement] users snapshot size:", snapshot.size);
-      handleUsersSnapshot("users", snapshot);
-      settleInitialUserSource("users");
-    },
-    (error) => {
-      console.error("Unable to load student accounts:", error);
-      showMessage("Could not load student accounts.", true);
-      settleInitialUserSource("users");
-    },
-  );
+  window.addEventListener("pagehide", () => {
+    unsubscribeUsers?.();
+    unsubscribeAdminUsers?.();
+    authUnsubscribe?.();
+    window.clearTimeout(searchTimer);
+    window.clearTimeout(toastTimer);
+  }, { once: true });
 
-  unsubscribeStaff = onSnapshot(
-    collection(db, "adminUser"),
-    (snapshot) => {
-      console.info("[UserManagement] adminUser snapshot size:", snapshot.size);
-    handleUsersSnapshot("adminUser", snapshot);
-      settleInitialUserSource("staff");
-    },
-    (error) => {
-      console.error("Unable to load adminUser accounts:", error);
-      showMessage("Could not load staff accounts.", true);
-      settleInitialUserSource("staff");
-    },
-  );
-
-  window.addEventListener("beforeunload", () => {
-    unsubscribeStudents?.();
-    unsubscribeStaff?.();
-  });
+  init();
 })();

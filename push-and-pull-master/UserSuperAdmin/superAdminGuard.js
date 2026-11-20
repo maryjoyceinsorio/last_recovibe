@@ -1,6 +1,7 @@
-import { onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
+import { onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
 import { doc, getDoc } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 import { auth, db, isFirebaseConfigured } from "../UserStudent/firebaseConfig.js";
+import { logoutSuperAdmin } from "./superAdminLogout.js";
 
 (() => {
   "use strict";
@@ -76,14 +77,13 @@ import { auth, db, isFirebaseConfigured } from "../UserStudent/firebaseConfig.js
   }
 
   document.querySelectorAll(".logout-link").forEach((logoutLink) => {
-    logoutLink.addEventListener("click", async (event) => {
+    logoutLink.addEventListener("click", (event) => {
       event.preventDefault();
-      try {
-        if (auth) await signOut(auth);
-        console.info("[SuperAdminGuard] Logout completed; redirect suppressed in diagnostic mode.");
-      } catch (error) {
-        console.info("[SuperAdminGuard] Logout diagnostic:", error);
-      }
+      void logoutSuperAdmin(
+        auth,
+        logoutLink,
+        logoutLink.getAttribute("href") || "SuperAdminLogin.html",
+      );
     });
   });
 

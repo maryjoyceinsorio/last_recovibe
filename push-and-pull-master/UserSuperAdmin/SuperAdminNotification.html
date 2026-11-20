@@ -1,50 +1,143 @@
-<!DOCTYPE html>
-<html lang="en" data-page-loading="true">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Notifications | Super Admin</title>
-  <style>
-    * { box-sizing: border-box; }
-    body {
-      min-height: 100vh;
-      margin: 0;
-      display: grid;
-      place-items: center;
-      background: #f7f5f5;
-      color: #333;
-      font: 16px/1.5 Arial, sans-serif;
-    }
-    .page-status {
-      display: grid;
-      justify-items: center;
-      gap: 12px;
-      padding: 24px;
-      text-align: center;
-    }
-    .spinner {
-      width: 36px;
-      height: 36px;
-      border: 3px solid #d6bd82;
-      border-top-color: #7a1f2e;
-      border-radius: 50%;
-      animation: spin 900ms linear infinite;
-    }
-    @keyframes spin { to { transform: rotate(360deg); } }
-    @media (prefers-reduced-motion: reduce) {
-      .spinner { display: none; }
-    }
-  </style>
-</head>
-<body>
-  <main class="page-status" role="status" aria-live="polite">
-    <span class="spinner" aria-hidden="true"></span>
-    <span id="pageMessage">Loading...</span>
-  </main>
-  <script>
-    document.getElementById("pageMessage").textContent =
-      "Notifications are not available on this page yet.";
-    document.documentElement.removeAttribute("data-page-loading");
-  </script>
-</body>
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#72141c" />
+    <title>Notifications | RecoVibe Super Admin</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="superadmin.css" />
+    <link rel="stylesheet" href="SuperAdminNotification.css" />
+  </head>
+  <body>
+    <div class="superadmin-app">
+      <aside class="sidebar" aria-label="Super admin sidebar">
+        <a class="brand" href="SuperAdminDashboard.html" aria-label="RecoVibe Super Admin home">
+          <span class="brand-mark" aria-hidden="true">RV</span>
+          <span class="brand-copy"><strong>RecoVibe</strong><small>PUP Biñan Campus</small></span>
+        </a>
+        <nav class="primary-nav" aria-label="Primary navigation">
+          <a class="nav-link" href="SuperAdminDashboard.html">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h6v6H4zM14 4h6v6h-6zM4 14h6v6H4zM14 14h6v6h-6z" /></svg>
+            <span>Dashboard</span>
+          </a>
+          <a class="nav-link" href="SuperAdminAuditLogs.html">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 4h8M9 3h6v3H9zM7 5H5v16h14V5h-2M8 11h8M8 15h8" /></svg>
+            <span>Audit Logs</span>
+          </a>
+          <a class="nav-link" href="UserManagement.html">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="9" cy="8" r="3" /><path d="M3.5 20v-1.5a5.5 5.5 0 0 1 11 0V20zM16 5.5a3 3 0 0 1 0 5.8M17 14a5 5 0 0 1 3.5 4.8V20h-4" /></svg>
+            <span>User Management</span>
+          </a>
+          <a class="nav-link" href="SuperAdminSystemSettings.html">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3" /><path d="m19.4 15 .1.1 1.2 1-1.4 2.4-1.5-.6a8 8 0 0 1-1.5.9l-.3 1.6h-2.8l-.3-1.6a8 8 0 0 1-1.5-.9l-1.5.6-1.4-2.4 1.2-1a7 7 0 0 1 0-1.8l-1.2-1 1.4-2.4 1.5.6a8 8 0 0 1 1.5-.9l.3-1.6h2.8l.3 1.6a8 8 0 0 1 1.5.9l1.5-.6 1.4 2.4-1.2 1a7 7 0 0 1-.1 1.7Z" transform="translate(-1 -1)" /></svg>
+            <span>System Settings</span>
+          </a>
+          <a class="nav-link" href="SuperAdminActSum.html">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2" /><path d="M7 16V10M12 16V6M17 16V12" /></svg>
+            <span>Activity Summary</span>
+          </a>
+          <a class="nav-link is-active" href="SuperAdminNotification.html" aria-current="page">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 9a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4" /></svg>
+            <span>Notifications</span>
+            <span class="sa-notification-badge" id="navUnreadBadge" aria-label="Unread notifications" hidden></span>
+          </a>
+          <a class="nav-link" href="SuperAdminProfile.html">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="3.5" /><path d="M4.5 20a7.5 7.5 0 0 1 15 0" /></svg>
+            <span>Profile</span>
+          </a>
+        </nav>
+        <footer class="sidebar-footer">
+          <div class="account-summary">
+            <span class="account-badge" id="sidebar-user-avatar" aria-hidden="true"></span>
+            <span class="account-copy"><strong id="sidebar-user-name"></strong><small id="sidebar-user-role"></small></span>
+          </div>
+          <a class="logout-link" id="logoutLink" href="SuperAdminLogin.html">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 17l5-5-5-5M15 12H3M13 4h6a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-6" /></svg>
+            <span>Logout</span>
+          </a>
+        </footer>
+      </aside>
+
+      <main class="main-content sa-notifications-main" id="main-content" aria-busy="true">
+        <section class="sa-notifications" id="notificationRoot" aria-live="polite">
+          <header class="sa-notifications-header">
+            <div>
+              <p class="sa-eyebrow">SUPER ADMIN</p>
+              <h1>Notifications</h1>
+              <p class="sa-notifications-subtitle" id="notificationSubtitle">Loading notifications…</p>
+            </div>
+            <div class="sa-header-actions">
+              <button class="sa-button sa-button-outline" id="markAllRead" type="button" disabled>Mark all as read</button>
+              <button class="sa-button sa-button-outline" id="clearRead" type="button" disabled>Clear read</button>
+            </div>
+          </header>
+
+          <p class="sa-offline-note" id="offlineNote" role="status" hidden></p>
+          <div class="sa-source-banner" id="sourceBanner" role="status" hidden>
+            <span id="sourceBannerText"></span>
+            <button class="sa-inline-button" id="retryNotifications" type="button">Retry</button>
+          </div>
+          <div class="sa-access-error" id="accessError" role="alert" hidden>
+            <strong>A Super Admin account is required.</strong>
+            <p>Sign in with an active Super Admin account, then try again.</p>
+            <a class="sa-primary-link" href="SuperAdminLogin.html">Go to sign in</a>
+          </div>
+          <div class="sa-full-error" id="fullError" role="alert" hidden>
+            <strong>Notifications couldn’t be loaded.</strong>
+            <p>Check your connection or permissions, then try again.</p>
+            <button class="sa-button sa-button-primary" id="retryAllNotifications" type="button">Retry</button>
+          </div>
+
+          <section class="sa-summary" aria-label="Notification summary">
+            <button class="sa-summary-card" type="button" data-summary-filter="needsAction" aria-label="Filter notifications that need action">
+              <span class="sa-summary-label">Needs action</span><strong id="summaryActionCount">0</strong>
+            </button>
+            <button class="sa-summary-card" type="button" data-summary-filter="unread" aria-label="Filter unread notifications">
+              <span class="sa-summary-label">Unread</span><strong id="summaryUnreadCount">0</strong>
+            </button>
+            <button class="sa-summary-card" type="button" data-summary-filter="today" aria-label="Filter notifications from today">
+              <span class="sa-summary-label">Today</span><strong id="summaryTodayCount">0</strong>
+            </button>
+            <button class="sa-summary-card" type="button" data-summary-filter="week" aria-label="Filter notifications from this week">
+              <span class="sa-summary-label">This week</span><strong id="summaryWeekCount">0</strong>
+            </button>
+          </section>
+
+          <section class="sa-filter-panel" aria-label="Notification filters">
+            <div class="sa-filter-top">
+              <div class="sa-filter-tabs" role="group" aria-label="Notification status">
+                <button type="button" data-tab-filter="all" aria-pressed="true">All</button>
+                <button type="button" data-tab-filter="unread" aria-pressed="false">Unread</button>
+                <button type="button" data-tab-filter="needsAction" aria-pressed="false">Needs action</button>
+              </div>
+              <label class="sa-search">
+                <span class="visually-hidden">Search notifications</span>
+                <input id="notificationSearch" type="search" placeholder="Search notifications" aria-label="Search notifications" />
+              </label>
+            </div>
+            <div class="sa-category-chips" role="group" aria-label="Notification categories">
+              <button type="button" data-category-filter="Approvals" aria-pressed="false">Approvals <span data-category-count="Approvals">0</span></button>
+              <button type="button" data-category-filter="Accounts" aria-pressed="false">Accounts <span data-category-count="Accounts">0</span></button>
+              <button type="button" data-category-filter="Settings" aria-pressed="false">Settings <span data-category-count="Settings">0</span></button>
+              <button type="button" data-category-filter="Security" aria-pressed="false">Security <span data-category-count="Security">0</span></button>
+              <button type="button" data-category-filter="Events" aria-pressed="false">Events <span data-category-count="Events">0</span></button>
+            </div>
+          </section>
+
+          <div class="sa-loading-skeleton" id="loadingSkeleton" role="status" aria-label="Loading notifications">
+            <span class="sa-skeleton-line"></span>
+            <div class="sa-skeleton-grid">
+              <span class="sa-skeleton-card"></span><span class="sa-skeleton-card"></span>
+              <span class="sa-skeleton-card"></span><span class="sa-skeleton-card"></span>
+            </div>
+          </div>
+          <div class="sa-notification-list" id="notificationList"></div>
+        </section>
+      </main>
+    </div>
+    <script type="module" src="SuperAdminNotification.js"></script>
+  </body>
 </html>

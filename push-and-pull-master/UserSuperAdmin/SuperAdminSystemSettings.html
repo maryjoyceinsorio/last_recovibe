@@ -106,9 +106,30 @@
       <main class="main-content settings-main" id="main-content" data-page-load-container="true" aria-busy="true">
     <div class="page-preloader" id="pagePreloader" role="status" aria-live="polite">
       <span class="page-preloader-spinner" aria-hidden="true"></span>
-      <span>Loading...</span>
+      <span>Verifying superadmin access...</span>
+      <span class="settings-access-skeleton" aria-hidden="true"><i></i><i></i><i></i></span>
     </div>
         <div class="settings-container">
+      <header class="settings-page-header">
+        <div>
+          <h1 class="settings-page-title">System Settings</h1>
+          <p class="settings-last-saved" id="settings-last-saved">Last saved by —</p>
+        </div>
+        <button class="settings-outline-btn settings-export-btn" id="export-settings-btn" type="button">Export settings</button>
+      </header>
+
+      <nav class="settings-section-nav" aria-label="Settings sections">
+        <a class="settings-nav-pill" href="#access-registration-heading">Access<span class="settings-nav-dirty" id="nav-dirty-access" hidden></span></a>
+        <a class="settings-nav-pill" href="#general-settings-heading">General<span class="settings-nav-dirty" id="nav-dirty-general" hidden></span></a>
+        <a class="settings-nav-pill" href="#org-directory-heading">Organizations<span class="settings-nav-dirty" id="nav-dirty-organizations" hidden></span></a>
+        <a class="settings-nav-pill" href="#approval-stages-heading">Approval stages<span class="settings-nav-dirty" id="nav-dirty-approval" hidden></span></a>
+        <a class="settings-nav-pill" href="#event-rules-heading">Event rules<span class="settings-nav-dirty" id="nav-dirty-events" hidden></span></a>
+        <a class="settings-nav-pill" href="#registration-settings-heading">Registration<span class="settings-nav-dirty" id="nav-dirty-registration" hidden></span></a>
+        <a class="settings-nav-pill" href="#notifications-settings-heading">Notifications<span class="settings-nav-dirty" id="nav-dirty-notifications" hidden></span></a>
+        <a class="settings-nav-pill" href="#calendar-settings-heading">Calendar and holidays<span class="settings-nav-dirty" id="nav-dirty-calendar" hidden></span></a>
+        <a class="settings-nav-pill" href="#audience-settings-heading">Audience<span class="settings-nav-dirty" id="nav-dirty-audience" hidden></span></a>
+      </nav>
+
           <!-- Access and registration -->
           <section class="settings-access-card" aria-labelledby="access-registration-heading">
             <h2 class="settings-access-title" id="access-registration-heading">Access and registration</h2>
@@ -123,7 +144,8 @@
                 <p class="settings-access-desc">When off, only super admins can sign in. Everyone else sees a maintenance message.</p>
               </div>
               <label class="settings-switch" for="toggle-login">
-                <input id="toggle-login" type="checkbox" role="switch" checked />
+                <input id="toggle-login" type="checkbox" role="switch" aria-labelledby="user-login-switch-label" aria-checked="true" checked />
+                <span class="sr-only" id="user-login-switch-label">User login</span>
                 <span class="settings-switch-slider" aria-hidden="true"></span>
               </label>
             </div>
@@ -137,9 +159,20 @@
                 <p class="settings-access-desc">When off, students cannot register for any event, including ones that are open now.</p>
               </div>
               <label class="settings-switch" for="toggle-registration">
-                <input id="toggle-registration" type="checkbox" role="switch" checked />
+                <input id="toggle-registration" type="checkbox" role="switch" aria-labelledby="event-registration-switch-label" aria-checked="true" checked />
+                <span class="sr-only" id="event-registration-switch-label">Event registration</span>
                 <span class="settings-switch-slider" aria-hidden="true"></span>
               </label>
+            </div>
+            <div class="settings-access-message">
+              <label class="settings-field-label settings-access-message-label" for="setting-maintenance-message">Optional maintenance message</label>
+              <textarea class="settings-input settings-textarea" id="setting-maintenance-message" maxlength="500" rows="2"></textarea>
+              <div class="settings-inline-actions">
+                <span class="settings-field-hint">Shown when user login is disabled.</span>
+                <span class="settings-dirty-label" id="dirty-access-message" hidden>Unsaved</span>
+                <button class="settings-save-stages-btn" id="save-access-message-btn" type="button">Save message</button>
+              </div>
+              <p class="settings-section-error" id="access-message-error" role="alert" hidden></p>
             </div>
           </section>
 
@@ -148,7 +181,7 @@
             <div class="settings-section-header">
               <div class="settings-section-title-wrap">
                 <h2 class="settings-section-title" id="general-settings-heading">General settings</h2>
-                <p class="settings-section-subtitle">Configure system-wide defaults for events and document uploads.</p>
+                <p class="settings-section-subtitle">Configure system-wide event defaults.</p>
               </div>
               <button class="settings-save-stages-btn" id="save-general-btn" type="button">Save Changes</button>
             </div>
@@ -168,15 +201,12 @@
 
               <div class="settings-field-group">
                 <label class="settings-field-label" for="setting-max-upload">Maximum upload size (MB)</label>
-                <input type="number" id="setting-max-upload" class="settings-input" min="1" max="100" value="15" />
+                <input type="number" id="setting-max-upload" class="settings-input" min="1" max="50" value="15" />
               </div>
 
-              <div class="settings-field-group settings-field-group--full">
-                <label class="settings-field-label" for="setting-allowed-docs">Allowed document types</label>
-                <input type="text" id="setting-allowed-docs" class="settings-input" value="PDF, DOCX, JPG, PNG" />
-                <p class="settings-field-hint">Display guidance for organizers; file storage is not enabled in this prototype.</p>
-              </div>
             </div>
+            <p class="settings-field-hint">Documents are submitted as Google Drive links. File uploads are not used.</p>
+            <p class="settings-dirty-label" id="dirty-general" hidden>Unsaved changes</p>
             <p class="settings-section-error" id="general-settings-error" hidden></p>
           </section>
 
@@ -187,19 +217,23 @@
                 <h2 class="settings-section-title" id="org-directory-heading">Organization directory</h2>
                 <p class="settings-section-subtitle">Manage collaboration organizations and the adviser account assigned to each one.</p>
               </div>
-              <button class="settings-outline-btn" id="add-organization-btn" type="button">+ Add organization</button>
+              <div class="settings-org-directory-actions">
+                <button class="settings-save-stages-btn" id="save-organizations-btn" type="button">Save System Settings</button>
+                <button class="settings-outline-btn" id="add-organization-btn" type="button">+ Add organization</button>
+              </div>
             </div>
             <div class="settings-orgs-list" id="organization-directory-list" role="list" aria-label="Organizations directory">
               <!-- Dynamically populated org rows -->
             </div>
+            <p class="settings-dirty-label" id="dirty-organizations" hidden>Unsaved changes</p>
             <p class="settings-section-error" id="org-directory-error" hidden></p>
           </section>
 
-          <!-- 3. Approval stages -->
+          <!-- 3. Default approval stages -->
           <section class="settings-section settings-approval-stages-section settings-panel" aria-labelledby="approval-stages-heading">
             <div class="settings-section-header">
               <div class="settings-section-title-wrap">
-                <h2 class="settings-section-title" id="approval-stages-heading">Approval stages</h2>
+                <h2 class="settings-section-title" id="approval-stages-heading">Default / General approval stages</h2>
                 <p class="settings-section-subtitle">These stages define the approval sequence for new proposals. Each proposal's current stage advances as its assigned reviewer approves.</p>
               </div>
               <div class="settings-approval-actions">
@@ -211,10 +245,168 @@
             <p class="settings-stages-error" id="approval-stages-error" hidden></p>
           </section>
 
+          <section class="settings-section settings-panel settings-org-approval-section" aria-labelledby="org-approval-stages-heading">
+            <div class="settings-section-header">
+              <div class="settings-section-title-wrap">
+                <h2 class="settings-section-title" id="org-approval-stages-heading">Per-Organization Approval Stages</h2>
+                <p class="settings-section-subtitle">Organizations without custom stages use the default sequence.</p>
+              </div>
+              <div class="settings-org-approval-header-actions">
+                <button class="settings-save-stages-btn" id="org-approval-save-btn" type="button">Save stages</button>
+              </div>
+            </div>
+            <div id="org-approval-loading" class="settings-org-approval-skeleton" role="status" aria-live="polite" hidden>
+              <span></span><span></span><span></span>
+              <span class="sr-only">Loading organization approval stages...</span>
+            </div>
+            <div id="org-approval-error" class="settings-section-error" role="alert" hidden>
+              <span id="org-approval-error-text"></span>
+              <button class="settings-outline-btn" id="org-approval-retry-btn" type="button">Retry</button>
+            </div>
+            <div id="org-approval-editor" hidden>
+              <div class="settings-org-approval-selector">
+                <label class="settings-field-label" for="org-approval-selector">Organization</label>
+                <select class="settings-select" id="org-approval-selector" aria-label="Organization approval stages"></select>
+                <div class="settings-org-approval-pills" id="org-approval-pills" role="group" aria-label="Quick switch organization"></div>
+              </div>
+              <p id="org-approval-directory-error" class="settings-section-error" role="alert" hidden></p>
+              <div class="settings-org-approval-status">
+                <span id="org-approval-status-badge" class="settings-org-approval-badge">Using default stages</span>
+                <span id="org-approval-starting-copy" class="settings-field-hint" hidden>Showing an editable copy of the default sequence. Nothing is saved until you click Save.</span>
+              </div>
+              <div class="settings-stages-list settings-org-approval-stages" id="org-approval-stages-list" role="list" aria-label="Organization approval stages"></div>
+              <p id="org-approval-validation-error" class="settings-stages-error" role="alert" hidden></p>
+              <p id="org-approval-success" class="settings-success-message" role="status" aria-live="polite" hidden></p>
+              <div class="settings-org-approval-actions">
+                <button class="settings-outline-btn" id="org-approval-add-stage-btn" type="button">+ Add stage</button>
+                <div class="settings-org-approval-actions-end">
+                  <button class="settings-outline-btn" id="org-approval-discard-btn" type="button">Discard changes</button>
+                  <button class="settings-outline-btn" id="org-approval-reset-btn" type="button">Reset to Default Stages</button>
+                </div>
+              </div>
+            </div>
+          </section>
+
           <!-- Unified Save footer bar -->
           <div class="settings-footer-actions">
-            <p class="settings-footer-note">All changes above — General settings, Organization directory, and Approval stages — are validated and saved together.</p>
+            <p class="settings-footer-note">Save System Settings saves general settings, the Organization directory, and Default / General approval stages. Per-organization approval stages are saved separately.</p>
             <button class="settings-save-stages-btn" id="save-stages-bottom-btn" type="button">Save All Changes</button>
+          </div>
+
+          <section class="settings-section settings-panel settings-new-section" data-settings-section="events" aria-labelledby="event-rules-heading">
+            <div class="settings-section-header">
+              <div class="settings-section-title-wrap">
+                <h2 class="settings-section-title" id="event-rules-heading">Event rules</h2>
+                <p class="settings-section-subtitle">Set the default limits for event submissions.</p>
+              </div>
+              <div class="settings-save-group"><span class="settings-dirty-label" id="dirty-events" hidden>Unsaved changes</span><button class="settings-save-stages-btn" type="button" data-save-section="events">Save Changes</button></div>
+            </div>
+            <div class="settings-new-grid">
+              <div class="settings-field-group"><label class="settings-field-label" for="events-minimum-days">Minimum days between submission and event date</label><input class="settings-input" id="events-minimum-days" type="number" min="0" max="365" data-section="events" data-field="minimumDaysBeforeEvent" /></div>
+              <div class="settings-field-group"><label class="settings-field-label" for="events-max-duration">Maximum event duration (days)</label><input class="settings-input" id="events-max-duration" type="number" min="1" max="365" data-section="events" data-field="maximumDurationDays" /></div>
+              <div class="settings-field-group"><label class="settings-field-label" for="events-max-monthly">Maximum events per organization per month</label><input class="settings-input" id="events-max-monthly" type="number" min="1" max="1000" data-section="events" data-field="maximumEventsPerOrganizationPerMonth" /></div>
+              <div class="settings-field-group"><label class="settings-field-label" for="events-default-capacity">Default capacity</label><input class="settings-input" id="events-default-capacity" type="number" min="1" max="100000" data-section="events" data-field="defaultCapacity" /></div>
+              <label class="settings-check-row"><input type="checkbox" role="switch" aria-checked="true" data-section="events" data-field="detectVenueConflicts" /><span>Detect venue conflicts</span></label>
+              <div class="settings-field-group"><label class="settings-field-label" for="events-final-doc-days">Final documents due after the event (days)</label><input class="settings-input" id="events-final-doc-days" type="number" min="0" max="365" data-section="events" data-field="finalDocumentsDueDaysAfterEvent" /></div>
+              <div class="settings-field-group settings-field-group--full"><label class="settings-field-label" for="events-allowed-categories">Allowed categories</label><div class="settings-tag-control" data-tag-wrapper="true"><div class="settings-tag-list" id="events-categories-tags" aria-hidden="true"></div><input class="settings-input settings-tag-entry" id="events-allowed-categories" type="text" data-section="events" data-field="allowedCategories" aria-label="Allowed categories, enter each category separated by a comma" /></div></div>
+            </div>
+            <p class="settings-section-error" id="error-events" role="alert" hidden></p>
+          </section>
+
+          <section class="settings-section settings-panel settings-new-section" data-settings-section="registration" aria-labelledby="registration-settings-heading">
+            <div class="settings-section-header">
+              <div class="settings-section-title-wrap">
+                <h2 class="settings-section-title" id="registration-settings-heading">Registration and attendance</h2>
+                <p class="settings-section-subtitle">Configure registration and QR check-in windows.</p>
+              </div>
+              <div class="settings-save-group"><span class="settings-dirty-label" id="dirty-registration" hidden>Unsaved changes</span><button class="settings-save-stages-btn" type="button" data-save-section="registration">Save Changes</button></div>
+            </div>
+            <div class="settings-new-grid">
+              <div class="settings-field-group"><label class="settings-field-label" for="registration-opens-days">Registration opens (days before event)</label><input class="settings-input" id="registration-opens-days" type="number" min="0" max="365" data-section="registration" data-field="opensDaysBeforeEvent" /></div>
+              <div class="settings-field-group"><label class="settings-field-label" for="registration-closes-hours">Registration closes (hours before start)</label><input class="settings-input" id="registration-closes-hours" type="number" min="0" max="8760" data-section="registration" data-field="closesHoursBeforeStart" /></div>
+              <div class="settings-field-group"><label class="settings-field-label" for="registration-cancel-hours">Student cancellation allowed until (hours before start)</label><input class="settings-input" id="registration-cancel-hours" type="number" min="0" max="8760" data-section="registration" data-field="studentCancellationHoursBeforeStart" /></div>
+              <div class="settings-field-group"><label class="settings-field-label" for="registration-qr-open">QR check-in opens (minutes before start)</label><input class="settings-input" id="registration-qr-open" type="number" min="0" max="1440" data-section="registration" data-field="qrCheckInOpensMinutesBeforeStart" /></div>
+              <div class="settings-field-group"><label class="settings-field-label" for="registration-qr-close">QR check-in closes (minutes after start)</label><input class="settings-input" id="registration-qr-close" type="number" min="0" max="10080" data-section="registration" data-field="qrCheckInClosesMinutesAfterStart" /></div>
+              <label class="settings-check-row"><input type="checkbox" role="switch" aria-checked="false" data-section="registration" data-field="walkInAllowed" /><span>Allow walk-in registration</span></label>
+              <label class="settings-check-row"><input type="checkbox" role="switch" aria-checked="true" data-section="registration" data-field="markAbsentAfterEventEnds" /><span>Mark absent after event ends</span></label>
+            </div>
+            <p class="settings-section-error" id="error-registration" role="alert" hidden></p>
+          </section>
+
+          <section class="settings-section settings-panel settings-new-section" data-settings-section="notifications" aria-labelledby="notifications-settings-heading">
+            <div class="settings-section-header">
+              <div class="settings-section-title-wrap">
+                <h2 class="settings-section-title" id="notifications-settings-heading">Notifications</h2>
+                <p class="settings-section-subtitle">These flags configure notification preferences; this page does not send notifications.</p>
+              </div>
+              <div class="settings-save-group"><span class="settings-dirty-label" id="dirty-notifications" hidden>Unsaved changes</span><button class="settings-save-stages-btn" type="button" data-save-section="notifications">Save Changes</button></div>
+            </div>
+            <div class="settings-new-grid settings-new-grid--checks">
+              <label class="settings-check-row"><input type="checkbox" role="switch" aria-checked="true" data-section="notifications" data-field="eventSubmitted" /><span>Event submitted</span></label>
+              <label class="settings-check-row"><input type="checkbox" role="switch" aria-checked="true" data-section="notifications" data-field="eventApproved" /><span>Event approved</span></label>
+              <label class="settings-check-row"><input type="checkbox" role="switch" aria-checked="true" data-section="notifications" data-field="eventRejected" /><span>Event rejected</span></label>
+              <label class="settings-check-row"><input type="checkbox" role="switch" aria-checked="true" data-section="notifications" data-field="eventPublished" /><span>Event published</span></label>
+              <label class="settings-check-row"><input type="checkbox" role="switch" aria-checked="true" data-section="notifications" data-field="eventCancelledOrRescheduled" /><span>Event cancelled or rescheduled</span></label>
+              <label class="settings-check-row"><input type="checkbox" role="switch" aria-checked="true" data-section="notifications" data-field="registrationConfirmation" /><span>Registration confirmation</span></label>
+              <label class="settings-check-row"><input type="checkbox" role="switch" aria-checked="true" data-section="notifications" data-field="eventTomorrowReminder" /><span>Event tomorrow reminder</span></label>
+            </div>
+            <p class="settings-section-error" id="error-notifications" role="alert" hidden></p>
+          </section>
+
+          <section class="settings-section settings-panel settings-new-section" data-settings-section="calendar" aria-labelledby="calendar-settings-heading">
+            <div class="settings-section-header">
+              <div class="settings-section-title-wrap">
+                <h2 class="settings-section-title" id="calendar-settings-heading">Calendar and holidays</h2>
+                <p class="settings-section-subtitle">Manage holidays and decide how event dates that overlap are handled.</p>
+              </div>
+              <div class="settings-save-group"><span class="settings-dirty-label" id="dirty-calendar" hidden>Unsaved changes</span><button class="settings-save-stages-btn" type="button" data-save-section="calendar">Save Changes</button></div>
+            </div>
+            <div class="settings-field-group">
+              <label class="settings-field-label" for="calendar-holiday-policy">Events on a holiday</label>
+              <select class="settings-select" id="calendar-holiday-policy" data-section="calendar" data-field="holidayEventPolicy">
+                <option value="warn">Warn</option>
+                <option value="block">Block</option>
+              </select>
+            </div>
+            <div class="settings-calendar-toolbar">
+              <h3 class="settings-subheading">Holiday dates</h3>
+              <button class="settings-outline-btn" id="add-holiday-btn" type="button">+ Add holiday</button>
+            </div>
+            <div class="settings-holiday-list" id="holiday-list" aria-label="Holiday entries"></div>
+            <div class="settings-field-group settings-csv-import">
+              <label class="settings-field-label" for="holiday-csv-input">Paste CSV (date,name,type)</label>
+              <textarea class="settings-input settings-textarea" id="holiday-csv-input" rows="4" placeholder="2026-01-01,New Year's Day,public"></textarea>
+              <div class="settings-inline-actions"><button class="settings-outline-btn" id="preview-holiday-csv-btn" type="button">Preview import</button><span class="settings-field-hint">Preview validates rows before adding them to the form.</span></div>
+              <div class="settings-csv-preview" id="holiday-csv-preview" aria-live="polite"></div>
+            </div>
+            <p class="settings-section-error" id="error-calendar" role="alert" hidden></p>
+          </section>
+
+          <section class="settings-section settings-panel settings-new-section" data-settings-section="audience" aria-labelledby="audience-settings-heading">
+            <div class="settings-section-header">
+              <div class="settings-section-title-wrap">
+                <h2 class="settings-section-title" id="audience-settings-heading">Audience lists</h2>
+                <p class="settings-section-subtitle">Manage active departments and programs. Codes are normalized for matching.</p>
+              </div>
+              <div class="settings-save-group"><span class="settings-dirty-label" id="dirty-audience" hidden>Unsaved changes</span><button class="settings-save-stages-btn" type="button" data-save-section="audience">Save Changes</button></div>
+            </div>
+            <div class="settings-audience-group">
+              <div class="settings-calendar-toolbar"><h3 class="settings-subheading">Departments</h3><button class="settings-outline-btn" type="button" data-add-audience="departments">+ Add department</button></div>
+              <div class="settings-audience-list" id="audience-departments-list"></div>
+            </div>
+            <div class="settings-audience-group">
+              <div class="settings-calendar-toolbar"><h3 class="settings-subheading">Programs</h3><button class="settings-outline-btn" type="button" data-add-audience="programs">+ Add program</button></div>
+              <div class="settings-audience-list" id="audience-programs-list"></div>
+            </div>
+            <p class="settings-section-error" id="error-audience" role="alert" hidden></p>
+          </section>
+
+          <div class="settings-sticky-save" id="settings-sticky-save" hidden>
+            <p id="settings-sticky-message">You have unsaved changes.</p>
+            <div class="settings-sticky-actions">
+              <button class="settings-outline-btn" id="discard-new-settings-btn" type="button">Discard</button>
+              <button class="settings-save-stages-btn" id="save-new-settings-btn" type="button">Save changes</button>
+            </div>
           </div>
 
           <!-- Secondary legacy entity controls preserved in DOM -->
@@ -259,13 +451,29 @@
         <p id="settings-confirm-text" style="font-size: 14px; color: #4b5563; line-height: 1.5; margin: 4px 0 12px 0;">
           Are you sure you want to save changes to the approval stages? New proposals will use this workflow; proposals already submitted keep their current stage sequence.
         </p>
+        <label class="settings-lock-confirm" id="settings-lock-confirm-field" for="settings-lock-confirm-input" hidden>
+          <span>Type LOCK to confirm disabling user login.</span>
+          <input id="settings-lock-confirm-input" type="text" autocomplete="off" spellcheck="false" />
+        </label>
         <div class="settings-modal-actions">
           <button class="settings-modal-button secondary" type="button" id="settings-confirm-cancel-btn">No, Cancel</button>
           <button class="settings-modal-button primary" type="button" id="settings-confirm-yes-btn">Yes, Save</button>
         </div>
       </div>
     </dialog>
-    <script type="module" src="superAdminGuard.js"></script>
+    <dialog class="settings-modal" id="org-stage-switch-dialog" aria-labelledby="org-stage-switch-title">
+      <div class="settings-modal-content" style="max-width: 480px;">
+        <div class="settings-modal-heading">
+          <h2 id="org-stage-switch-title">Unsaved organization stages</h2>
+        </div>
+        <p id="org-stage-switch-message">Save your changes before switching organizations?</p>
+        <div class="settings-modal-actions settings-org-stage-switch-actions">
+          <button class="settings-modal-button" id="org-stage-switch-cancel-btn" type="button">Cancel</button>
+          <button class="settings-modal-button" id="org-stage-switch-discard-btn" type="button">Discard</button>
+          <button class="settings-modal-button primary" id="org-stage-switch-save-btn" type="button">Save</button>
+        </div>
+      </div>
+    </dialog>
     <script type="module" src="systemSettings.js"></script>
     <script>
     (() => {
@@ -381,6 +589,7 @@
        confirm.textContent = "Log out";
        cancel.focus();
      };
+     window.addEventListener("superadmin-logout-reset", finishFailedLogout);
      document.addEventListener("click", (event) => {
        const target = event.target instanceof Element ? event.target.closest("a, button") : null;
        if (!target) return;
@@ -440,9 +649,9 @@
        pollId = window.setInterval(checkLogoutState, 100);
        logoutControl.dataset.rvLogoutProceed = "true";
        logoutControl.dataset.rvLogoutConfirmed = "true";
+       timeoutId = window.setTimeout(finishFailedLogout, 15000);
        logoutControl.click();
        delete logoutControl.dataset.rvLogoutConfirmed;
-       timeoutId = window.setTimeout(finishFailedLogout, 15000);
      });
      window.addEventListener("pagehide", () => {
        window.clearTimeout(timeoutId);

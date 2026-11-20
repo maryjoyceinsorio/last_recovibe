@@ -104,64 +104,76 @@
       </aside>
 
       <main class="main-content user-management-main" id="main-content" data-page-load-container="true" aria-busy="true">
-    <div class="page-preloader" id="pagePreloader" role="status" aria-live="polite">
-      <span class="page-preloader-spinner" aria-hidden="true"></span>
-      <span>Loading...</span>
-    </div>
+        <div class="page-preloader" id="pagePreloader" role="status" aria-live="polite">
+          <span class="page-preloader-spinner" aria-hidden="true"></span>
+          <span>Loading...</span>
+        </div>
         <header class="user-management-header">
-          <h1 class="visually-hidden">User Management</h1>
-          <div class="user-search-box">
-            <svg
-              class="user-search-icon"
-              width="16"
-              height="16"
-              viewBox="0 0 20 20"
-              fill="none"
-              aria-hidden="true"
-            >
-              <circle
-                cx="8.8"
-                cy="8.8"
-                r="5.6"
-                stroke="currentColor"
-                stroke-width="1.6"
-              />
-              <path
-                d="M13 13l4 4"
-                stroke="currentColor"
-                stroke-width="1.6"
-                stroke-linecap="round"
-              />
-            </svg>
-            <input
-              type="search"
-              id="user-search-input"
-              class="user-search-input"
-              placeholder="Search users"
-              aria-label="Search users"
-              autocomplete="off"
-            />
+          <div>
+            <h1>User Management</h1>
+            <p>Manage account access, roles, and profile details.</p>
           </div>
-          <button class="create-user-button" id="create-user-button" type="button">Create New User</button>
+          <button class="create-user-button" id="create-user-button" type="button">+ Create New User</button>
         </header>
+
+        <section class="user-summary-grid" aria-label="User summary">
+          <article class="user-summary-card"><span>Total users</span><strong id="summary-total">0</strong></article>
+          <article class="user-summary-card"><span>Students</span><strong id="summary-students">0</strong></article>
+          <article class="user-summary-card"><span>Event organizers</span><strong id="summary-organizers">0</strong></article>
+          <article class="user-summary-card"><span>Admins, teachers &amp; super admins</span><strong id="summary-staff">0</strong></article>
+          <article class="user-summary-card user-summary-card--suspended"><span>Suspended</span><strong id="summary-suspended">0</strong></article>
+        </section>
+
+        <section class="user-toolbar" aria-label="User filters">
+          <label class="user-search-box" for="user-search-input">
+            <svg class="user-search-icon" viewBox="0 0 20 20" fill="none" aria-hidden="true">
+              <circle cx="8.8" cy="8.8" r="5.6" stroke="currentColor" stroke-width="1.6" />
+              <path d="M13 13l4 4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
+            </svg>
+            <input type="search" id="user-search-input" class="user-search-input" placeholder="Search name, email or account no." autocomplete="off" />
+          </label>
+          <div class="user-filter-groups">
+            <div class="user-role-filters" role="group" aria-label="Filter by role">
+              <button type="button" class="user-filter-pill is-active" data-role-filter="All" aria-pressed="true">All</button>
+              <button type="button" class="user-filter-pill" data-role-filter="Student" aria-pressed="false">Student</button>
+              <button type="button" class="user-filter-pill" data-role-filter="Event Organizer" aria-pressed="false">Event Organizer</button>
+              <button type="button" class="user-filter-pill" data-role-filter="Admin" aria-pressed="false">Admin</button>
+              <button type="button" class="user-filter-pill" data-role-filter="Teacher" aria-pressed="false">Teacher</button>
+              <button type="button" class="user-filter-pill" data-role-filter="Super Admin" aria-pressed="false">Super Admin</button>
+            </div>
+            <button type="button" class="user-filter-pill user-suspended-filter" id="suspended-only-filter" aria-pressed="false">Suspended only</button>
+          </div>
+          <p class="user-result-count" id="user-result-count" aria-live="polite">Loading users…</p>
+        </section>
+
         <section class="user-table-card" aria-labelledby="user-table-heading">
           <h2 class="visually-hidden" id="user-table-heading">User accounts</h2>
+          <div class="user-load-error" id="user-load-error" role="alert" hidden>
+            <p id="user-load-error-message"></p>
+            <button type="button" class="user-retry-button" id="retry-user-load">Retry</button>
+          </div>
           <div class="user-table-wrap">
             <table class="user-table" id="user-management-table">
               <caption class="visually-hidden">RecoVibe user accounts, roles, and statuses</caption>
               <thead>
                 <tr>
-                  <th scope="col">User</th>
-                  <th scope="col">Account No.</th>
-                  <th scope="col">Email</th>
-                  <th scope="col">Role</th>
-                  <th scope="col">Status</th>
+                  <th scope="col" aria-sort="ascending"><button type="button" class="user-sort-button" data-sort="name">User <span aria-hidden="true">↑</span></button></th>
+                  <th scope="col">Account no.</th>
+                  <th scope="col"><button type="button" class="user-sort-button" data-sort="role">Role <span aria-hidden="true">↕</span></button></th>
+                  <th scope="col"><button type="button" class="user-sort-button" data-sort="status">Status <span aria-hidden="true">↕</span></button></th>
                   <th scope="col">Action</th>
                 </tr>
               </thead>
               <tbody id="user-table-tbody"></tbody>
             </table>
           </div>
+          <nav class="user-pagination" id="user-pagination" aria-label="User table pages">
+            <p id="user-pagination-summary">Showing 0 to 0 of 0</p>
+            <div>
+              <button type="button" id="previous-user-page" class="user-page-button" aria-label="Previous page">Previous</button>
+              <button type="button" id="next-user-page" class="user-page-button" aria-label="Next page">Next</button>
+            </div>
+          </nav>
         </section>
       </main>
     </div>
@@ -217,7 +229,6 @@
             <option>Event Organizer</option>
             <option>Teacher</option>
             <option>Admin</option>
-            <option>CSC</option>
             <option>Super Admin</option>
           </select>
           <input id="new-user-role-value" name="role" type="hidden" />
@@ -232,9 +243,9 @@
         </label>
         <div id="staff-auth-fields" hidden>
           <div class="form-field">
-            <label for="new-user-password">Password</label>
+            <label for="new-user-password">Temporary password</label>
             <div class="sa-password-toggle">
-              <input id="new-user-password" name="password" type="password" autocomplete="new-password" minlength="6" />
+              <input id="new-user-password" name="password" type="password" autocomplete="new-password" minlength="8" />
               <button class="sa-password-toggle-button" type="button" aria-label="Show password" aria-pressed="false" aria-controls="new-user-password">
                 <svg class="sa-password-eye" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
                   <path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7Z" />
@@ -248,9 +259,9 @@
             </div>
           </div>
           <div class="form-field">
-            <label for="new-user-password-confirmation">Confirm Password</label>
+            <label for="new-user-password-confirmation">Confirm temporary password</label>
             <div class="sa-password-toggle">
-              <input id="new-user-password-confirmation" name="passwordConfirmation" type="password" autocomplete="new-password" minlength="6" />
+              <input id="new-user-password-confirmation" name="passwordConfirmation" type="password" autocomplete="new-password" minlength="8" />
               <button class="sa-password-toggle-button" type="button" aria-label="Show confirm password" aria-pressed="false" aria-controls="new-user-password-confirmation">
                 <svg class="sa-password-eye" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
                   <path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7Z" />
@@ -281,125 +292,67 @@
 
     <dialog class="user-dialog details-dialog" id="user-details-modal-backdrop" aria-labelledby="user-details-name">
       <div class="user-dialog-content details-content">
-        <button class="dialog-dismiss" type="button" data-close-dialog aria-label="Close user details">×</button>
+        <header class="details-panel-header">
+          <p>Account details</p>
+          <button class="dialog-dismiss" type="button" data-close-dialog aria-label="Close user details">×</button>
+        </header>
+        <div class="details-user-avatar" id="user-details-avatar" aria-hidden="true"></div>
         <h2 id="user-details-name"></h2>
-        <p class="user-detail-subtitle"><span id="user-details-role"></span><span aria-hidden="true">|</span><span id="user-details-status"></span></p>
+        <div class="user-detail-badges">
+          <span class="user-role-pill" id="user-details-role"></span>
+          <span class="user-status-pill" id="user-details-status"></span>
+        </div>
         <section class="user-account-information" aria-labelledby="user-account-heading">
-          <h3 id="user-account-heading">Account Information:</h3>
+          <h3 id="user-account-heading">Account information</h3>
           <dl>
-            <div><dt>Full Name:</dt><dd id="user-detail-full-name"></dd></div>
-            <div><dt>Account / Student Number:</dt><dd id="user-detail-account-number"></dd></div>
-            <div><dt>Email:</dt><dd id="user-detail-email"></dd></div>
-            <div><dt>Contact Number:</dt><dd id="user-detail-contact"></dd></div>
-            <div><dt>Department / Program:</dt><dd id="user-detail-department"></dd></div>
-            <div><dt>Year &amp; Section:</dt><dd id="user-detail-year-section"></dd></div>
-            <div><dt>Organization / Department:</dt><dd id="user-detail-organization"></dd></div>
-            <div><dt>Role:</dt><dd id="user-detail-role"></dd></div>
+            <div><dt>Email</dt><dd id="user-detail-email"></dd></div>
+            <div><dt>Account no.</dt><dd id="user-detail-account-number"></dd></div>
+            <div><dt>Role</dt><dd id="user-detail-role"></dd></div>
+            <div><dt>Status</dt><dd id="user-detail-status-value"></dd></div>
           </dl>
         </section>
         <div class="user-details-actions">
-          <button class="user-modal-button primary" id="edit-user-button" type="button">Edit User Information</button>
-          <button class="user-modal-button danger" id="delete-user-button" type="button">Delete Account</button>
-          <button class="user-modal-button primary" id="toggle-user-status-button" type="button">Suspend Account</button>
-          <a class="user-modal-button secondary" id="view-user-activity" href="SuperAdminAuditLogs.html">View Activity</a>
-          <button class="user-modal-button secondary" type="button" data-close-dialog>Close</button>
+          <button class="user-modal-button danger" id="toggle-user-status-button" type="button">Suspend account</button>
+          <button class="user-modal-button secondary" id="change-user-role-button" type="button">Change role</button>
+          <button class="user-modal-button secondary" id="send-password-reset-button" type="button">Send password reset email</button>
+          <a class="user-modal-button secondary" id="view-user-activity" href="SuperAdminAuditLogs.html">View activity in Audit Logs</a>
         </div>
+        <p class="details-safety-note" id="user-safety-note"></p>
       </div>
     </dialog>
 
-    <dialog class="user-dialog edit-user-dialog" id="edit-user-dialog" aria-labelledby="edit-user-title">
-      <form class="user-dialog-content user-form" id="edit-user-form">
-        <div class="user-dialog-heading">
-          <h2 id="edit-user-title">Edit User Information</h2>
-          <button class="dialog-dismiss" type="button" data-close-dialog aria-label="Close edit user form">×</button>
-        </div>
-        <label class="form-field" for="edit-user-fullname">
-          <span>Full Name</span>
-          <input id="edit-user-fullname" name="fullName" type="text" autocomplete="name" required />
-        </label>
-        <label class="form-field" for="edit-user-account-number">
-          <span>Account / Student Number</span>
-          <input id="edit-user-account-number" name="accountNumber" type="text" />
-        </label>
-        <label class="form-field" for="edit-user-email">
-          <span>Email</span>
-          <input id="edit-user-email" name="email" type="email" autocomplete="email" required />
-        </label>
-        <label class="form-field" for="edit-user-contact">
-          <span>Contact Number</span>
-          <input id="edit-user-contact" name="contactNumber" type="tel" value="09" maxlength="11" autocomplete="tel" />
-        </label>
-        <label class="form-field" for="edit-user-department">
-          <span>Department / Program</span>
-          <input id="edit-user-department" name="department" type="text" />
-        </label>
-        <label class="form-field" for="edit-user-year-section">
-          <span>Year &amp; Section</span>
-          <input id="edit-user-year-section" name="yearSection" type="text" />
-        </label>
-        <label class="form-field" for="edit-user-organization">
-          <span>Organization / Department</span>
-          <input id="edit-user-organization" name="organizationDepartment" type="text" />
-        </label>
-        <label class="form-field" for="edit-user-role">
-          <span>Role</span>
-          <select id="edit-user-role" name="role">
+    <dialog class="user-dialog confirm-dialog" id="change-role-dialog" aria-labelledby="change-role-title">
+      <form class="user-dialog-content confirm-dialog-content" id="change-role-form">
+        <h2 id="change-role-title">Change role</h2>
+        <p id="change-role-description">Choose a role in the same profile collection.</p>
+        <label class="form-field" for="change-user-role-select">
+          <span>New role</span>
+          <select id="change-user-role-select" required>
             <option value="Student">Student</option>
-            <option value="Teacher">Teacher</option>
             <option value="Event Organizer">Event Organizer</option>
             <option value="Admin">Admin</option>
+            <option value="Teacher">Teacher</option>
             <option value="Super Admin">Super Admin</option>
           </select>
         </label>
-        <label class="form-field" for="edit-user-status">
-          <span>Status</span>
-          <select id="edit-user-status" name="status">
-            <option value="Active">Active</option>
-            <option value="Suspended">Suspended</option>
-            <option value="Inactive">Inactive</option>
-          </select>
-        </label>
+        <p class="role-change-hint" id="role-change-hint"></p>
         <div class="user-dialog-actions">
           <button class="user-modal-button secondary" type="button" data-close-dialog>Cancel</button>
-          <button class="user-modal-button primary" id="save-edit-user-button" type="submit">Save Changes</button>
+          <button class="user-modal-button primary" type="submit">Continue</button>
         </div>
       </form>
     </dialog>
 
-    <dialog class="user-dialog confirm-dialog" id="confirm-edit-dialog" aria-labelledby="confirm-edit-title">
+    <dialog class="user-dialog confirm-dialog" id="action-confirm-dialog" aria-labelledby="action-confirm-title">
       <div class="user-dialog-content confirm-dialog-content">
-        <h2 id="confirm-edit-title">Confirm Changes</h2>
-        <p id="confirm-edit-message">Are you sure you want to save the changes made to this user's account?</p>
-        <div class="confirm-changes-summary" id="confirm-changes-summary"></div>
-        <div class="user-dialog-actions" style="justify-content: center; gap: 12px;">
-          <button class="user-modal-button secondary" id="cancel-confirm-edit-button" type="button">Cancel</button>
-          <button class="user-modal-button primary" id="confirm-save-edit-button" type="button">Confirm &amp; Save</button>
+        <h2 id="action-confirm-title">Confirm change</h2>
+        <p id="action-confirm-message"></p>
+        <div class="user-dialog-actions">
+          <button class="user-modal-button secondary" id="cancel-action-confirm" type="button">Cancel</button>
+          <button class="user-modal-button primary" id="confirm-action-button" type="button">Confirm</button>
         </div>
       </div>
     </dialog>
-
-    <dialog class="user-dialog confirm-dialog" id="confirm-status-dialog" aria-labelledby="confirm-status-title">
-      <div class="user-dialog-content confirm-dialog-content">
-        <h2 id="confirm-status-title">Suspend Account</h2>
-        <p id="confirm-status-message">Are you sure you want to suspend this user's account?</p>
-        <div class="user-dialog-actions" style="justify-content: center; gap: 12px;">
-          <button class="user-modal-button secondary" id="cancel-confirm-status-button" type="button" data-close-dialog>Cancel</button>
-          <button class="user-modal-button primary" id="confirm-status-action-button" type="button">Confirm</button>
-        </div>
-      </div>
-    </dialog>
-
-    <dialog class="user-dialog confirm-dialog" id="confirm-delete-dialog" aria-labelledby="confirm-delete-title">
-      <div class="user-dialog-content confirm-dialog-content">
-        <h2 id="confirm-delete-title" style="color: #b31b1b;">Delete Account</h2>
-        <p id="confirm-delete-message">Are you sure you want to permanently delete this user's account? This action cannot be undone.</p>
-        <div class="user-dialog-actions" style="justify-content: center; gap: 12px;">
-          <button class="user-modal-button secondary" id="cancel-confirm-delete-button" type="button" data-close-dialog>Cancel</button>
-          <button class="user-modal-button danger" id="confirm-delete-action-button" type="button">Delete Account</button>
-        </div>
-      </div>
-    </dialog>
-    <script type="module" src="superAdminGuard.js"></script>
     <script type="module" src="UserManagement.js"></script>
     <script>
     (() => {
@@ -515,6 +468,7 @@
        confirm.textContent = "Log out";
        cancel.focus();
      };
+     window.addEventListener("superadmin-logout-reset", finishFailedLogout);
      document.addEventListener("click", (event) => {
        const target = event.target instanceof Element ? event.target.closest("a, button") : null;
        if (!target) return;
@@ -574,9 +528,9 @@
        pollId = window.setInterval(checkLogoutState, 100);
        logoutControl.dataset.rvLogoutProceed = "true";
        logoutControl.dataset.rvLogoutConfirmed = "true";
+       timeoutId = window.setTimeout(finishFailedLogout, 15000);
        logoutControl.click();
        delete logoutControl.dataset.rvLogoutConfirmed;
-       timeoutId = window.setTimeout(finishFailedLogout, 15000);
      });
      window.addEventListener("pagehide", () => {
        window.clearTimeout(timeoutId);

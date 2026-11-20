@@ -169,31 +169,69 @@ import {
   }
 
   function buildFirestoreApproval(event) {
-    const workflow = getEventStage(event);
+    const safeEvent = event && typeof event === "object" ? event : {};
+    const workflow = getEventStage(safeEvent);
     const standardStages = [
       { key: "org_adv", label: "Organization Adviser", aliases: ["org_adv", "org adviser", "organization adviser", "organization adviser review", "migs", "michael anjelo miguel"] },
       { key: "sir_abelida", label: "Laboratory Head, Property Custodian, Administrative Officer", aliases: ["sir_abelida", "abelidads", "abelida", "sir abelida", "gerino abelida", "gerino abelida jr", "laboratory head", "property custodian", "administrative officer", "laboratory head property custodian administrative officer"] },
       { key: "hap", label: "Head of Academic Programs, QAC Coordinator", aliases: ["hap", "archong", "archie", "archie arevalo", "head of academic programs", "qac coordinator", "head of academic programs qac coordinator"] },
       { key: "osas", label: "OSAS", aliases: ["osas", "cheryl joyce jurado", "joyce"] },
     ];
-    const sourceStages = event.approvalStages;
+    const sourceStages = safeEvent.approvalStages;
     const stageEntries = Array.isArray(sourceStages)
-      ? sourceStages.map((stage, index) => [String(stage?.id || index), stage || {}])
-      : Object.entries(sourceStages || {});
+      ? sourceStages.flatMap((stage, index) =>
+          stage && typeof stage === "object" && !Array.isArray(stage)
+            ? [[String(stage.id || stage.key || index), stage]]
+            : [],
+        )
+      : sourceStages && typeof sourceStages === "object"
+        ? Object.entries(sourceStages).filter(([, stage]) =>
+            stage && typeof stage === "object" && !Array.isArray(stage),
+          )
+        : [];
     const normalizeKey = (value) => String(value || "").toLowerCase().replace(/[^a-z0-9]/g, "");
-    const overallStatusValues = getEventStatusValues(event);
-    const approvalHistory = Array.isArray(event.approvalHistory) ? event.approvalHistory : [];
+    const approvalHistory = Array.isArray(safeEvent.approvalHistory)
+      ? safeEvent.approvalHistory.filter((entry) => entry && typeof entry === "object" && !Array.isArray(entry))
+      : [];
+    const overallStatusValues = getEventStatusValues(safeEvent);
     const members = {};
 
-    workflow.stages.forEach((stageState) => {
-      const stage = standardStages.find((candidate) => candidate.key === stageState.key);
+    (Array.isArray(workflow?.stages) ? workflow.stages : [])
+      .filter((stageState) => stageState && typeof stageState === "object")
+      .forEach((stageState) => {
+      const stageKey = String(stageState.key || stageState.id || "").trim();
+      if (!stageKey) return;
+      const standardStage = standardStages.find((candidate) => candidate.key === stageKey);
+      const stage = standardStage || {
+        key: stageKey,
+        label: String(stageState.label || stageState.name || stageKey),
+        aliases: [],
+      };
+      const aliases = [
+        ...(Array.isArray(stage.aliases) ? stage.aliases : []),
+        ...(Array.isArray(stageState.aliases) ? stageState.aliases : []),
+        stage.key,
+        stage.label,
+        stageState.id,
+        stageState.name,
+        stageState.label,
+      ]
+        .map(normalizeKey)
+        .filter(Boolean);
       const source = stageEntries.find(([id, candidate]) =>
-        [id, candidate?.id, candidate?.key, candidate?.label, candidate?.name]
-          .some((value) => stage.aliases.some((alias) => normalizeKey(alias) === normalizeKey(value)) ||
-            normalizeKey(value) === normalizeKey(stage.key) ||
-            normalizeKey(value) === normalizeKey(stage.label)),
+        [id, candidate.id, candidate.key, candidate.label, candidate.name,
+          ...(Array.isArray(candidate.aliases) ? candidate.aliases : [])]
+          .map(normalizeKey)
+          .some((value) => value && aliases.includes(value)),
       )?.[1] || {};
-      const assignment = event.approverAssignments?.[stage.key] || {};
+      const assignments = safeEvent.approverAssignments &&
+        typeof safeEvent.approverAssignments === "object" &&
+        !Array.isArray(safeEvent.approverAssignments)
+        ? safeEvent.approverAssignments
+        : {};
+      const assignment = assignments[stage.key] && typeof assignments[stage.key] === "object"
+        ? assignments[stage.key]
+        : {};
       const hasApprover = [
         source.reviewerUid,
         source.assignedReviewerUid,
@@ -210,10 +248,10 @@ import {
         assignment.reviewerEmail,
         assignment.approverEmail,
         assignment.email,
-        event[`${stage.key}ReviewerUid`],
-        event[`${stage.key}ApproverUid`],
-        event[`${stage.key}ReviewerEmail`],
-        event[`${stage.key}ApproverEmail`],
+        safeEvent[`${stage.key}ReviewerUid`],
+        safeEvent[`${stage.key}ApproverUid`],
+        safeEvent[`${stage.key}ReviewerEmail`],
+        safeEvent[`${stage.key}ApproverEmail`],
       ].some((value) => String(value || "").trim());
       const historyEntry = stageState.approvedEntry;
       const status = stageState.state === "approved"
@@ -223,7 +261,7 @@ import {
           : "wait";
       members[stage.key] = {
         key: stage.key,
-        label: stage.label,
+        label: stage.label || stageState.label || stageState.name || stage.key,
         step: stageState.step,
         status,
         note: stageState.state === "current" && !hasApprover
@@ -235,7 +273,9 @@ import {
     });
 
     const files = {};
-    (Array.isArray(event.approvalDocuments) ? event.approvalDocuments : []).forEach((file, index) => {
+    (Array.isArray(safeEvent.approvalDocuments) ? safeEvent.approvalDocuments : [])
+      .filter((file) => file && typeof file === "object" && !Array.isArray(file))
+      .forEach((file, index) => {
       files[file.id || `firestore-file-${index}`] = {
         ...file,
         id: file.id || `firestore-file-${index}`,
@@ -243,11 +283,11 @@ import {
         status: file.status || "ok",
       };
     });
-    if (event.adminDocuments) {
+    if (safeEvent.adminDocuments) {
       files.adminDocuments = {
         id: "adminDocuments",
         name: "Admin documents",
-        path: event.adminDocuments,
+        path: safeEvent.adminDocuments,
         status: "ok",
       };
     }
@@ -259,7 +299,7 @@ import {
     ) || overallStatusValues.find((value) => value !== "approved") || "pending";
 
     return {
-      submittedAt: event.approvalSubmittedAt || event.createdAt,
+      submittedAt: safeEvent.approvalSubmittedAt || safeEvent.createdAt,
       members,
       files,
       history: approvalHistory,
@@ -399,16 +439,23 @@ import {
   }
 
   function getHistoryBasedApproval(event) {
-    const existing = getApprovalForEvent(event);
-    const history = Array.isArray(event.approvalHistory)
-      ? event.approvalHistory
+    const safeEvent = event && typeof event === "object" ? event : {};
+    const existingApproval = getApprovalForEvent(safeEvent);
+    const existing = existingApproval && typeof existingApproval === "object"
+      ? existingApproval
+      : {};
+    const history = Array.isArray(safeEvent.approvalHistory)
+      ? safeEvent.approvalHistory.filter((entry) => entry && typeof entry === "object" && !Array.isArray(entry))
       : [];
-    const derived = buildFirestoreApproval({ ...event, approvalHistory: history });
+    const derived = buildFirestoreApproval({ ...safeEvent, approvalHistory: history });
     return {
       ...existing,
       ...derived,
-      members: derived.members,
-      files: { ...derived.files, ...(existing?.files || {}) },
+      members: derived.members && typeof derived.members === "object" ? derived.members : {},
+      files: {
+        ...(derived.files && typeof derived.files === "object" ? derived.files : {}),
+        ...(existing.files && typeof existing.files === "object" ? existing.files : {}),
+      },
       history,
       status: derived.status,
     };
@@ -510,8 +557,9 @@ import {
    * Build the Approval column bar and status line (Task 1)
    */
   function buildApprovalColumnMarkup(event) {
-    const approval = getHistoryBasedApproval(event);
-    const effStatus = normalizeStatus(getEffectiveStatus(event));
+    const safeEvent = event && typeof event === "object" ? event : {};
+    const approval = getHistoryBasedApproval(safeEvent);
+    const effStatus = normalizeStatus(getEffectiveStatus(safeEvent));
 
     if (effStatus === "cancelled") {
       return `
@@ -523,8 +571,12 @@ import {
         </div>`;
     }
 
-    const membersList = Object.values(approval.members)
-      .sort((a, b) => (a.step || 0) - (b.step || 0));
+    const members = approval.members && typeof approval.members === "object"
+      ? approval.members
+      : {};
+    const membersList = Object.values(members)
+      .filter((member) => member && typeof member === "object")
+      .sort((a, b) => (Number(a.step) || 0) - (Number(b.step) || 0));
     const totalSteps = membersList.length;
 
     let currentReviewer = null;
@@ -533,7 +585,7 @@ import {
     let allApproved = true;
 
     const segmentsMarkup = Array.from({ length: totalSteps }, (_, index) => {
-      const member = membersList.find((item) => item.step === index + 1);
+      const member = membersList.find((item) => Number(item.step) === index + 1);
       if (!member) {
         allApproved = false;
         return '<span class="approval-segment is-waiting" aria-hidden="true"></span>';
@@ -567,7 +619,7 @@ import {
     } else if (revisionRequester || effStatus === "revision") {
       const who = revisionRequester ? revisionRequester.label : "Approver";
       statusLineText = `Changes requested by ${escapeHtml(who)}`;
-    } else if (allApproved && isFullyApproved(event)) {
+    } else if (allApproved && isFullyApproved(safeEvent)) {
       statusLineText = `All ${totalSteps} steps approved`;
     } else if (currentReviewer) {
       statusLineText = `Step ${currentReviewer.step} of ${totalSteps}: ${escapeHtml(currentReviewer.label)}`;

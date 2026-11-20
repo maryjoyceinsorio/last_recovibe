@@ -24,6 +24,7 @@ import {
   isRtdbConfigured,
 } from "../UserStudent/firebaseConfig.js";
 import { mountHelpBot } from "../recoVibeHelpBot.js";
+import { getCurrentStageKey, getStages } from "../eventWorkflow.js";
 
 (() => {
   "use strict";
@@ -120,7 +121,15 @@ import { mountHelpBot } from "../recoVibeHelpBot.js";
     signalDashboardPageReady();
   }
   function getCurrentAdminStage(adminProfile) {
-    const normalize = (value) => String(value || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+    const normalize = (value) => {
+      const normalized = String(value || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+      if (
+        normalized === "piie" ||
+        normalized === "piee" ||
+        normalized.includes("philippineinstituteofindustrialengineers")
+      ) return "piie";
+      return normalized;
+    };
     const accountValues = [
       adminProfile?.accountNumber, adminProfile?.accountNo,
       adminProfile?.account_number, adminProfile?.account_no,
@@ -169,10 +178,91 @@ import { mountHelpBot } from "../recoVibeHelpBot.js";
       hap: ["hap", "headofacademicprograms", "qaccoordinator"],
       osas: ["osas"],
     };
-    const normalize = (value) => String(value || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+    const normalize = (value) => {
+      const normalized = String(value || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+      if (["piie", "piee"].includes(normalized) ||
+          normalized.includes("philippineinstituteofindustrialengineers")) return "piie";
+      return normalized;
+    };
     const resolveStage = (values) => stageOrder.find((key) =>
       values.some((value) => aliases[key].includes(normalize(value))),
     );
+    if (
+      ["organization", "default"].includes(event.stagesSource) &&
+      Array.isArray(event.approvalStages)
+    ) {
+      const currentStageKey = getCurrentStageKey(event);
+      if (!currentStageKey || !getStages(event).includes(currentStageKey)) return false;
+      const stage = event.approvalStages.find((entry) => String(entry?.id || "") === currentStageKey);
+      if (!stage) return false;
+      const assignments = event.approverAssignments?.[currentStageKey] || {};
+      const assignedUid = String(
+        stage.reviewerUid || stage.assignedReviewerUid || stage.approverUid ||
+        assignments.reviewerUid || assignments.approverUid || assignments.uid || "",
+      ).trim();
+      const assignedEmail = String(
+        stage.reviewerEmail || stage.assignedReviewerEmail || stage.approverEmail ||
+        assignments.reviewerEmail || assignments.approverEmail || assignments.email || "",
+      ).trim().toLowerCase();
+      if (assignedEmail || assignedUid) {
+        return Boolean(
+          (assignedEmail && assignedEmail === String(auth.currentUser.email || "").trim().toLowerCase()) ||
+          (assignedUid && assignedUid === auth.currentUser.uid),
+        );
+      }
+
+      const snapshotStageRole = resolveStage([
+        currentStageKey,
+        stage.key,
+        stage.roleKey,
+        stage.name,
+        stage.label,
+        stage.reviewer,
+        stage.reviewerName,
+        ...(Array.isArray(stage.aliases) ? stage.aliases : []),
+      ]);
+      if (!snapshotStageRole || snapshotStageRole !== getCurrentAdminStage(profile)) return false;
+      if (snapshotStageRole !== "org_adv") return true;
+      const normalizeOrg = (value) => {
+        const normalized = String(value ?? "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+        if (
+          normalized === "piie" ||
+          normalized === "piee" ||
+          normalized.includes("philippineinstituteofindustrialengineers")
+        ) return "piie";
+        return normalized;
+      };
+      const profileOrgIds = new Set([
+        profile.organizationCode,
+        profile.organizationId,
+        profile.orgCode,
+        profile.orgId,
+        profile.organization,
+        profile.organizationName,
+        profile.orgName,
+        ...(Array.isArray(profile.organizations) ? profile.organizations : []),
+        ...(Array.isArray(profile.orgIds) ? profile.orgIds : []),
+        ...(Array.isArray(profile.assignedOrgs) ? profile.assignedOrgs : []),
+        ...(Array.isArray(profile.adviserOf) ? profile.adviserOf : []),
+        ...(Array.isArray(profile.courseOrganizations) ? profile.courseOrganizations : []),
+        profile.courseOrganization,
+      ].map(normalizeOrg).filter(Boolean));
+      const eventOrgIds = new Set([
+        event.orgId,
+        event.organizationId,
+        event.organizationCode,
+        event.organizerOrg,
+        event.organizerOrganization,
+        event.organization,
+        event.organizationName,
+        event.orgName,
+        ...(Array.isArray(event.orgIds) ? event.orgIds : []),
+        ...(Array.isArray(event.organizationCodes) ? event.organizationCodes : []),
+        ...(Array.isArray(event.targetOrganizations) ? event.targetOrganizations : []),
+        ...(Array.isArray(event.partnerOrganizations) ? event.partnerOrganizations : []),
+      ].map(normalizeOrg).filter(Boolean));
+      return [...eventOrgIds].some((organizationId) => profileOrgIds.has(organizationId));
+    }
     const rawStages = event.approvalStages;
     const entries = Array.isArray(rawStages)
       ? rawStages.map((stage, index) => [String(stage?.id || index), stage || {}])
@@ -232,10 +322,53 @@ import { mountHelpBot } from "../recoVibeHelpBot.js";
         osas: event.osasEmail,
       })[currentStage.key] || "",
     ).trim().toLowerCase();
-    return assignedUid ? assignedUid === auth.currentUser.uid
-      : assignedEmail ? assignedEmail === String(auth.currentUser.email || "").trim().toLowerCase()
-      : currentAdminUid === auth.currentUser.uid &&
-        getCurrentAdminStage(profile) === currentStage.key;
+    if (assignedEmail || assignedUid) {
+      return Boolean(
+        (assignedEmail && assignedEmail === String(auth.currentUser.email || "").trim().toLowerCase()) ||
+        (assignedUid && assignedUid === auth.currentUser.uid),
+      );
+    }
+    if (
+      currentAdminUid !== auth.currentUser.uid ||
+      getCurrentAdminStage(profile) !== currentStage.key
+    ) return false;
+    if (currentStage.key !== "org_adv") return true;
+    const normalizeOrg = (value) => {
+      const normalized = String(value ?? "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+      if (["piie", "piee"].includes(normalized) ||
+          normalized.includes("philippineinstituteofindustrialengineers")) return "piie";
+      return normalized;
+    };
+    const profileOrgIds = new Set([
+      profile.organizationCode,
+      profile.organizationId,
+      profile.orgCode,
+      profile.orgId,
+      profile.organization,
+      profile.organizationName,
+      profile.orgName,
+      ...(Array.isArray(profile.organizations) ? profile.organizations : []),
+      ...(Array.isArray(profile.orgIds) ? profile.orgIds : []),
+      ...(Array.isArray(profile.assignedOrgs) ? profile.assignedOrgs : []),
+      ...(Array.isArray(profile.adviserOf) ? profile.adviserOf : []),
+      ...(Array.isArray(profile.courseOrganizations) ? profile.courseOrganizations : []),
+      profile.courseOrganization,
+    ].map(normalizeOrg).filter(Boolean));
+    const eventOrgIds = new Set([
+      event.orgId,
+      event.organizationId,
+      event.organizationCode,
+      event.organizerOrg,
+      event.organizerOrganization,
+      event.organization,
+      event.organizationName,
+      event.orgName,
+      ...(Array.isArray(event.orgIds) ? event.orgIds : []),
+      ...(Array.isArray(event.organizationCodes) ? event.organizationCodes : []),
+      ...(Array.isArray(event.targetOrganizations) ? event.targetOrganizations : []),
+      ...(Array.isArray(event.partnerOrganizations) ? event.partnerOrganizations : []),
+    ].map(normalizeOrg).filter(Boolean));
+    return [...eventOrgIds].some((organizationId) => profileOrgIds.has(organizationId));
   }
   function normalizeEvent(eventDocument) {
     const data = eventDocument.data();
@@ -807,9 +940,11 @@ import { mountHelpBot } from "../recoVibeHelpBot.js";
         return;
       }
       currentAdminUid = user.uid;
-      const [adminResult, userResult] = await Promise.allSettled([
+      const [adminResult, userResult, approverResult, globalConfigResult] = await Promise.allSettled([
         getDoc(doc(db, "adminUser", user.uid)),
         getDoc(doc(db, "users", user.uid)),
+        getDoc(doc(db, "approverOrganizations", user.uid)),
+        getDoc(doc(db, "system_settings", "global_config")),
       ]);
       if (dashboardLoadExpired) return;
       if (adminResult.status === "rejected") throw adminResult.reason;
@@ -828,7 +963,43 @@ import { mountHelpBot } from "../recoVibeHelpBot.js";
           uid: user.uid,
         });
       }
-      const verifiedProfile = { ...userProfile, ...adminProfile };
+      const approverProfile = approverResult.status === "fulfilled" && approverResult.value.exists()
+        ? approverResult.value.data() || {}
+        : {};
+      const globalConfig = globalConfigResult.status === "fulfilled" && globalConfigResult.value.exists()
+        ? globalConfigResult.value.data() || {}
+        : {};
+      const signedInEmail = String(user.email || "").trim().toLowerCase();
+      const emailMatchedOrganizations = [];
+      if (Array.isArray(globalConfig.organizations)) {
+        globalConfig.organizations.forEach((organization) => {
+          if (!organization || typeof organization !== "object") return;
+          const adviserEmail = String(
+            organization.adviserEmail ||
+            organization.adviser?.email ||
+            organization.reviewerEmail ||
+            organization.email ||
+            "",
+          ).trim().toLowerCase();
+          if (signedInEmail && adviserEmail && adviserEmail === signedInEmail) {
+            emailMatchedOrganizations.push(
+              organization.code || organization.organizationCode || organization.orgCode ||
+              organization.id || organization.organization || organization.name,
+            );
+          }
+        });
+      }
+      const verifiedProfile = {
+        ...userProfile,
+        ...approverProfile,
+        ...adminProfile,
+        organizations: [
+          ...(Array.isArray(adminProfile.organizations) ? adminProfile.organizations : []),
+          ...(Array.isArray(userProfile.organizations) ? userProfile.organizations : []),
+          ...(Array.isArray(approverProfile.organizations) ? approverProfile.organizations : []),
+          ...emailMatchedOrganizations,
+        ].filter(Boolean),
+      };
       const roleValue = Object.prototype.hasOwnProperty.call(adminProfile, "role")
         ? adminProfile.role
         : adminProfile.userRole;

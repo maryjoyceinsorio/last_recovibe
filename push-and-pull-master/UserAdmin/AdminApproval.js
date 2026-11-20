@@ -35,6 +35,10 @@ import {
     "organizations",
     "orgIds",
     "assignedOrgs",
+    "assignedOrganizations",
+    "adviserOrganizations",
+    "organizationCodes",
+    "orgCodes",
     "adviserOf",
     "courseOrganization",
     "courseOrganizations",
@@ -51,6 +55,10 @@ import {
     "organizations",
     "orgIds",
     "assignedOrgs",
+    "assignedOrganizations",
+    "adviserOrganizations",
+    "organizationCodes",
+    "orgCodes",
     "adviserOf",
     "courseOrganization",
     "courseOrganizations",
@@ -70,7 +78,15 @@ import {
     "partnerOrganizations",
   ];
   const normalizeOrganizationId = (value) =>
-    String(value ?? "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+    {
+      const normalized = String(value ?? "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+      if (
+        normalized === "piie" ||
+        normalized === "piee" ||
+        normalized.includes("philippineinstituteofindustrialengineers")
+      ) return "piie";
+      return normalized;
+    };
   const debugLog = (...args) => {
     if (DEBUG) console.debug("[AdminApproval]", ...args);
   };
@@ -222,6 +238,10 @@ import {
         .some((candidate) => normalizeApprovalKey(candidate) === normalized),
     ) || null;
   };
+  const resolveApprovalStageFromValues = (values) => values
+    .flatMap((value) => Array.isArray(value) ? value : [value])
+    .map(resolveApprovalStage)
+    .find(Boolean) || null;
 
   const root = document.getElementById("approvalRoot");
   const toastElement = document.querySelector(".admin-toast");
@@ -238,6 +258,10 @@ import {
   let currentAdminProfile = null;
   let currentAdminOrganizationIds = new Set();
   let currentAdminOrganizationQueryValues = [];
+  let diagnosticAdminUserOrganizations = [];
+  let diagnosticUsersOrganizations = [];
+  let diagnosticApproverOrganizations = [];
+  let diagnosticGlobalConfigOrganizations = [];
   let verifiedAdminProfileUid = null;
   let currentAdminKey = null; // e.g. "org_adv"
   let approverDirectory = { ...APPROVER_DIRECTORY_DEFAULTS };
@@ -247,6 +271,9 @@ import {
   let firestoreScopedEventIds = new Set();
   let firestorePendingEventsError = "";
   let firestorePendingEventsLoaded = false;
+  let firestoreReviewHistoryEvents = [];
+  let firestoreReviewHistoryError = "";
+  let firestoreReviewHistoryLoaded = false;
   let approvalPageLoadSignaled = false;
   const pendingInitialApprovalSources = new Set([
     "directory",
@@ -275,6 +302,7 @@ import {
   let activeEventRef = null;
   let activeApprovalRef = null;
   let firestorePendingEventsUnsubscribe = null;
+  let firestoreReviewHistoryUnsubscribe = null;
   let activeFirestoreEventUnsubscribe = null;
   let toastTimer = null;
   let firestorePendingEventsTimeout = null;
@@ -330,7 +358,11 @@ import {
     };
   }
 
-  function getStageLabel(key) {
+  function getStageLabel(key, event = null) {
+    const proposalStage = event
+      ? getConfiguredFirestoreStages(event).find((stage) => stage.key === key)
+      : null;
+    if (proposalStage?.label) return proposalStage.label;
     return resolveApprovalStage(key)?.label ||
       approverDirectory[key]?.label || key || "Approval role not assigned";
   }
@@ -362,10 +394,11 @@ import {
 
   async function loadAdminProfileSafely(user, cachedProfile) {
     if (!user || !db) throw new Error("Please sign in with an Admin account.");
-    const [adminProfileResult, userProfileResult, approverOrganizationsResult] = await Promise.allSettled([
+    const [adminProfileResult, userProfileResult, approverOrganizationsResult, globalConfigResult] = await Promise.allSettled([
       getDoc(doc(db, "adminUser", user.uid)),
       getDoc(doc(db, "users", user.uid)),
       getDoc(doc(db, "approverOrganizations", user.uid)),
+      getDoc(doc(db, "system_settings", "global_config")),
     ]);
     const adminProfile = adminProfileResult.status === "fulfilled" && adminProfileResult.value.exists()
       ? adminProfileResult.value.data()
@@ -377,11 +410,60 @@ import {
       approverOrganizationsResult.value.exists()
       ? approverOrganizationsResult.value.data()
       : null;
+    const globalConfig = globalConfigResult.status === "fulfilled" &&
+      globalConfigResult.value.exists()
+      ? globalConfigResult.value.data() || {}
+      : {};
+    const signedInEmail = String(user.email || cachedProfile.email || "").trim().toLowerCase();
+    const emailMatchedOrganizations = [];
+    const collectAdviserEmailMatches = (organization) => {
+      if (!organization || typeof organization !== "object") return;
+      const adviserEntries = [
+        organization.adviserEmail,
+        organization.adviserEmails,
+        organization.adviser?.email,
+        organization.adviser,
+        organization.reviewers,
+        organization.reviewerEmail,
+        organization.email,
+      ].flatMap((value) => Array.isArray(value) ? value : [value]);
+      const emails = adviserEntries.flatMap((value) =>
+        typeof value === "object"
+          ? [value.email, value.reviewerEmail, value.adviserEmail]
+          : [value],
+      ).map((value) => String(value || "").trim().toLowerCase()).filter(Boolean);
+      if (signedInEmail && emails.includes(signedInEmail)) {
+        emailMatchedOrganizations.push(
+          organization.organizationCode || organization.orgCode ||
+          organization.code || organization.id || organization.organization ||
+          organization.organizationName || organization.organization?.code ||
+          organization.organization?.id || organization.organization?.name ||
+          organization.name,
+        );
+      }
+    };
+    if (Array.isArray(globalConfig.organizations)) {
+      globalConfig.organizations.forEach(collectAdviserEmailMatches);
+    } else if (globalConfig.organizations && typeof globalConfig.organizations === "object") {
+      Object.entries(globalConfig.organizations).forEach(([code, organization]) =>
+        collectAdviserEmailMatches({
+          code,
+          ...(organization && typeof organization === "object" ? organization : {}),
+        }),
+      );
+    }
+    diagnosticAdminUserOrganizations = [...getOrganizationValues(adminProfile)];
+    diagnosticUsersOrganizations = [...getOrganizationValues(userProfile)];
+    diagnosticApproverOrganizations = [...getOrganizationValues(approverOrganizations)];
+    diagnosticGlobalConfigOrganizations = [...getOrganizationValues(
+      { organizations: emailMatchedOrganizations },
+    )];
     currentAdminOrganizationIds = new Set([
       ...getOrganizationValues(approverOrganizations),
       ...getOrganizationValues(userProfile),
       ...getOrganizationValues(adminProfile),
       ...getOrganizationValues(cachedProfile),
+      ...getOrganizationValues({ organizations: emailMatchedOrganizations }),
     ]);
     currentAdminOrganizationQueryValues = [
       ...getRawOrganizationValues(approverOrganizations, ORGANIZATION_QUERY_FIELDS),
@@ -395,8 +477,8 @@ import {
         error: approverOrganizationsResult.reason,
       });
     }
-    const profile = adminProfile || userProfile
-      ? { ...(userProfile || {}), ...(adminProfile || {}) }
+    const profile = adminProfile || userProfile || approverOrganizations
+      ? { ...(userProfile || {}), ...(approverOrganizations || {}), ...(adminProfile || {}) }
       : null;
     if (!profile) {
       const readError = [adminProfileResult, userProfileResult]
@@ -442,6 +524,26 @@ import {
 
   function getConfiguredFirestoreStages(event) {
     const entries = getFirestoreStageEntries(event);
+    if (
+      ["organization", "default"].includes(event?.stagesSource) &&
+      Array.isArray(event?.approvalStages)
+    ) {
+      return event.approvalStages
+        .filter((stage) => stage && typeof stage === "object")
+        .map((stage, index) => ({
+          key: String(stage.id || `stage-${index + 1}`),
+          label: String(stage.name || stage.label || `Stage ${index + 1}`),
+          name: String(stage.name || stage.label || `Stage ${index + 1}`),
+          reviewer: String(stage.reviewerName || stage.reviewer || ""),
+          reviewerEmail: String(stage.reviewerEmail || "").trim().toLowerCase(),
+          step: index + 1,
+          required: stage.required !== false,
+          source: stage,
+        }))
+        .sort((left, right) => Number(left.source.order ?? left.step - 1) -
+          Number(right.source.order ?? right.step - 1))
+        .map((stage, index) => ({ ...stage, step: index + 1 }));
+    }
     return APPROVAL_ACCOUNT_STAGES.map((stage, index) => {
       const source = findFirestoreStageSource(entries, stage) || DEFAULT_FIRESTORE_APPROVAL_STAGES[index];
       return {
@@ -535,9 +637,33 @@ import {
 
   function classifyProposalForCurrentAdmin(event, fallbackStageIndex = null, isAssignedQueueItem = false) {
     const ownStage = getAccountStage();
-    if (!ownStage || !event || typeof event !== "object") return null;
+    if (!event || typeof event !== "object") return null;
+    if (isCurrentReviewerEmailAssigned(event) && isFirestoreActionRequired(event)) {
+      return {
+        section: "action-required",
+        badge: "Action required",
+        workflow: getNormalizedProposalWorkflow(event, fallbackStageIndex),
+      };
+    }
+    if (!ownStage) return null;
     const proposalStages = getStages(event);
-    const ownStageIndex = proposalStages.indexOf(ownStage.key);
+    const ownProposalStageKey = proposalStages.find((stageKey) => {
+      const source = getConfiguredFirestoreStages(event).find((candidate) => candidate.key === stageKey);
+      const sourceStageRole = resolveApprovalStageFromValues([
+        source?.key,
+        source?.source?.key,
+        source?.source?.roleKey,
+        source?.source?.id,
+        source?.label,
+        source?.name,
+        source?.reviewer,
+        source?.source?.reviewerName,
+        source?.source?.aliases,
+        stageKey,
+      ])?.key;
+      return stageKey === ownStage.key || sourceStageRole === ownStage.key;
+    });
+    const ownStageIndex = proposalStages.indexOf(ownProposalStageKey);
     if (ownStageIndex < 0) return null;
 
     const statusValues = [event.status, event.approvalStatus]
@@ -551,7 +677,7 @@ import {
       const actorUid = String(
         entry.decidedBy || entry.approvedBy || entry.uid || entry.userId || entry.actorUid || "",
       );
-      return getHistoryStageKey(entry) === ownStage.key || actorUid === currentAdminUid;
+      return getHistoryStageKey(entry) === ownProposalStageKey || actorUid === currentAdminUid;
     });
     const actionHistory = ownHistory.filter((entry) =>
       ["approved", "rejected", "revision"].includes(normalizeHistoryDecision(entry.decision)),
@@ -586,7 +712,7 @@ import {
       };
     }
     if (
-      workflow.currentStageKey === ownStage.key &&
+      workflow.currentStageKey === ownProposalStageKey &&
       (isAssignedQueueItem || isFirestoreActionRequired(event))
     ) {
       return { section: "action-required", badge: "Action required", workflow };
@@ -595,6 +721,110 @@ import {
       return { section: "incoming", badge: "Incoming", workflow };
     }
     return null;
+  }
+
+  function getReviewHistoryEntries(event) {
+    return ["approvalHistory", "reviewHistory", "reviewLogs", "reviewLog"]
+      .flatMap((key) => {
+        const value = event?.[key];
+        if (Array.isArray(value)) return value;
+        if (value && typeof value === "object") {
+          if (["action", "decision", "by", "reviewer", "stage", "stageKey"].some((field) =>
+            Object.prototype.hasOwnProperty.call(value, field),
+          )) return [value];
+          return Object.values(value);
+        }
+        return [];
+      })
+      .filter((entry) => entry && typeof entry === "object" && !Array.isArray(entry));
+  }
+
+  function getReviewHistoryEntryValues(entry, keys) {
+    const identityObjects = [
+      entry,
+      entry.actor,
+      entry.approver,
+      entry.reviewer,
+      entry.user,
+      entry.reviewedByUser,
+      entry.decidedByUser,
+    ].filter((value) => value && typeof value === "object" && !Array.isArray(value));
+    const objectKeys = ["uid", "userId", "id", "email", "name", "displayName", "fullName", "role", "roleName", "key", "label"];
+    return [
+      ...identityObjects.flatMap((identity) => keys.map((key) => identity[key])),
+      ...keys.map((key) => entry[key]),
+    ].flatMap((value) => {
+      if (value == null || value === "") return [];
+      if (typeof value !== "object") return [String(value).trim()].filter(Boolean);
+      return objectKeys
+        .map((key) => value[key])
+        .filter((item) => item != null && item !== "")
+        .map((item) => String(item).trim())
+        .filter(Boolean);
+    });
+  }
+
+  function getCurrentAdminReviewHistoryEntries(event) {
+    const uid = String(currentAdminUid || "").trim();
+    const email = String(
+      auth?.currentUser?.email || currentAdminProfile?.email || "",
+    ).trim().toLowerCase();
+    const name = normalizeApprovalKey(getProfileName(
+      currentAdminProfile,
+      auth?.currentUser?.displayName || email.split("@")[0] || "",
+    ));
+    const ownStageKey = getAccountStage()?.key || "";
+    const isEmail = (value) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
+
+    return getReviewHistoryEntries(event).filter((entry) => {
+      const uidValues = getReviewHistoryEntryValues(entry, [
+        "uid", "userId", "actorUid", "reviewerUid", "decidedByUid",
+        "approvedByUid", "decidedBy", "approvedBy", "by",
+        "reviewedBy", "reviewer", "actor", "user",
+      ]).filter((value) => !isEmail(value) && !resolveApprovalStage(value));
+      const emailValues = getReviewHistoryEntryValues(entry, [
+        "email", "actorEmail", "reviewerEmail", "decidedByEmail",
+        "approvedByEmail", "reviewedByEmail", "by", "reviewedBy", "reviewer", "actor", "user",
+      ]).map((value) => value.toLowerCase()).filter(isEmail);
+      const nameValues = getReviewHistoryEntryValues(entry, [
+        "name", "displayName", "fullName", "actorName", "reviewerName",
+        "decidedByName", "approvedByName", "reviewedByName", "byName",
+        "by", "reviewedBy", "reviewer", "actor", "user",
+      ]).filter((value) => !resolveApprovalStage(value));
+      const hasPersonIdentity = uidValues.length > 0 || emailValues.length > 0 || nameValues.length > 0;
+      const matchesPerson = Boolean(
+        (uid && uidValues.includes(uid)) ||
+        (email && emailValues.includes(email)) ||
+        (name && nameValues.some((value) => normalizeApprovalKey(value) === name)),
+      );
+      if (matchesPerson) return true;
+      if (hasPersonIdentity || !ownStageKey) return false;
+
+      const roleValues = getReviewHistoryEntryValues(entry, [
+        "role", "roleName", "reviewerRole", "actorRole", "approvalRole",
+        "stage", "stageKey", "stageId", "approvalStage", "stageLabel",
+        "label", "reviewer", "reviewerName", "decidedByName", "approvedByName",
+        "by", "reviewedBy", "actor", "user",
+      ]);
+      return roleValues.some((value) => resolveApprovalStage(value)?.key === ownStageKey);
+    });
+  }
+
+  function getReviewHistoryBadge(event, entries) {
+    const latestEntry = entries[entries.length - 1] || {};
+    const decision = normalizeHistoryDecision(latestEntry.decision || latestEntry.action);
+    const status = String(event.approvalStatus || event.status || "")
+      .trim().toLowerCase().replace(/[\s_-]+/g, " ");
+    if (decision === "rejected" || status === "rejected") return "Rejected";
+    if (decision === "revision" || status.includes("revision")) return "Needs revision";
+    const workflow = getNormalizedProposalWorkflow(event);
+    if (status === "approved" || workflow.isFullyApproved) return "Approved";
+    if (decision === "approved") {
+      const currentStageKey = getFirestoreCurrentStageKey(event) || workflow.currentStageKey;
+      const currentStage = currentStageKey ? getStageLabel(currentStageKey, event) : "";
+      return `Forwarded to ${currentStage || "the next reviewer"}`;
+    }
+    return "Reviewed";
   }
 
   function hasSkippedAdviserStage(proposal) {
@@ -613,6 +843,20 @@ import {
       ? stage
       : getConfiguredFirestoreStages(event).find((candidate) => candidate.key === stage?.key);
     const source = configuredStage?.source || stage || {};
+    const stageRoleKey = resolveApprovalStageFromValues([
+      source.key,
+      source.roleKey,
+      source.id,
+      source.name,
+      source.label,
+      source.reviewer,
+      source.reviewerName,
+      source.aliases,
+      configuredStage?.label,
+      configuredStage?.name,
+      stage?.label,
+      stage?.key,
+    ])?.key;
     const keyAssignments = {
       org_adv: ["orgAdviserUid", "organizationAdviserUid", "adviserUid"],
       sir_abelida: ["labHeadUid", "laboratoryHeadUid", "propertyCustodianUid", "sirAbelidaUid"],
@@ -627,7 +871,7 @@ import {
     };
     const assignments = event?.approverAssignments?.[stage?.key];
     const directAssignment = assignments && typeof assignments === "object" ? assignments : {};
-    const uid = String(
+    const explicitUid = String(
       source.reviewerUid ||
       source.assignedReviewerUid ||
       source.approverUid ||
@@ -639,10 +883,9 @@ import {
       keyAssignments[stage?.key]?.map((field) => event?.[field]).find(Boolean) ||
       event?.[`${stage?.key}ReviewerUid`] ||
       event?.[`${stage?.key}ApproverUid`] ||
-      approverDirectory[stage?.key]?.uid ||
       "",
     ).trim();
-    const email = String(
+    const explicitEmail = String(
       source.reviewerEmail ||
       source.assignedReviewerEmail ||
       source.approverEmail ||
@@ -653,10 +896,24 @@ import {
       keyEmails[stage?.key]?.map((field) => event?.[field]).find(Boolean) ||
       event?.[`${stage?.key}ReviewerEmail`] ||
       event?.[`${stage?.key}ApproverEmail`] ||
-      approverDirectory[stage?.key]?.email ||
-      approverDirectory[stage?.key]?.reviewerEmail ||
       "",
     ).trim().toLowerCase();
+    const uid = explicitUid || (
+      stageRoleKey !== "org_adv"
+        ? String(approverDirectory[stage?.key]?.uid || approverDirectory[stageRoleKey]?.uid || "").trim()
+        : ""
+    );
+    const email = explicitEmail || (
+      stageRoleKey !== "org_adv"
+        ? String(
+            approverDirectory[stage?.key]?.email ||
+            approverDirectory[stage?.key]?.reviewerEmail ||
+            approverDirectory[stageRoleKey]?.email ||
+            approverDirectory[stageRoleKey]?.reviewerEmail ||
+            "",
+          ).trim().toLowerCase()
+        : ""
+    );
     return { uid, email };
   }
 
@@ -664,12 +921,71 @@ import {
     const user = auth?.currentUser;
     if (!user || !stage) return false;
     const assignment = getStageAssignment(event, stage);
-    if (assignment.uid) return assignment.uid === user.uid;
-    if (assignment.email && user.email) {
-      return assignment.email === user.email.trim().toLowerCase();
+    const configuredStage = getConfiguredFirestoreStages(event)
+      .find((candidate) => candidate.key === stage.key);
+    const stageSource = configuredStage?.source || stage.source || {};
+    const explicitAssignment = String(
+      stageSource.reviewerEmail ||
+      stageSource.assignedReviewerEmail ||
+      stageSource.approverEmail ||
+      stageSource.assignedEmail ||
+      event?.approverAssignments?.[stage?.key]?.reviewerEmail ||
+      event?.approverAssignments?.[stage?.key]?.assignedEmail ||
+      event?.approverAssignments?.[stage?.key]?.approverEmail ||
+      event?.approverAssignments?.[stage?.key]?.email ||
+      event?.[`${stage?.key}ReviewerEmail`] ||
+      event?.[`${stage?.key}ApproverEmail`] ||
+      "",
+    ).trim();
+    const stageRoleKey = resolveApprovalStageFromValues([
+      stageSource.key,
+      stageSource.roleKey,
+      stageSource.id,
+      stageSource.name,
+      stageSource.label,
+      stageSource.reviewer,
+      stageSource.reviewerName,
+      stageSource.aliases,
+      stage.label,
+      stage.key,
+    ])?.key;
+    if (
+      stageRoleKey === "org_adv" &&
+      isCurrentAdminOrganization(event)
+    ) {
+      return verifiedAdminProfileUid === user.uid &&
+        getAccountStage()?.key === "org_adv";
+    }
+    if (
+      stageRoleKey === "org_adv" &&
+      !explicitAssignment &&
+      isCurrentAdminOrganization(event)
+    ) {
+      return verifiedAdminProfileUid === user.uid &&
+        getAccountStage()?.key === "org_adv";
+    }
+    if (
+      assignment.email ||
+      assignment.uid
+    ) {
+      return Boolean(
+        (assignment.email && user.email &&
+          assignment.email === user.email.trim().toLowerCase()) ||
+        (assignment.uid && assignment.uid === user.uid),
+      );
     }
     return verifiedAdminProfileUid === user.uid &&
-      getApprovalStageForProfile(currentAdminProfile)?.key === stage.key;
+      getAccountStage()?.key === (stageRoleKey || stage.key);
+  }
+
+  function isCurrentReviewerEmailAssigned(event) {
+    const user = auth?.currentUser;
+    if (!user?.email) return false;
+    const stageKey = getFirestoreCurrentStageKey(event);
+    const stage = getConfiguredFirestoreStages(event).find((candidate) => candidate.key === stageKey);
+    if (!stage) return false;
+    const assignment = getStageAssignment(event, stage);
+    return assignment.email === user.email.trim().toLowerCase();
   }
 
   async function applyFirestoreDecisionLocally(eventId, decision, note, stage, user) {
@@ -916,6 +1232,7 @@ import {
     const reviewSource = urlParams.get("source");
 
     subscribeFirestorePendingEvents();
+    subscribeFirestoreReviewHistory();
     subscribeRecentDecisions();
 
     if (reviewId) {
@@ -958,24 +1275,6 @@ import {
     firestorePendingEventsLoaded = false;
     firestorePendingEventsError = "";
     const isOrganizationAdviser = isOrgAdviserReviewer(getAccountStage());
-    if (
-      isOrganizationAdviser &&
-      (
-        currentAdminOrganizationIds.size === 0 ||
-        currentAdminOrganizationQueryValues.length === 0 ||
-        currentAdminOrganizationQueryValues.length > 30
-      )
-    ) {
-      firestorePendingEventsLoaded = true;
-      firestoreScopedEventIds = new Set();
-      debugLog("Failing closed: the adviser's organization scope could not be queried safely.", {
-        uid: currentAdminUid,
-        organizationIds: [...currentAdminOrganizationIds],
-      });
-      if (!activeReviewEventId) renderReviewQueue();
-      settleInitialApprovalSource("firestore");
-      return;
-    }
     firestorePendingEventsTimeout = setTimeout(() => {
       firestorePendingEventsTimeout = null;
       if (firestorePendingEventsLoaded) return;
@@ -988,12 +1287,7 @@ import {
 
     try {
       const pendingEventsQuery = isOrganizationAdviser
-        ? query(
-            collection(db, "events"),
-            currentAdminOrganizationQueryValues.length > 1
-              ? where("organizationCode", "in", currentAdminOrganizationQueryValues)
-              : where("organizationCode", "==", currentAdminOrganizationQueryValues[0]),
-          )
+        ? query(collection(db, "events"))
         : query(collection(db, "events"), where("status", "==", "pending"));
       firestorePendingEventsUnsubscribe = onSnapshot(
         pendingEventsQuery,
@@ -1001,19 +1295,141 @@ import {
           try {
             const classifiedEvents = [];
             const scopedEventIds = new Set();
+            const adviserProfileSnapshot = {
+              uid: auth?.currentUser?.uid || "",
+              email: String(auth?.currentUser?.email || "").trim().toLowerCase(),
+              roleStage: getAccountStage()?.key || null,
+              organizations: [...currentAdminOrganizationIds],
+              organizationsFromAdminUser: diagnosticAdminUserOrganizations,
+              organizationsFromUsers: diagnosticUsersOrganizations,
+              organizationsFromApproverOrganizations: diagnosticApproverOrganizations,
+              organizationsFromGlobalConfigAdviserEmail: diagnosticGlobalConfigOrganizations,
+            };
+            const pendingEvents = snapshot.docs.filter((eventSnapshot) => {
+              const event = eventSnapshot.data() || {};
+              const status = String(event.approvalStatus || event.status || "")
+                .trim().toLowerCase().replace(/[\s_-]+/g, " ");
+              return ["pending", "pending approval", "pendingapproval", "approval pending"].includes(status);
+            });
+            console.warn("[ReviewQueue Diagnostic]", {
+              ...adviserProfileSnapshot,
+              totalEventsFetched: snapshot.docs.length,
+              pendingEventCount: pendingEvents.length,
+              events: snapshot.docs.map((eventSnapshot) => {
+                const event = eventSnapshot.data() || {};
+                const resolvedStage = getFirestoreCurrentStageKey(event);
+                const stage = getConfiguredFirestoreStages(event)
+                  .find((candidate) => candidate.key === resolvedStage);
+                const normalizedEventOrgs = getOrganizationValues(event, EVENT_ORGANIZATION_FIELDS);
+                const normalizedStatus = String(event.approvalStatus || event.status || "")
+                  .trim().toLowerCase().replace(/[\s_-]+/g, " ");
+                const pendingCheck = [
+                  "pending",
+                  "pending approval",
+                  "pendingapproval",
+                  "approval pending",
+                ].includes(normalizedStatus);
+                const stageAssignment = stage ? getStageAssignment(event, stage) : { uid: "", email: "" };
+                const organizationMatch = normalizedEventOrgs
+                  .some((organizationId) => currentAdminOrganizationIds.has(organizationId));
+                const stageRole = stage
+                  ? resolveApprovalStageFromValues([
+                      stage.source?.key,
+                      stage.source?.roleKey,
+                      stage.source?.id,
+                      stage.source?.name,
+                      stage.source?.label,
+                      stage.source?.reviewer,
+                      stage.source?.reviewerName,
+                      stage.source?.aliases,
+                      stage.label,
+                      stage.key,
+                    ])?.key
+                  : null;
+                const signedInEmail = String(auth?.currentUser?.email || "").trim().toLowerCase();
+                return {
+                  eventId: eventSnapshot.id,
+                  status: event.status ?? null,
+                  approvalStatus: event.approvalStatus ?? null,
+                  normalizedStatus,
+                  pendingCheck,
+                  organization: event.organization ?? null,
+                  organizationCode: event.organizationCode ?? null,
+                  normalizedEventOrgs,
+                  organizationMatch,
+                  approvalCurrentStage: event.approvalCurrentStage ?? null,
+                  approvalCurrentStep: event.approvalCurrentStep ?? event.currentStep ?? null,
+                  resolvedStage,
+                  stageRole,
+                  reviewerEmailMatch: Boolean(
+                    stageAssignment.email &&
+                    stageAssignment.email === signedInEmail,
+                  ),
+                  reviewerUidMatch: Boolean(
+                    stageAssignment.uid &&
+                    stageAssignment.uid === (auth?.currentUser?.uid || ""),
+                  ),
+                  approvalStageNames: getConfiguredFirestoreStages(event)
+                    .map((candidate) => candidate.name || candidate.label),
+                  stageAssignment,
+                };
+              }),
+            });
             snapshot.docs.forEach((eventSnapshot) => {
               try {
                 const event = {
                   ...(eventSnapshot.data() || {}),
                   id: eventSnapshot.id,
                 };
+                const statusValue = String(
+                  event.approvalStatus || event.status || "",
+                ).trim().toLowerCase().replace(/[\s_-]+/g, " ");
+                const pendingStatus = [
+                  "pending",
+                  "pending approval",
+                  "pendingapproval",
+                  "approval pending",
+                ].includes(statusValue);
+                const resolvedStage = getFirestoreCurrentStageKey(event);
+                const stage = getConfiguredFirestoreStages(event)
+                  .find((candidate) => candidate.key === resolvedStage);
+                const stageAssignment = stage ? getStageAssignment(event, stage) : { uid: "", email: "" };
+                const normalizedEventOrgs = getOrganizationValues(event, EVENT_ORGANIZATION_FIELDS);
                 if (
                   isOrganizationAdviser &&
                   !isCurrentAdminOrganization(event)
-                ) return;
+                ) {
+                  if (pendingStatus) {
+                    console.debug("[ReviewQueue] skipped pending event:", {
+                      eventId: event.id,
+                      status: event.status ?? null,
+                      approvalStatus: event.approvalStatus ?? null,
+                      normalizedEventOrgs,
+                      adviserOrgs: [...currentAdminOrganizationIds],
+                      currentStage: resolvedStage,
+                      stageAssignment,
+                      reason: "organization-mismatch",
+                    });
+                  }
+                  return;
+                }
                 scopedEventIds.add(eventSnapshot.id);
                 const classification = classifyProposalForCurrentAdmin(event);
-                if (!classification) return;
+                if (!classification) {
+                  if (pendingStatus) {
+                    console.debug("[ReviewQueue] skipped pending event:", {
+                      eventId: event.id,
+                      status: event.status ?? null,
+                      approvalStatus: event.approvalStatus ?? null,
+                      normalizedEventOrgs,
+                      adviserOrgs: [...currentAdminOrganizationIds],
+                      currentStage: resolvedStage,
+                      stageAssignment,
+                      reason: "stage-status-or-assignment-filter",
+                    });
+                  }
+                  return;
+                }
                 classifiedEvents.push({
                   ...event,
                   currentApprovalStage: classification.workflow.currentStageKey || null,
@@ -1071,6 +1487,51 @@ import {
       firestorePendingEventsError = "Couldn't load proposals. Check your connection and permissions, then refresh.";
       if (!activeReviewEventId) renderReviewQueue();
       settleInitialApprovalSource("firestore");
+    }
+  }
+
+  function subscribeFirestoreReviewHistory() {
+    if (firestoreReviewHistoryUnsubscribe) {
+      firestoreReviewHistoryUnsubscribe();
+      firestoreReviewHistoryUnsubscribe = null;
+    }
+    firestoreReviewHistoryEvents = [];
+    firestoreReviewHistoryLoaded = false;
+    firestoreReviewHistoryError = "";
+    if (!db) {
+      firestoreReviewHistoryLoaded = true;
+      firestoreReviewHistoryError = "Reviewed proposals are unavailable because Firestore is not configured.";
+      if (!activeReviewEventId) renderReviewQueue();
+      return;
+    }
+
+    try {
+      firestoreReviewHistoryUnsubscribe = onSnapshot(
+        collection(db, "events"),
+        (snapshot) => {
+          firestoreReviewHistoryEvents = snapshot.docs.map((eventSnapshot) => ({
+            ...(eventSnapshot.data() || {}),
+            id: eventSnapshot.id,
+            queueSource: "firestore",
+          }));
+          firestoreReviewHistoryLoaded = true;
+          firestoreReviewHistoryError = "";
+          if (!activeReviewEventId) renderReviewQueue();
+        },
+        (error) => {
+          console.error("Could not load reviewed proposal history:", error);
+          firestoreReviewHistoryEvents = [];
+          firestoreReviewHistoryLoaded = true;
+          firestoreReviewHistoryError = "Couldn't load reviewed proposals. Check your connection and permissions, then refresh.";
+          if (!activeReviewEventId) renderReviewQueue();
+        },
+      );
+    } catch (error) {
+      console.error("Could not subscribe to reviewed proposal history:", error);
+      firestoreReviewHistoryEvents = [];
+      firestoreReviewHistoryLoaded = true;
+      firestoreReviewHistoryError = "Couldn't load reviewed proposals. Check your connection and permissions, then refresh.";
+      if (!activeReviewEventId) renderReviewQueue();
     }
   }
 
@@ -1514,6 +1975,30 @@ import {
     const actionableEvents = proposals.filter((event) => event.pipelineStatus === "action-required");
     const incomingEvents = proposals.filter((event) => event.pipelineStatus === "incoming");
     const reviewedEvents = proposals.filter((event) => event.pipelineStatus === "reviewed");
+    const reviewedEventsById = new Map(
+      reviewedEvents.map((event) => [String(event.id || event.eventId || ""), event]),
+    );
+    const historyCandidatesById = new Map();
+    [...firestoreReviewHistoryEvents, ...proposals].forEach((event) => {
+      const eventId = String(event.id || event.eventId || "");
+      if (eventId) historyCandidatesById.set(eventId, event);
+    });
+    historyCandidatesById.forEach((event, eventId) => {
+      if (reviewedEventsById.has(eventId)) return;
+      const matchingHistory = getCurrentAdminReviewHistoryEntries(event);
+      if (!matchingHistory.length) return;
+      const workflow = getNormalizedProposalWorkflow(event);
+      reviewedEventsById.set(eventId, {
+        ...event,
+        id: eventId,
+        queueSource: event.queueSource || "firestore",
+        currentApprovalStage: event.currentApprovalStage || workflow.currentStageKey || null,
+        pipelineStatus: "reviewed",
+        pipelineBadge: getReviewHistoryBadge(event, matchingHistory),
+        previewOnly: true,
+      });
+    });
+    const displayedReviewedEvents = [...reviewedEventsById.values()];
     const renderProposalCards = (events, section) => {
       const cards = [];
       events.forEach((event) => {
@@ -1521,7 +2006,7 @@ import {
             const eventId = String(event.id || event.eventId);
             const eventName = event.eventName || event.title || event.name || "Untitled Event";
             const currentStage = event.currentApprovalStage
-              ? getStageLabel(event.currentApprovalStage)
+              ? getStageLabel(event.currentApprovalStage, event)
               : event.pipelineBadge === "Approved"
                 ? "Approval complete"
                 : "Approval status unavailable";
@@ -1599,7 +2084,7 @@ import {
 
     const actionCards = renderProposalCards(actionableEvents, "action-required");
     const incomingCards = renderProposalCards(incomingEvents, "incoming");
-    const reviewedCards = renderProposalCards(reviewedEvents, "reviewed");
+    const reviewedCards = renderProposalCards(displayedReviewedEvents, "reviewed");
     updateQueueBadge(actionCards.count);
     const actionSectionHtml = actionCards.count
       ? `<section class="approval-pipeline-group" aria-label="Proposals requiring your action">
@@ -1625,8 +2110,12 @@ import {
           ${incomingCards.html}
         </section>`
       : "";
-    const reviewedSectionHtml = reviewedCards.count
-      ? `<details class="approval-pipeline-group approval-pipeline-group--incoming">
+    const reviewedEmptyMessage = firestoreReviewHistoryError ||
+      (!firestoreReviewHistoryLoaded
+        ? "Loading reviewed proposals…"
+        : "You haven't reviewed or forwarded any proposals yet.");
+    const reviewedSectionHtml = `
+        <details open class="approval-pipeline-group approval-pipeline-group--incoming approval-pipeline-group--reviewed">
           <summary class="approval-pipeline-heading" style="cursor:pointer;list-style:none">
             <div>
               <h4>Reviewed by you</h4>
@@ -1634,9 +2123,10 @@ import {
             </div>
             <span class="approval-pipeline-count">${reviewedCards.count}</span>
           </summary>
-          ${reviewedCards.html}
-        </details>`
-      : "";
+          ${reviewedCards.count
+            ? reviewedCards.html
+            : `<div class="queue-empty-box" role="${firestoreReviewHistoryError ? "alert" : "status"}"><p>${esc(reviewedEmptyMessage)}</p></div>`}
+        </details>`;
     const nothingWaitingHtml = actionCards.count === 0
       ? `
         <div class="queue-empty-box">
@@ -1814,9 +2304,23 @@ import {
     const members = {};
     workflow.stages.forEach((stageState) => {
       const stage = configuredStages.find((candidate) => candidate.key === stageState.key);
+      if (!stage) return;
       const assignment = getStageAssignment(event, stage);
+      const stageRoleKey = resolveApprovalStageFromValues([
+        stage.source?.key,
+        stage.source?.roleKey,
+        stage.source?.id,
+        stage.source?.name,
+        stage.source?.label,
+        stage.source?.reviewer,
+        stage.source?.reviewerName,
+        stage.source?.aliases,
+        stage.label,
+        stage.name,
+        stage.key,
+      ])?.key;
       const profileOwnsStage = verifiedAdminProfileUid &&
-        getApprovalStageForProfile(currentAdminProfile)?.key === stage.key;
+        getAccountStage()?.key === (stageRoleKey || stage.key);
       const hasApprover = Boolean(assignment.uid || assignment.email || profileOwnsStage);
       const historyEntry = stageState.approvedEntry;
       members[stage.key] = {
@@ -1881,7 +2385,12 @@ import {
       !["approved", "rejected", "revision", "cancelled"].includes(
         String(approval.status || "").trim().toLowerCase().replace(/[\s_-]+/g, " "),
       ) &&
-      (!assignedRole || assignedRole.key === activeStage.key) &&
+      (
+        !assignedRole ||
+        assignedRole.key === activeStage.key ||
+        assignedRole.key === resolveApprovalStage(activeStage.label)?.key ||
+        isCurrentReviewerEmailAssigned(event)
+      ) &&
       isCurrentUserAssignedToStage(event, activeStage) &&
       currentStageKey === activeStage.key
     );
@@ -2055,20 +2564,27 @@ import {
 
     const sourceMembers = activeApproval.members || {};
     const proposalStageKeys = getStages(activeEvent);
+    const configuredProposalStages = getConfiguredFirestoreStages(activeEvent);
     const members = Object.fromEntries(proposalStageKeys.map((stageKey, index) => {
-      const stage = APPROVAL_ACCOUNT_STAGES.find((candidate) => candidate.key === stageKey);
+      const stage = configuredProposalStages.find((candidate) => candidate.key === stageKey);
       if (!stage) return null;
+      const stageRoleKey = resolveApprovalStage(stage.label)?.key;
       const sourceEntry = Object.entries(sourceMembers).find(([key, member]) =>
-        [key, member.key, member.roleKey, member.id, member.label, member.name, member.reviewer]
-          .some((value) => resolveApprovalStage(value)?.key === stage.key),
+        key === stage.key ||
+        Boolean(stageRoleKey && [
+          member.key,
+          member.roleKey,
+          member.id,
+          member.label,
+          member.name,
+          member.reviewer,
+        ].some((value) => resolveApprovalStage(value)?.key === stageRoleKey)),
       );
       const source = sourceEntry?.[1] || {};
       return [stage.key, {
         ...source,
         key: stage.key,
-        label: stage.key === "hap"
-          ? "Head of Academic Programs, QAC Coordinator (HAP)"
-          : stage.label,
+        label: stage.label,
         step: index + 1,
         stage: index + 1,
         status: source.status || "wait",
@@ -2604,6 +3120,10 @@ import {
     if (firestorePendingEventsUnsubscribe) {
       firestorePendingEventsUnsubscribe();
       firestorePendingEventsUnsubscribe = null;
+    }
+    if (firestoreReviewHistoryUnsubscribe) {
+      firestoreReviewHistoryUnsubscribe();
+      firestoreReviewHistoryUnsubscribe = null;
     }
     if (activeFirestoreEventUnsubscribe) {
       activeFirestoreEventUnsubscribe();

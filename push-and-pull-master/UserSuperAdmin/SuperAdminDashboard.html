@@ -6,6 +6,7 @@
     <meta name="theme-color" content="#72141c" />
     <title>Super Admin Dashboard | RecoVibe</title>
     <link rel="stylesheet" href="superadmin.css" />
+    <link rel="stylesheet" href="SuperAdminDashboard.css" />
   <style id="page-preloader-style">
     html[data-page-loading="true"] [data-page-load-container] { position: relative; }
     #userAvatar:empty,
@@ -110,71 +111,142 @@
         </footer>
       </aside>
 
-      <main class="main-content" id="main-content" data-page-load-container="true" aria-busy="true">
+      <main class="main-content dashboard-main" id="main-content" data-page-load-container="true" aria-busy="true">
     <div class="page-preloader" id="pagePreloader" role="status" aria-live="polite">
       <span class="page-preloader-spinner" aria-hidden="true"></span>
       <span>Loading...</span>
     </div>
-        <header class="page-header">
-          <h1 id="dashboard-greeting"></h1>
-          <time class="date-widget" id="dashboard-today-date">
-            <strong>Today</strong>
-            <span></span>
+        <header class="dashboard-header">
+          <div class="dashboard-heading-copy">
+            <h1 id="dashboard-greeting"><span class="dashboard-skeleton dashboard-skeleton--heading" aria-hidden="true"></span></h1>
+            <p>Manage campus accounts and system access.</p>
+          </div>
+          <time class="dashboard-date" id="dashboard-today-date">
+            <span>Today</span>
+            <span class="dashboard-date-separator" aria-hidden="true">/</span>
+            <strong id="dashboard-date-value">Loading date</strong>
           </time>
         </header>
 
-        <section class="event-context accounts-overview" aria-label="Accounts Overview" id="accounts-overview-panel">
-          <div class="accounts-overview-live-badge" aria-hidden="true"><span class="accounts-live-dot"></span> Live</div>
-          <dl class="event-context-list accounts-overview-columns" aria-live="polite" id="accounts-overview-counts">
-            <div>
-              <dt>Student</dt>
-              <dd class="accounts-count" id="ao-student-total"></dd>
-              <dd class="accounts-active" id="ao-student-active"></dd>
+        <section class="dashboard-stats" aria-label="User account statistics" id="accounts-overview-panel">
+          <article class="dashboard-stat-card dashboard-stat-card--all" aria-labelledby="stat-all-title">
+            <div class="dashboard-stat-topline">
+              <h2 id="stat-all-title">Active users</h2>
+              <span class="dashboard-live-badge" id="dashboard-live-badge" aria-live="polite" aria-atomic="true">
+                <span class="dashboard-live-dot" id="dashboard-live-dot" aria-hidden="true"></span>
+                <span id="dashboard-live-text">Connecting</span>
+              </span>
             </div>
-            <div>
-              <dt>Teacher</dt>
-              <dd class="accounts-count" id="ao-teacher-total"></dd>
-              <dd class="accounts-active" id="ao-teacher-active"></dd>
-            </div>
-            <div>
-              <dt>Event Organizer</dt>
-              <dd class="accounts-count" id="ao-eo-total"></dd>
-              <dd class="accounts-active" id="ao-eo-active"></dd>
-            </div>
-            <div>
-              <dt>Admin</dt>
-              <dd class="accounts-count" id="ao-admin-total"></dd>
-              <dd class="accounts-active" id="ao-admin-active"></dd>
-            </div>
-            <div>
-              <dt>Active Users</dt>
-              <dd class="accounts-count" id="ao-active-total"></dd>
-              <dd class="accounts-active" id="ao-active-status"></dd>
-            </div>
-          </dl>
-          <p class="accounts-overview-error" id="ao-error" hidden>Unable to load <button type="button" id="ao-retry">Retry</button></p>
-        </section>
+            <p class="dashboard-stat-value" id="ao-active-total"><span class="dashboard-skeleton" aria-hidden="true"></span></p>
+            <p class="dashboard-stat-caption">Actively logged in across all roles</p>
+            <div class="dashboard-stat-bar dashboard-stat-bar--all" aria-hidden="true"><span id="ao-active-bar"></span></div>
+          </article>
 
-        <section class="audit-section" aria-labelledby="audit-heading">
-          <div class="section-heading">
-            <h2 id="audit-heading">Recent Audit Activity</h2>
-            <a class="view-audit-link" href="SuperAdminAuditLogs.html">View Audit Log</a>
-          </div>
-          <div class="audit-table-wrap">
-            <table class="audit-table" id="recent-audit-table" data-audit-table>
-              <caption class="visually-hidden">Recent Super Admin audit activity</caption>
-              <thead>
-                <tr>
-                  <th scope="col">Timestamp</th>
-                  <th scope="col">User</th>
-                  <th scope="col">Action</th>
-                  <th scope="col"><span class="visually-hidden">Details</span></th>
-                </tr>
-              </thead>
-              <tbody id="recent-audit-tbody"></tbody>
-            </table>
-          </div>
+          <article class="dashboard-stat-card dashboard-stat-card--student" aria-labelledby="stat-student-title">
+            <h2 id="stat-student-title">Students</h2>
+            <p class="dashboard-stat-value" id="ao-student-total"><span class="dashboard-skeleton" aria-hidden="true"></span></p>
+            <p class="dashboard-stat-active" id="ao-student-active"><span class="dashboard-skeleton dashboard-skeleton--small" aria-hidden="true"></span></p>
+            <div class="dashboard-stat-bar" aria-hidden="true"><span id="ao-student-bar"></span></div>
+          </article>
+
+          <article class="dashboard-stat-card dashboard-stat-card--teacher" aria-labelledby="stat-teacher-title">
+            <h2 id="stat-teacher-title">Teachers</h2>
+            <p class="dashboard-stat-value" id="ao-teacher-total"><span class="dashboard-skeleton" aria-hidden="true"></span></p>
+            <p class="dashboard-stat-active" id="ao-teacher-active"><span class="dashboard-skeleton dashboard-skeleton--small" aria-hidden="true"></span></p>
+            <div class="dashboard-stat-bar" aria-hidden="true"><span id="ao-teacher-bar"></span></div>
+          </article>
+
+          <article class="dashboard-stat-card dashboard-stat-card--organizer" aria-labelledby="stat-eo-title">
+            <h2 id="stat-eo-title">Event organizers</h2>
+            <p class="dashboard-stat-value" id="ao-eo-total"><span class="dashboard-skeleton" aria-hidden="true"></span></p>
+            <p class="dashboard-stat-active" id="ao-eo-active"><span class="dashboard-skeleton dashboard-skeleton--small" aria-hidden="true"></span></p>
+            <div class="dashboard-stat-bar" aria-hidden="true"><span id="ao-eo-bar"></span></div>
+          </article>
+
+          <article class="dashboard-stat-card dashboard-stat-card--admin" aria-labelledby="stat-admin-title">
+            <h2 id="stat-admin-title">Admins</h2>
+            <p class="dashboard-stat-value" id="ao-admin-total"><span class="dashboard-skeleton" aria-hidden="true"></span></p>
+            <p class="dashboard-stat-active" id="ao-admin-active"><span class="dashboard-skeleton dashboard-skeleton--small" aria-hidden="true"></span></p>
+            <div class="dashboard-stat-bar" aria-hidden="true"><span id="ao-admin-bar"></span></div>
+          </article>
         </section>
+        <p class="dashboard-error" id="ao-error" role="alert" hidden>
+          Some account counts could not be loaded.
+          <button type="button" id="ao-retry">Retry</button>
+        </p>
+
+        <div class="dashboard-content-grid">
+          <section class="dashboard-panel dashboard-activity-panel" aria-labelledby="audit-heading">
+            <header class="dashboard-panel-heading">
+              <div>
+                <h2 id="audit-heading">Recent activity</h2>
+                <p>Latest account and system changes</p>
+              </div>
+              <a class="dashboard-audit-link" href="SuperAdminAuditLogs.html">View Audit Logs</a>
+            </header>
+            <div class="dashboard-activity-list" id="recent-audit-list" aria-live="polite">
+              <div class="dashboard-activity-skeleton" aria-hidden="true"><span></span><div><i></i><i></i></div><b></b></div>
+              <div class="dashboard-activity-skeleton" aria-hidden="true"><span></span><div><i></i><i></i></div><b></b></div>
+              <div class="dashboard-activity-skeleton" aria-hidden="true"><span></span><div><i></i><i></i></div><b></b></div>
+              <div class="dashboard-activity-skeleton" aria-hidden="true"><span></span><div><i></i><i></i></div><b></b></div>
+            </div>
+            <div class="dashboard-empty-state" id="recent-audit-empty" hidden>No recent activity</div>
+            <div class="dashboard-error-state" id="recent-audit-error" role="alert" hidden>
+              <span id="recent-audit-error-text">Could not load recent activity.</span>
+              <button type="button" id="recent-audit-retry">Retry</button>
+            </div>
+          </section>
+
+          <div class="dashboard-side-column">
+            <section class="dashboard-panel dashboard-quick-actions" aria-labelledby="quick-actions-title">
+              <header class="dashboard-panel-heading">
+                <div>
+                  <h2 id="quick-actions-title">Quick actions</h2>
+                  <p>Common Super Admin tasks</p>
+                </div>
+              </header>
+              <nav class="dashboard-action-list" aria-label="Quick actions">
+                <a class="dashboard-action-link" href="UserManagement.html">
+                  <span class="dashboard-action-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="9" cy="8" r="3"></circle><path d="M3.5 20v-1.5a5.5 5.5 0 0 1 11 0V20M18 8v6M15 11h6"></path></svg></span>
+                  <span>Create new user</span>
+                  <span class="dashboard-action-arrow" aria-hidden="true">→</span>
+                </a>
+                <a class="dashboard-action-link" href="SuperAdminSystemSettings.html">
+                  <span class="dashboard-action-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"></circle><path d="m19.4 15 .1.1 1.2 1-1.4 2.4-1.5-.6a8 8 0 0 1-1.5.9l-.3 1.6h-2.8l-.3-1.6a8 8 0 0 1-1.5-.9l-1.5.6-1.4-2.4 1.2-1a7 7 0 0 1 0-1.8l-1.2-1 1.4-2.4 1.5.6a8 8 0 0 1 1.5-.9l.3-1.6h2.8l.3 1.6a8 8 0 0 1 1.5.9l1.5-.6 1.4 2.4-1.2 1a7 7 0 0 1-.1 1.7Z"></path></svg></span>
+                  <span>Open System Settings</span>
+                  <span class="dashboard-action-arrow" aria-hidden="true">→</span>
+                </a>
+                <a class="dashboard-action-link" href="SuperAdminAuditLogs.html">
+                  <span class="dashboard-action-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M8 4h8M9 3h6v3H9zM7 5H5v16h14V5h-2M8 11h8M8 15h8"></path></svg></span>
+                  <span>Review audit logs</span>
+                  <span class="dashboard-action-arrow" aria-hidden="true">→</span>
+                </a>
+              </nav>
+            </section>
+
+            <section class="dashboard-panel dashboard-system-status" aria-labelledby="system-status-title">
+              <header class="dashboard-panel-heading">
+                <div>
+                  <h2 id="system-status-title">System status</h2>
+                  <p>Current access controls</p>
+                </div>
+              </header>
+              <div class="dashboard-status-row">
+                <span>User login</span>
+                <span class="dashboard-status-pill is-loading" id="dashboard-login-state" aria-live="polite">Loading</span>
+              </div>
+              <div class="dashboard-status-row">
+                <span>Event registration</span>
+                <span class="dashboard-status-pill is-loading" id="dashboard-registration-state" aria-live="polite">Loading</span>
+              </div>
+              <p class="dashboard-status-note" id="dashboard-status-note">Read-only. Change these flags in System Settings.</p>
+              <div class="dashboard-error-state" id="dashboard-status-error" role="alert" hidden>
+                <span>Could not load system status.</span>
+                <button type="button" id="dashboard-status-retry">Retry</button>
+              </div>
+            </section>
+          </div>
+        </div>
       </main>
     </div>
     <dialog class="audit-dialog" id="audit-modal-backdrop" aria-labelledby="audit-modal-title">
@@ -207,7 +279,7 @@
       </div>
     </dialog>
     <script type="module" src="superAdminGuard.js"></script>
-    <script type="module" src="SuperAdminDashboard.js"></script>
+    <script type="module" src="SuperAdminDashboardPage.js"></script>
     <script>
     (() => {
       const root = document.documentElement;
@@ -322,6 +394,7 @@
        confirm.textContent = "Log out";
        cancel.focus();
      };
+     window.addEventListener("superadmin-logout-reset", finishFailedLogout);
      document.addEventListener("click", (event) => {
        const target = event.target instanceof Element ? event.target.closest("a, button") : null;
        if (!target) return;
@@ -381,9 +454,9 @@
        pollId = window.setInterval(checkLogoutState, 100);
        logoutControl.dataset.rvLogoutProceed = "true";
        logoutControl.dataset.rvLogoutConfirmed = "true";
+       timeoutId = window.setTimeout(finishFailedLogout, 15000);
        logoutControl.click();
        delete logoutControl.dataset.rvLogoutConfirmed;
-       timeoutId = window.setTimeout(finishFailedLogout, 15000);
      });
      window.addEventListener("pagehide", () => {
        window.clearTimeout(timeoutId);

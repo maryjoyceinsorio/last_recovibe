@@ -944,6 +944,11 @@ body {
   white-space: nowrap;
 }
 
+.approval-pipeline-group--reviewed .queue-pipeline-status {
+  max-width: 100%;
+  white-space: normal;
+}
+
 .queue-pipeline-status--action {
   background: #e8f5ed;
   color: #17643b;
