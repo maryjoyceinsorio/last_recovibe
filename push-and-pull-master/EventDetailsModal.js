@@ -50,39 +50,217 @@
     }
   };
 
+  const firstValue = (record, fields) => {
+    for (const field of fields) {
+      const value = record && record[field];
+      if (value === undefined || value === null) continue;
+      if (typeof value === "string" && !value.trim()) continue;
+      if (Array.isArray(value) && value.length === 0) continue;
+      if (
+        typeof value === "object" &&
+        !Array.isArray(value) &&
+        !(value instanceof Date) &&
+        typeof value.toDate !== "function" &&
+        Object.keys(value).length === 0
+      ) continue;
+      return value;
+    }
+    return "";
+  };
+
+  const eventText = (value) => {
+    if (typeof value === "string") return value.trim();
+    if (typeof value === "number") return Number.isFinite(value) ? String(value) : "";
+    if (typeof value === "boolean") return value ? "Yes" : "No";
+    if (Array.isArray(value)) return value.map(eventText).filter(Boolean).join(", ");
+    if (value && typeof value === "object") {
+      return eventText(firstValue(value, [
+        "name", "fullName", "full_name", "displayName", "display_name",
+        "facultyName", "adviserName", "advisorName", "title", "label", "text",
+        "content", "description", "objective", "objectives", "rule", "rules",
+        "reminder", "reminders", "instruction", "items", "values", "value",
+        "fileName", "filename", "id",
+      ]));
+    }
+    return "";
+  };
+
+  const formatEventTime = (value, event) => {
+    if (typeof value === "function") {
+      try {
+        value = value(event);
+      } catch {
+        return "";
+      }
+    }
+    if (value instanceof Date) {
+      return Number.isNaN(value.getTime())
+        ? ""
+        : new Intl.DateTimeFormat("en-US", {
+            timeZone: "Asia/Manila",
+            hour: "2-digit",
+            minute: "2-digit",
+          }).format(value);
+    }
+    if (value && typeof value === "object") {
+      if (typeof value.toDate === "function") {
+        try {
+          return formatEventTime(value.toDate(), event);
+        } catch {
+          return "";
+        }
+      }
+      const timestampSeconds = value.seconds ?? value._seconds;
+      if (timestampSeconds != null && Number.isFinite(Number(timestampSeconds))) {
+        return formatEventTime(Number(timestampSeconds) * 1000, event);
+      }
+      if (Number.isFinite(Number(value.hour))) {
+        value = `${value.hour}:${String(value.minute || 0).padStart(2, "0")} ${value.period || value.meridiem || ""}`;
+      } else {
+        value = firstValue(value, [
+          "time", "value", "timestamp", "dateTime", "date",
+        ]);
+      }
+    }
+    if (typeof value === "number" && Number.isFinite(value)) {
+      if (value >= 1e11) return formatEventTime(new Date(value), event);
+      if (value >= 1e9) return formatEventTime(new Date(value * 1000), event);
+      if (value >= 0 && value < 24) {
+        const hours = Math.floor(value);
+        const minutes = Math.round((value - hours) * 60);
+        return formatEventTime(`${hours}:${String(minutes).padStart(2, "0")}`, event);
+      }
+      if (Number.isInteger(value) && value >= 100 && value <= 2359) {
+        return formatEventTime(
+          `${Math.floor(value / 100)}:${String(value % 100).padStart(2, "0")}`,
+          event,
+        );
+      }
+      return "";
+    }
+    if (typeof value !== "string") return "";
+    const text = value.trim();
+    if (!text) return "";
+    if (/^\d{10,13}$/.test(text)) {
+      return formatEventTime(Number(text), event);
+    }
+    if (/^\d{3,4}$/.test(text)) {
+      return formatEventTime(Number(text), event);
+    }
+    const clock = /^(\d{1,2})(?::(\d{2}))?(?::\d{2})?\s*(A\.?M\.?|P\.?M\.?)?$/i.exec(text);
+    if (clock) {
+      let hour = Number(clock[1]);
+      const minute = Number(clock[2] || 0);
+      const meridiem = clock[3]?.replace(/\./g, "").toUpperCase();
+      if (minute > 59 || (meridiem ? hour < 1 || hour > 12 : hour > 23)) return "";
+      if (meridiem) hour = (hour % 12) + (meridiem === "PM" ? 12 : 0);
+      return `${String(hour % 12 || 12).padStart(2, "0")}:${String(minute).padStart(2, "0")} ${hour >= 12 ? "PM" : "AM"}`;
+    }
+    if (/^\d{4}-\d{2}-\d{2}[T ]/.test(text)) {
+      const date = new Date(text);
+      return Number.isNaN(date.getTime()) ? "" : formatEventTime(date, event);
+    }
+    return "";
+  };
+
+  const startTimeFields = [
+    "timeStart", "time_start", "timeStartAt", "startTime", "start_time",
+    "eventTimeStart", "eventStartTime", "event_time_start", "event_start_time",
+    "startAt", "start_at", "eventStartAt",
+    "event_start_at", "eventTimeStartAt", "startDateTime", "startDateAndTime",
+    "eventStartDateTime", "startTimestamp", "timestampStart",
+    "eventStartTimestamp", "eventTimestampStart", "eventStart", "start",
+  ];
+  const endTimeFields = [
+    "timeEnd", "time_end", "timeEndAt", "endTime", "end_time",
+    "eventTimeEnd", "eventEndTime", "event_time_end", "event_end_time",
+    "endAt", "end_at", "eventEndAt", "event_end_at", "eventTimeEndAt",
+    "endDateTime", "endDateAndTime", "eventEndDateTime", "endTimestamp",
+    "timestampEnd", "eventEndTimestamp", "eventTimestampEnd", "eventEnd", "end",
+  ];
+  const eventTimeFrom = (record, fields) => {
+    for (const field of fields) {
+      const formatted = formatEventTime(record && record[field], record);
+      if (formatted) return formatted;
+    }
+    return "";
+  };
+  const eventTimeRange = (event) => {
+    const ranges = [
+      event && event.time,
+      event && event.timeRange,
+      event && event.eventTime,
+      event && event.eventTimeRange,
+    ];
+    for (const range of ranges) {
+      const rangeStart = range && typeof range === "object"
+        ? firstValue(range, ["start", "timeStart", "startTime"])
+        : "";
+      const rangeEnd = range && typeof range === "object"
+        ? firstValue(range, ["end", "timeEnd", "endTime"])
+        : "";
+      if (rangeStart || rangeEnd) {
+        const start = formatEventTime(rangeStart, event);
+        const end = formatEventTime(rangeEnd, event);
+        if (start || end) return [start, end];
+      }
+      if (typeof range !== "string") continue;
+      const parts = range.split(/\s*(?:[-–—]|\bto\b)\s*/i);
+      if (parts.length === 2) {
+        const start = formatEventTime(parts[0], event);
+        const end = formatEventTime(parts[1], event);
+        if (start || end) return [start, end];
+      }
+    }
+    return ["", ""];
+  };
+  const getEventTimes = (event) => {
+    const [rangeStart, rangeEnd] = eventTimeRange(event);
+    const firstSchedule = Array.isArray(event && event.dailySchedules)
+      ? event.dailySchedules[0]
+      : null;
+    return [
+      eventTimeFrom(event, startTimeFields) ||
+        eventTimeFrom(firstSchedule, startTimeFields) || rangeStart,
+      eventTimeFrom(event, endTimeFields) ||
+        eventTimeFrom(firstSchedule, endTimeFields) || rangeEnd,
+    ];
+  };
+
   const listMarkup = (items) => {
     const values = normalizeList(items)
-      .map((item) =>
-        typeof item === "object"
-          ? item.name || item.title || item.label || item.filename || item.fileName || ""
-          : item,
-      )
+      .map(eventText)
       .filter(Boolean);
     return `<ul class="student-event-list">${(values.length ? values : ["N/A"])
       .map((item) => `<li>${escapeHTML(item)}</li>`)
       .join("")}</ul>`;
   };
 
-  const documentMarkup = (items) =>
-    items
-      .map((item) => {
-        const name =
-          typeof item === "object"
-            ? item.name || item.title || item.fileName || ""
-            : item;
-        const href =
-          typeof item === "object"
-            ? item.url || item.href || item.downloadURL || item.downloadUrl || item.fileUrl || ""
-            : "";
-        if (!name) return "";
-        const icon =
-          '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 2.5v10m0 0 3.5-3.5M10 12.5 6.5 9M3.5 13.5v3h13v-3"/></svg>';
-        const link = href && /^(https?:|blob:|\.\.?\/|\/)/i.test(href)
-          ? `<a href="${escapeHTML(href)}" download="${escapeHTML(name)}" aria-label="Download ${escapeHTML(name)}" title="Download ${escapeHTML(name)}">${icon}</a>`
-          : `<span title="Download link unavailable" aria-label="Download unavailable">${icon}</span>`;
-        return `<div class="student-event-attachment"><span>${escapeHTML(name)}</span>${link}</div>`;
-      })
-      .join("");
+  const documentMarkup = (items, redirect = true) => items.map((item) => {
+    const rawUrl = typeof item === "string"
+      ? item
+      : firstValue(item, [
+          "url", "href", "downloadURL", "downloadUrl", "fileUrl", "fileURL",
+        "file_url", "documentUrl", "documentURL", "document_url",
+        "documentLink", "document_link", "participantDocumentUrl",
+        "participant_document_url", "participantDocumentLink",
+        "webViewLink", "web_view_link", "link", "googleDriveUrl",
+        "google_drive_url", "googleDriveLink", "google_drive_link",
+        ]);
+    const href = safeHttpUrl(rawUrl);
+    const name = eventText(firstValue(item, [
+      "name", "title", "fileName", "filename", "documentName",
+    ])) || (href ? "Participant document" : eventText(item));
+    if (!name) return "";
+    const icon =
+      '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 2.5v10m0 0 3.5-3.5M10 12.5 6.5 9M3.5 13.5v3h13v-3"/></svg>';
+    const link = href
+      ? redirect
+        ? `<a class="student-event-document-link" href="${escapeHTML(href)}" target="_blank" rel="noopener noreferrer" aria-label="Open ${escapeHTML(name)}">Open Link</a>`
+        : `<a href="${escapeHTML(href)}" download="${escapeHTML(name)}" aria-label="Download ${escapeHTML(name)}" title="Download ${escapeHTML(name)}">${icon}</a>`
+      : '<span class="student-event-document-unavailable" aria-disabled="true">Link unavailable</span>';
+    return `<div class="student-event-attachment"><span>${escapeHTML(name)}</span>${link}</div>`;
+  }).join("");
 
   const categoryTone = (value) => {
     const category = String(value || "").toLowerCase();
@@ -168,7 +346,6 @@
 
   function render(event, options = {}) {
     if (!event || isHoliday(event)) return;
-    const showFacultyInCharge = /\/User(?:EventOrganizer|Admin)\//i.test(location.pathname);
     const source = [
       event.source || event.eventSource || event.campus || event.office,
       event.sourceOther,
@@ -190,15 +367,8 @@
         : event.attendanceRequired || "N/A";
     const dateStart = event.dateStart || event.dateISO || event.date;
     const dateEnd = event.dateEnd || event.endDate || event.eventEndDate || dateStart;
-    const timeParts = event.startTime || event.endTime
-      ? [event.startTime, event.endTime]
-      : String(event.time || "").split(/\s*[-–]\s*/);
-    const timeText = (value) => {
-      const match = /^(\d{1,2}):(\d{2})$/.exec(String(value || "").trim());
-      if (!match) return String(value || "").trim() || "N/A";
-      const hour = Number(match[1]);
-      return `${String(hour % 12 || 12).padStart(2, "0")}:${match[2]} ${hour >= 12 ? "PM" : "AM"}`;
-    };
+    const timeText = (value) => formatEventTime(value, event) || "N/A";
+    const [eventStartTime, eventEndTime] = getEventTimes(event);
     const dailySchedules = Array.isArray(event.dailySchedules)
       ? event.dailySchedules
       : [];
@@ -216,13 +386,13 @@
             : index === dailySchedules.length - 1
               ? "Last Day"
               : `Day ${index + 1}`);
-        return `<div class="student-event-daily-row"><strong>${escapeHTML(scheduleLabel)}</strong><span>${escapeHTML(dateText(scheduleDate) || "N/A")}</span><strong>Time Start</strong><span>${escapeHTML(timeText(schedule.timeStart))}</span><strong>Time End</strong><span>${escapeHTML(timeText(schedule.timeEnd))}</span></div>`;
+        return `<div class="student-event-daily-row"><strong>${escapeHTML(scheduleLabel)}</strong><span>${escapeHTML(dateText(scheduleDate) || "N/A")}</span><strong>Time Start</strong><span>${escapeHTML(eventTimeFrom(schedule, startTimeFields) || "N/A")}</span><strong>Time End</strong><span>${escapeHTML(eventTimeFrom(schedule, endTimeFields) || "N/A")}</span></div>`;
       })
       .join("");
     const dateTimeText = (value) => {
       if (!value) return "N/A";
       const [date, time] = String(value).split(/[T ]/, 2);
-      return `${dateText(date) || "N/A"}${time ? ` · ${timeText(time.slice(0, 5))}` : ""}`;
+      return `${dateText(date) || "N/A"}${time ? ` · ${timeText(time) !== "N/A" ? timeText(time) : timeText(value)}` : ""}`;
     };
     const venue = [
       event.venue || event.location || event.venueOther || event.venueName,
@@ -251,26 +421,49 @@
     const expectedParticipants =
       event.expectedParticipants ?? event.registeredCount ??
       (!capacityKnown ? "N/A" : Math.max(0, Number(capacity) - Number(slotsLeft || 0)));
-    const availability = noCapacityLimit
-      ? "Open registration"
-      : !capacityKnown
-        ? "N/A"
-        : `${openSlots ?? slotsLeft}${capacity != null ? ` of ${capacity}` : ""} slots open`;
-    const description = String(event.description || event.desc || event.about || "N/A")
-      .split(/\n\s*\n/)
+    const descriptionValue = firstValue(event, [
+      "description", "descriptionText", "description_text",
+      "eventDescription", "eventDescriptionText", "event_description",
+      "desc", "about",
+      "eventDetails", "eventSummary",
+    ]);
+    const description = (Array.isArray(descriptionValue)
+      ? descriptionValue
+      : [descriptionValue])
+      .flatMap((item) => eventText(item).split(/\n\s*\n/))
       .map((item) => item.trim())
       .filter(Boolean);
     const requirements = getRequirements(event);
     const rules = [
-      ...asList(event.participationRules || event.rules),
-      ...asList(event.reminders),
+      ...asList(firstValue(event, [
+        "participationRules", "participation_rules", "participationGuidelines",
+        "participation_guidelines", "rules", "eventRules", "event_rules",
+        "rulesAndReminders", "rules_and_reminders", "rulesReminders",
+        "rules_reminders", "remindersAndRules", "reminders_and_rules",
+        "rulesAndRegulations", "guidelines",
+      ])),
+      ...asList(firstValue(event, [
+        "reminders", "reminder", "eventReminders",
+      ])),
       ...requirements,
     ];
-    const objectives = event.objectives || event.keyDetails || event.detailedInfo || event.focusAreas || event.tags;
+    const objectives = firstValue(event, [
+      "objectives", "objective", "eventObjectives", "event_objectives",
+      "objectivesList", "learningObjectives", "learning_objectives",
+      "keyDetails", "key_details", "detailedInfo", "detailed_info",
+      "focusAreas", "focus_areas", "expectedOutcomes", "expected_outcomes",
+      "outcomes", "goals",
+    ]);
     const participantDocuments = asList(
-      event.participantDocuments ||
-        event.participantDocs ||
-        event.registrationDocuments,
+      firstValue(event, [
+        "participantDocuments", "participant_documents", "participantDocs",
+        "participant_docs", "participantDocumentUrls", "participant_document_urls",
+        "participantDocumentUrl", "participant_document_url", "participantDocLinks",
+        "participantDocsLink", "participantDocumentLinks",
+        "participantDocumentLink", "participant_document_link", "participantFiles",
+        "registrationDocuments", "registration_documents",
+        "registrationDocumentLinks", "registrationDocLinks", "attachments",
+      ]),
     );
     const approvalDocuments = options.showApprovalDocuments
       ? asList(
@@ -303,15 +496,20 @@
       contactParts.find((item) => item !== contactEmail && item !== contactPhone) ||
       event.organizerName ||
       "";
-    const contactRole =
-      contactInfo.role ||
-      event.contactRole ||
-      contactParts.find((item) => item !== contactName && item !== contactEmail && item !== contactPhone) ||
-      "";
-    const facultyInChargeValue = event.facultyInCharge || event.faculty_in_charge || "";
-    const facultyInChargeName = typeof facultyInChargeValue === "object"
-      ? facultyInChargeValue.name || event.facultyInChargeName || facultyInChargeValue.id || ""
-      : facultyInChargeValue || event.facultyInChargeName || event.facultyInChargeId || "";
+    const facultyInChargeValue = firstValue(event, [
+      "facultyInCharge", "faculty_in_charge", "facultyInChargeName",
+      "faculty_in_charge_name", "facultyName", "faculty_name", "faculty",
+      "adviserName", "adviser_name", "advisorName", "advisor_name",
+      "adviser", "advisor", "facultyAdvisor", "faculty_advisor",
+      "facultyAdviser", "faculty_adviser", "facultyAdvisorName",
+      "faculty_advisor_name", "teacherInCharge", "teacher_in_charge",
+      "assignedFaculty", "assigned_faculty",
+    ]);
+    const facultyInChargeName = eventText(facultyInChargeValue) ||
+      eventText(firstValue(event, [
+        "facultyInChargeId", "faculty_in_charge_id", "facultyId",
+        "faculty_id", "adviserId", "adviser_id", "advisorId", "advisor_id",
+      ]));
     const bannerUrl =
       typeof event.bannerImage === "string" &&
       /^data:image\/(?:png|jpeg|webp);base64,/i.test(event.bannerImage)
@@ -339,8 +537,8 @@
       `<section class="student-event-info" aria-label="Event schedule and capacity">
         ${infoCard("Date Start", dateText(dateStart) || "N/A")}
         ${infoCard("Date End", dateText(dateEnd) || "N/A")}
-        ${infoCard("Time Start", differentTimesByDay ? "N/A" : timeText(timeParts[0]))}
-        ${infoCard("Time End", differentTimesByDay ? "N/A" : timeText(timeParts[1]))}
+        ${infoCard("Time Start", differentTimesByDay ? "See daily schedule" : eventStartTime || "N/A")}
+        ${infoCard("Time End", differentTimesByDay ? "See daily schedule" : eventEndTime || "N/A")}
         ${infoCard("Venue", venue)}
         ${infoCard("Venue Type", venueType)}
         ${infoCard("Max Capacity", noCapacityLimit ? "No limit" : capacityKnown ? `${capacity} People` : "N/A")}
@@ -352,19 +550,26 @@
         <div class="student-event-registration-grid">
           <p><strong>Registration Start:</strong> ${escapeHTML(dateTimeText(event.registrationStart) || "N/A")}</p>
           <p><strong>Registration End:</strong> ${escapeHTML(dateTimeText(registrationEnd) || "N/A")}</p>
-          <p><strong>Registration:</strong> ${escapeHTML(event.registrationInfo || event.registrationStatus || event.status || "N/A")}</p>
-          ${platformUrl ? `<p><strong>Platform:</strong> <a href="${escapeHTML(platformUrl)}" target="_blank" rel="noopener noreferrer">Join event online</a></p>` : ""}
-          <p><strong>Availability:</strong> ${escapeHTML(availability)}</p>
-          ${differentTimesByDay ? `<div class="student-event-daily-schedule"><h3>Different Time Per Day</h3><div>${scheduleRows}</div></div>` : ""}
         </div>
       </section>`,
+      differentTimesByDay
+        ? `<section class="student-event-section student-event-daily-schedule"><h3>Different Time Per Day</h3><div>${scheduleRows}</div></section>`
+        : "",
+      platformUrl
+        ? `<section class="student-event-section"><h3>Event Platform</h3><p><a href="${escapeHTML(platformUrl)}" target="_blank" rel="noopener noreferrer">Join event online</a></p></section>`
+        : "",
       `<section class="student-event-section student-event-description"><h3>Event Description</h3>${bannerUrl ? `<img class="event-details-banner student-event-banner" src="${escapeHTML(bannerUrl)}" alt="${escapeHTML(event.bannerFileName || title)}">` : ""}${description.map((paragraph) => `<p>${escapeHTML(paragraph)}</p>`).join("")}</section>`,
-      `<section class="student-event-section"><h3>Rationale</h3><p>${escapeHTML(event.rationale || "N/A")}</p></section>`,
+      `<section class="student-event-section"><h3>Rationale</h3><p>${escapeHTML(eventText(firstValue(event, [
+        "rationale", "rationaleText", "rationale_text", "eventRationale",
+        "event_rationale", "justification", "eventJustification",
+        "event_justification", "background", "eventBackground",
+        "event_background", "reason",
+      ])) || "N/A")}</p></section>`,
       `<section class="student-event-section"><h3>Objectives</h3>${listMarkup(asList(objectives).length ? asList(objectives) : ["N/A"])}</section>`,
       `<section class="student-event-section"><h3>Rules &amp; Reminders</h3>${listMarkup(rules.length ? rules : ["N/A"])}</section>`,
       `<div class="student-event-bottom-grid">
-        <section class="student-event-section student-event-contact"><h3>Contact Person</h3><p><strong>Name:</strong> ${escapeHTML(contactName || "N/A")}</p><p><strong>Role:</strong> ${escapeHTML(contactRole || "N/A")}</p><p><strong>Email:</strong> ${contactEmail ? `<a href="mailto:${escapeHTML(contactEmail)}">${escapeHTML(contactEmail)}</a>` : "N/A"}</p><p><strong>Number:</strong> ${escapeHTML(contactPhone || "N/A")}</p><p><strong>Faculty In Charge:</strong> ${escapeHTML(showFacultyInCharge ? facultyInChargeName || "N/A" : "N/A")}</p></section>
-        <section class="student-event-section student-event-documents"><h3>Participant Documents</h3><p>Open the Google Drive links to download the required files.</p><div class="student-event-attachments">${participantDocuments.length ? documentMarkup(participantDocuments) : '<p class="student-event-no-documents">No files attached.</p>'}</div><small>(Make sure to download and fill up these files. Its needed for participation)</small>${approvalDocuments.length ? `<div class="student-event-approval-documents"><p><strong>Approval Documents</strong></p><div class="student-event-attachments">${documentMarkup(approvalDocuments)}</div></div>` : ""}</section>
+        <section class="student-event-section student-event-contact"><h3>Contact Person</h3><p><strong>Name:</strong> ${escapeHTML(contactName || "N/A")}</p><p><strong>Email:</strong> ${contactEmail ? `<a href="mailto:${escapeHTML(contactEmail)}">${escapeHTML(contactEmail)}</a>` : "N/A"}</p><p><strong>Number:</strong> ${escapeHTML(contactPhone || "N/A")}</p><p><strong>Faculty In Charge:</strong> ${escapeHTML(facultyInChargeName || "N/A")}</p></section>
+        <section class="student-event-section student-event-documents"><h3>Participant Documents</h3><p>Open the participant document links in a new tab.</p><div class="student-event-attachments">${participantDocuments.length ? documentMarkup(participantDocuments) : '<p class="student-event-no-documents">No files attached.</p>'}</div><small>(Make sure to download and fill up these files. Its needed for participation)</small>${approvalDocuments.length ? `<div class="student-event-approval-documents"><p><strong>Approval Documents</strong></p><div class="student-event-attachments">${documentMarkup(approvalDocuments, false)}</div></div>` : ""}</section>
       </div>`,
     ].join("");
     modal.querySelector('[data-field="content"]').innerHTML = detailContent;
@@ -561,8 +766,14 @@
       if (typeof result === "number") return Number.isFinite(result) ? String(result) : fallback;
       if (typeof result === "boolean") return result ? "Yes" : "No";
       if (result && typeof result === "object") {
-        const label = result.name || result.title || result.label ||
-          result.filename || result.fileName;
+        const label = firstValue(result, [
+          "name", "title", "label", "text", "content", "description",
+          "objective", "objectives", "rule", "rules", "reminder",
+          "reminders", "instruction", "items", "values", "value",
+          "fullName", "full_name", "displayName", "display_name",
+          "facultyName", "adviserName", "advisorName",
+          "filename", "fileName", "id",
+        ]);
         return label === undefined ? fallback : displayText(label, fallback, event);
       }
       return fallback;
@@ -623,41 +834,24 @@
         }
       }
       if (value instanceof Date || typeof value?.toDate === "function") {
-        return dateText(value);
+        const formattedTime = formatEventTime(value, selectedEvent);
+        return `${dateText(value)}${formattedTime ? ` · ${formattedTime}` : ""}`;
       }
       const [date, time] = String(value).split(/[T ]/, 2);
-      const formattedTime = time ? timeText(time.slice(0, 5)) : "";
+      const formattedTime = time
+        ? timeText(time) !== "N/A"
+          ? timeText(time)
+          : timeText(value)
+        : "";
       const formattedDate = dateText(date);
       return formattedDate === "N/A"
         ? "N/A"
         : `${formattedDate}${formattedTime ? ` · ${formattedTime}` : ""}`;
     };
-    const timeText = (value) => {
-      if (typeof value === "function") {
-        try {
-          value = value(selectedEvent);
-        } catch (error) {
-          return "N/A";
-        }
-      }
-      if (typeof value !== "string" && typeof value !== "number") return "N/A";
-      const match = /^(\d{1,2}):(\d{2})$/.exec(String(value || "").trim());
-      if (!match) return "N/A";
-      const hour = Number(match[1]);
-      return `${String(hour % 12 || 12).padStart(2, "0")}:${match[2]} ${hour >= 12 ? "PM" : "AM"}`;
-    };
-    const eventTimes = (event) => {
-      if (event.startTime || event.endTime)
-        return [
-          timeText(event.startTime) || "N/A",
-          timeText(event.endTime) || "N/A",
-        ];
-      const parts = String(event.time || "").split(/\s*[-–]\s*/);
-      return [
-        timeText(parts[0]) || "N/A",
-        timeText(parts[1]) || "N/A",
-      ];
-    };
+    const timeText = (value) =>
+      formatEventTime(value, selectedEvent) || "N/A";
+    const eventTimes = (event) =>
+      getEventTimes(event).map((value) => value || "N/A");
     const minuteOfDay = (value) => {
       const twelve = /(\d{1,2}):(\d{2})\s*(AM|PM)/i.exec(String(value || ""));
       if (twelve)
@@ -709,6 +903,24 @@
       );
     };
     const blockReason = (event, action) => {
+      if (action === "join") {
+        try {
+          const settings = JSON.parse(
+            localStorage.getItem("recovibeSystemSettings") || "{}",
+          );
+          if (
+            settings.eventRegistrationEnabled === false ||
+            settings.registrationEnabled === false
+          ) {
+            return "Event registration is currently closed by the administrator.";
+          }
+        } catch (error) {
+          console.warn("[StudentEventDetails] Could not read access settings:", {
+            code: error?.code || "unknown",
+            message: error?.message || String(error),
+          });
+        }
+      }
       const registrationEnd = event.registrationEnd || event.registrationDeadline;
       const deadlineText = String(registrationEnd || "").trim();
       const deadlineAt = registrationEnd instanceof Date
@@ -757,96 +969,24 @@
       return blockReason(event, "join") || "Open";
     };
     function attachmentsMarkup(event) {
-      const files = entries(
-        (Array.isArray(event.attachments) && event.attachments.length
-          ? event.attachments
-          : null) ||
-          event.participantDocuments ||
-          event.participantDocs ||
-          event.registrationDocuments,
-      );
-      if (!files.length) return '<p class="student-event-no-documents">No files attached.</p>';
-      return files
-        .map((file) => {
-          const name = text(file);
-          const href =
-            typeof file === "object"
-              ? file.url ||
-                file.href ||
-                file.downloadUrl ||
-                file.fileUrl ||
-                file.dataUrl ||
-                ""
-              : /^(https?:|blob:|data:|\.\.?\/|\/)/i.test(String(file))
-                ? file
-                : "";
-          let isDriveLink = false;
-          try {
-            const parsedUrl = new URL(String(href));
-            isDriveLink = parsedUrl.protocol === "https:" &&
-              ["drive.google.com", "docs.google.com"].includes(parsedUrl.hostname.toLowerCase());
-          } catch {
-            isDriveLink = false;
-          }
-          const icon =
-            '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 2.5v10m0 0 3.5-3.5M10 12.5 6.5 9M3.5 13.5v3h13v-3"/></svg>';
-          const link = isDriveLink
-            ? `<a href="${escapeHTML(href)}" target="_blank" rel="noopener noreferrer" aria-label="Open ${escapeHTML(name)} in Google Drive" title="Open in Google Drive">${icon}</a>`
-            : /^(https?:|blob:|data:|\.\.?\/|\/)/i.test(String(href))
-            ? `<a href="${escapeHTML(href)}" download="${escapeHTML(name)}" aria-label="Download ${escapeHTML(name)}" title="Download ${escapeHTML(name)}">${icon}</a>`
-            : typeof file === "object" && (file.fileId || file.id)
-              ? `<a href="#" data-event-file-id="${escapeHTML(file.fileId || file.id)}" download="${escapeHTML(name)}" aria-label="Download ${escapeHTML(name)}" title="Download ${escapeHTML(name)}">${icon}</a>`
-              : `<span title="Download link unavailable" aria-label="Download unavailable">${icon}</span>`;
-          return `<div class="student-event-attachment"><span>${escapeHTML(name)}</span>${link}</div>`;
-        })
-        .join("");
+      const fileFields = [
+        "participantDocuments", "participant_documents", "participantDocs",
+        "participant_docs", "participantDocumentUrls", "participant_document_urls",
+        "participantDocumentUrl", "participant_document_url", "participantDocLinks",
+        "participantDocsLink", "participantDocumentLinks",
+        "participantDocumentLink", "participant_document_link", "participantFiles",
+        "registrationDocuments", "registration_documents",
+        "registrationDocumentLinks", "registrationDocLinks", "attachments",
+      ];
+      const files = fileFields
+        .map((field) => entries(event[field]))
+        .find((items) => items.length) || [];
+      return files.length
+        ? documentMarkup(files)
+        : '<p class="student-event-no-documents">No files attached.</p>';
     }
 
-    detailOverlay.addEventListener("click", async (event) => {
-      const link = event.target.closest("[data-event-file-id]");
-      if (!link) return;
-      event.preventDefault();
-      link.setAttribute("aria-busy", "true");
-      try {
-        const database = await new Promise((resolve, reject) => {
-          const request = indexedDB.open("RecoVibeEventDocuments", 1);
-          request.onupgradeneeded = () => {
-            if (!request.result.objectStoreNames.contains("files"))
-              request.result.createObjectStore("files", { keyPath: "id" });
-          };
-          request.onsuccess = () => resolve(request.result);
-          request.onerror = () =>
-            reject(
-              request.error || new Error("Document storage is unavailable."),
-            );
-        });
-        const stored = await new Promise((resolve, reject) => {
-          const request = database
-            .transaction("files")
-            .objectStore("files")
-            .get(link.dataset.eventFileId);
-          request.onsuccess = () => resolve(request.result);
-          request.onerror = () =>
-            reject(
-              request.error || new Error("Could not read the attached file."),
-            );
-        });
-        if (!stored) throw new Error("This file is no longer available.");
-        const url = URL.createObjectURL(stored.blob);
-        const download = document.createElement("a");
-        download.href = url;
-        download.download = stored.name || link.download;
-        download.click();
-        window.setTimeout(() => URL.revokeObjectURL(url), 30000);
-      } catch (error) {
-        window.alert(`Unable to download ${link.download}: ${error.message}`);
-      } finally {
-        link.removeAttribute("aria-busy");
-      }
-    });
-
     function renderEvent(event) {
-      const showFacultyInCharge = /\/User(?:EventOrganizer|Admin)\//i.test(location.pathname);
       const categories = entries(
         event.categories || event.category || event.tag,
       );
@@ -886,11 +1026,6 @@
       const displayedSlots = Number.isFinite(availableNumber)
         ? Math.max(0, Math.floor(availableNumber))
         : null;
-      const availabilityText = noCapacityLimit || availableNumber === Infinity
-        ? "Unlimited"
-        : !capacityKnown || displayedSlots === null || !Number.isFinite(totalNumber)
-          ? "Not specified"
-          : `${displayedSlots} of ${Math.max(0, Math.floor(totalNumber))} slots left`;
       const participants =
         event.expectedParticipants ??
         event.registeredCount ??
@@ -939,12 +1074,16 @@
             ? "Required"
             : "Not Required"
           : displayText(event.attendanceRequired, "N/A", event);
-      const description = displayText(
-        event.description || event.desc || event.about || "N/A",
-        "N/A",
-        event,
-      )
-        .split(/\n\s*\n/)
+      const descriptionValue = firstValue(event, [
+        "description", "descriptionText", "description_text",
+        "eventDescription", "eventDescriptionText", "event_description",
+        "desc", "about",
+        "eventDetails", "eventSummary",
+      ]);
+      const description = (Array.isArray(descriptionValue)
+        ? descriptionValue
+        : [descriptionValue])
+        .flatMap((item) => displayText(item, "", event).split(/\n\s*\n/))
         .map((item) => item.trim())
         .filter(Boolean);
       const contactPerson = typeof event.contactPerson === "function"
@@ -978,30 +1117,39 @@
         contactParts.find((item) => item !== email && item !== phone) ||
         event.organizerName ||
         "N/A";
-      const role =
-        contactInfo.role ||
-        displayText(event.contactRole, "", event) ||
-        contactParts.find(
-          (item) => item !== person && item !== email && item !== phone,
-        ) ||
-        "";
-      const facultyInChargeValue =
-        event.facultyInCharge || event.faculty_in_charge || "";
-      const facultyInChargeName = typeof facultyInChargeValue === "object"
-        ? facultyInChargeValue.name ||
-          displayText(event.facultyInChargeName, "", event) ||
-          facultyInChargeValue.id ||
-          ""
-        : facultyInChargeValue ||
-          event.facultyInChargeName ||
-          displayText(event.facultyInChargeId, "", event) ||
-          "";
+      const facultyInChargeValue = firstValue(event, [
+        "facultyInCharge", "faculty_in_charge", "facultyInChargeName",
+        "faculty_in_charge_name", "facultyName", "faculty_name", "faculty",
+        "adviserName", "adviser_name", "advisorName", "advisor_name",
+        "adviser", "advisor", "facultyAdvisor", "faculty_advisor",
+        "facultyAdviser", "faculty_adviser", "facultyAdvisorName",
+        "faculty_advisor_name", "teacherInCharge", "teacher_in_charge",
+        "assignedFaculty", "assigned_faculty",
+      ]);
+      const facultyInChargeName = displayText(facultyInChargeValue, "", event) ||
+        displayText(firstValue(event, [
+          "facultyInChargeId", "faculty_in_charge_id", "facultyId",
+          "faculty_id", "adviserId", "adviser_id", "advisorId", "advisor_id",
+        ]), "", event);
       const badgeList = categories.length ? categories : ["General"];
-      const objectives =
-        event.objectives || event.keyDetails || event.detailedInfo || event.focusAreas;
+      const objectives = firstValue(event, [
+        "objectives", "objective", "eventObjectives", "event_objectives",
+        "objectivesList", "learningObjectives", "learning_objectives",
+        "keyDetails", "key_details", "detailedInfo", "detailed_info",
+        "focusAreas", "focus_areas", "expectedOutcomes", "expected_outcomes",
+        "outcomes", "goals",
+      ]);
       const rules = [
-        ...entries(event.participationRules || event.rules),
-        ...entries(event.reminders),
+        ...entries(firstValue(event, [
+          "participationRules", "participation_rules", "participationGuidelines",
+          "participation_guidelines", "rules", "eventRules", "event_rules",
+          "rulesAndReminders", "rules_and_reminders", "rulesReminders",
+          "rules_reminders", "remindersAndRules", "reminders_and_rules",
+          "rulesAndRegulations", "guidelines",
+        ])),
+        ...entries(firstValue(event, [
+          "reminders", "reminder", "eventReminders",
+        ])),
         ...(event.requirements && typeof event.requirements === "object" && !Array.isArray(event.requirements)
           ? [
               ...entries(event.requirements.required),
@@ -1021,7 +1169,7 @@
               : index === dailySchedules.length - 1
                 ? "Last Day"
                 : `Day ${index + 1}`);
-          return `<div class="student-event-daily-row"><strong>${escapeHTML(displayText(scheduleLabel, "N/A", event))}</strong><span>${escapeHTML(dateText(scheduleDate))}</span><strong>Time Start</strong><span>${escapeHTML(timeText(schedule.timeStart) || "N/A")}</span><strong>Time End</strong><span>${escapeHTML(timeText(schedule.timeEnd) || "N/A")}</span></div>`;
+          return `<div class="student-event-daily-row"><strong>${escapeHTML(displayText(scheduleLabel, "N/A", event))}</strong><span>${escapeHTML(dateText(scheduleDate))}</span><strong>Time Start</strong><span>${escapeHTML(eventTimeFrom(schedule, startTimeFields) || "N/A")}</span><strong>Time End</strong><span>${escapeHTML(eventTimeFrom(schedule, endTimeFields) || "N/A")}</span></div>`;
         })
         .join("");
       detailHeader.innerHTML = `
@@ -1039,8 +1187,8 @@
         <section class="student-event-info" aria-label="Event schedule and capacity">
           ${infoCard("Date Start", dateText(dateStart))}
           ${infoCard("Date End", dateText(dateEnd))}
-          ${infoCard("Time Start", differentTimesByDay ? "N/A" : times[0])}
-          ${infoCard("Time End", differentTimesByDay ? "N/A" : times[1])}
+          ${infoCard("Time Start", differentTimesByDay ? "See daily schedule" : times[0])}
+          ${infoCard("Time End", differentTimesByDay ? "See daily schedule" : times[1])}
           ${infoCard("Venue", [displayText(venue, "", event), displayText(event.room || event.roomNumber, "", event)].filter(Boolean).join(" · "))}
           ${infoCard("Venue Type", venueType)}
           ${infoCard("Max Capacity", noCapacityLimit ? "No limit" : capacityKnown && Number.isFinite(totalNumber) ? `${Math.max(0, Math.floor(totalNumber))} People` : "Not specified")}
@@ -1052,19 +1200,22 @@
           <div class="student-event-registration-grid">
             <p><strong>Registration Start:</strong> ${escapeHTML(dateTimeText(event.registrationStart))}</p>
             <p><strong>Registration End:</strong> ${escapeHTML(dateTimeText(event.registrationEnd || event.registrationDeadline))}</p>
-            <p><strong>Status:</strong> ${escapeHTML(registrationState(event))}</p>
-            <p><strong>Availability:</strong> ${escapeHTML(availabilityText)}</p>
-            ${safeHttpUrl(event.platformLink) ? `<p><strong>Platform:</strong> <a href="${escapeHTML(safeHttpUrl(event.platformLink))}" target="_blank" rel="noopener noreferrer">Join event online</a></p>` : ""}
-            ${differentTimesByDay ? `<div class="student-event-daily-schedule"><h3>Different Time Per Day</h3><div>${scheduleRows}</div></div>` : ""}
           </div>
         </section>
+        ${differentTimesByDay ? `<section class="student-event-section student-event-daily-schedule"><h3>Different Time Per Day</h3><div>${scheduleRows}</div></section>` : ""}
+        ${safeHttpUrl(event.platformLink) ? `<section class="student-event-section"><h3>Event Platform</h3><p><a href="${escapeHTML(safeHttpUrl(event.platformLink))}" target="_blank" rel="noopener noreferrer">Join event online</a></p></section>` : ""}
         <section class="student-event-section student-event-description"><h3>Event Description</h3>${bannerUrl ? `<img class="event-details-banner student-event-banner" src="${escapeHTML(bannerUrl)}" alt="${escapeHTML(displayText(event.bannerFileName || event.title || "Event banner", "Event banner", event))}">` : ""}${description.map((paragraph) => `<p>${escapeHTML(paragraph)}</p>`).join("")}</section>
-        <section class="student-event-section"><h3>Rationale</h3><p>${escapeHTML(displayText(event.rationale || "N/A", "N/A", event))}</p></section>
+        <section class="student-event-section"><h3>Rationale</h3><p>${escapeHTML(displayText(firstValue(event, [
+          "rationale", "rationaleText", "rationale_text", "eventRationale",
+          "event_rationale", "justification", "eventJustification",
+          "event_justification", "background", "eventBackground",
+          "event_background", "reason",
+        ]), "N/A", event))}</p></section>
         <section class="student-event-section"><h3>Objectives</h3>${bullets(objectives)}</section>
         <section class="student-event-section"><h3>Rules &amp; Reminders</h3>${bullets(rules)}</section>
         <div class="student-event-bottom-grid">
-          <section class="student-event-section student-event-contact"><h3>Contact Person</h3><p><strong>Name:</strong> ${escapeHTML(displayText(person || "N/A", "N/A", event))}</p><p><strong>Role:</strong> ${escapeHTML(displayText(role || "N/A", "N/A", event))}</p><p><strong>Email:</strong> ${email ? `<a href="mailto:${escapeHTML(displayText(email, "N/A", event))}">${escapeHTML(displayText(email, "N/A", event))}</a>` : "N/A"}</p><p><strong>Number:</strong> ${escapeHTML(displayText(phone || "N/A", "N/A", event))}</p><p><strong>Faculty In Charge:</strong> ${escapeHTML(displayText(showFacultyInCharge ? facultyInChargeName || "N/A" : "N/A", "N/A", event))}</p></section>
-          <section class="student-event-section student-event-documents"><h3>Participant Documents</h3><p>Open the Google Drive links to download the required files.</p><div class="student-event-attachments">${attachmentsMarkup(event)}</div><small>(Make sure to download and fill up these files. Its needed for participation)</small></section>
+          <section class="student-event-section student-event-contact"><h3>Contact Person</h3><p><strong>Name:</strong> ${escapeHTML(displayText(person || "N/A", "N/A", event))}</p><p><strong>Email:</strong> ${email ? `<a href="mailto:${escapeHTML(displayText(email, "N/A", event))}">${escapeHTML(displayText(email, "N/A", event))}</a>` : "N/A"}</p><p><strong>Number:</strong> ${escapeHTML(displayText(phone || "N/A", "N/A", event))}</p><p><strong>Faculty In Charge:</strong> ${escapeHTML(displayText(facultyInChargeName || "N/A", "N/A", event))}</p></section>
+          <section class="student-event-section student-event-documents"><h3>Participant Documents</h3><p>Open the participant document links in a new tab.</p><div class="student-event-attachments">${attachmentsMarkup(event)}</div><small>(Make sure to download and fill up these files. Its needed for participation)</small></section>
         </div>`;
     }
 
@@ -1091,6 +1242,22 @@
       );
       noticeElement.textContent = state;
     }
+
+    const handleAccessSettingsChanged = () => {
+      if (!selectedEvent) return;
+      renderEvent(selectedEvent);
+      updateAction();
+    };
+    window.addEventListener(
+      "system-access-settings-changed",
+      handleAccessSettingsChanged,
+    );
+    window.addEventListener("pagehide", () => {
+      window.removeEventListener(
+        "system-access-settings-changed",
+        handleAccessSettingsChanged,
+      );
+    }, { once: true });
 
     function closeConfirmation(restore = true) {
       confirmOverlay.classList.remove("is-open");
@@ -1138,6 +1305,14 @@
     async function confirmAction() {
       if (!selectedEvent || pending) return;
       const action = selectedAction;
+      if (action === "join") {
+        const blocked = blockReason(selectedEvent, "join");
+        if (blocked) {
+          errorElement.textContent = blocked;
+          updateAction();
+          return;
+        }
+      }
       pending = true;
       primaryButton.disabled = true;
       cancelButton.disabled = true;
@@ -1160,7 +1335,10 @@
             throw new Error("No slots are available for this event.");
           if (typeof window.recovibeRegisterForEvent === "function") {
             if ((await window.recovibeRegisterForEvent(id)) === false) {
-              throw new Error("The registration could not be completed.");
+              throw new Error(
+                blockReason(selectedEvent, "join") ||
+                  "The registration could not be completed.",
+              );
             }
           }
           registrations.add(id);
@@ -1227,6 +1405,9 @@
           errorElement.textContent = "Could not cancel your registration. Please try again.";
         } else if (/already registered/i.test(message)) {
           errorElement.textContent = "You are already registered for this event.";
+        } else if (/currently closed by the administrator/i.test(message)) {
+          errorElement.textContent =
+            "Event registration is currently closed by the administrator.";
         } else if (/registration closed|deadline|registration is closed/i.test(message)) {
           errorElement.textContent = "Registration Closed";
         } else if (/fully booked|event is full|no slots/i.test(message)) {

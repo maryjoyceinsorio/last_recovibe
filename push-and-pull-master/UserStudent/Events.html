@@ -1458,24 +1458,6 @@
         position: relative;
         z-index: 1020;
       }
-      .date-range-trigger {
-        min-height: 40px;
-        max-width: 100%;
-        border: 1px solid rgba(122, 31, 46, 0.24);
-        background: #fbf9f5;
-        color: #332628;
-        white-space: nowrap;
-      }
-      .date-range-trigger:hover {
-        background: #f4efe4;
-      }
-      .date-range-trigger:focus-visible {
-        outline: 3px solid rgba(122, 31, 46, 0.28);
-        outline-offset: 2px;
-      }
-      .date-range-trigger.is-open {
-        border-color: #7a1f2e;
-      }
       .date-range-trigger.is-open::after {
         transform: rotate(225deg) translateY(-2px);
       }
@@ -2057,7 +2039,7 @@
         z-index: 4;
       }
       .date-range-trigger {
-        min-width: 0;
+        min-width: 104px;
         max-width: 100%;
         overflow: hidden;
         text-overflow: ellipsis;
@@ -3208,6 +3190,11 @@
         where,
       } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
       import { getEventDateRange } from "./calendarDateRange.mjs";
+      import {
+        EVENT_REGISTRATION_CLOSED_MESSAGE,
+        getCachedSystemAccessSettings,
+        readSystemAccessSettings,
+      } from "../systemAccess.js";
 
       /* ---------------------------------------------------------
          STATE
@@ -3215,6 +3202,7 @@
       const DEBUG = false;
       let currentUid = null;
       let serverTimeOffset = 0;
+      let systemAccessSettings = getCachedSystemAccessSettings();
       let studentQrPayload = "";
       let eventsLoading = true;
       let eventLoadError = "";
@@ -3671,11 +3659,34 @@
         return ev.capacity - (ev.registeredCount || 0) > 0;
       }
 
+      function normalizeAvailability(value) {
+        const normalized = String(value || "all").trim().toLowerCase();
+        if (normalized === "available" || normalized === "available to join" || normalized === "open") return "available";
+        if (normalized === "full") return "full";
+        if (normalized === "closed" || normalized === "registration closed") return "closed";
+        return "all";
+      }
+
+      function getRegistrationAvailability(ev, now = getNow()) {
+        if (!systemAccessSettings.eventRegistrationEnabled) return { isOpen: false, reason: "system-closed" };
+        if (
+          ev.registrationClosed ||
+          ev.status === "closed" ||
+          Number.isFinite(ev.registrationDeadlineAt) && now > ev.registrationDeadlineAt
+        ) return { isOpen: false, reason: "registration-closed" };
+        if (!hasOpenSlots(ev)) return { isOpen: false, reason: "full" };
+        if (
+          ["cancelled", "canceled", "completed"].includes(ev.status) ||
+          getEventClassification(ev, now) === "ended"
+        ) return { isOpen: false, reason: "event-closed" };
+        return { isOpen: true, reason: "available" };
+      }
+
       function getRegistrationState(eventId) {
         return registrationStates.get(eventId) || "loading";
       }
 
-      function renderRegistrationButton(ev, openSlots, includeQr = false) {
+      function renderRegistrationButton(ev, includeQr = false) {
         const state = getRegistrationState(ev.id);
         if (cancellationPendingIds.has(ev.id)) {
           return '<button type="button" class="btn-live-cancel" disabled>Cancelling...</button>';
@@ -3693,21 +3704,17 @@
           const canCancel = Number.isFinite(ev.startAt) && ev.startAt > 0 && getNow() < ev.startAt;
           return `${qrButton}<button type="button" class="btn-live-reg" disabled>Registered</button>${canCancel ? `<button type="button" class="btn-live-cancel" data-action="cancel" data-event-id="${ev.id}">Cancel registration</button>` : ""}`;
         }
-        if (
-          ev.registrationClosed ||
-          ev.status === "closed" ||
-          Number.isFinite(ev.registrationDeadlineAt) &&
-            getNow() > ev.registrationDeadlineAt
-        ) {
+        const availability = getRegistrationAvailability(ev);
+        if (availability.reason === "system-closed") {
+          return `<button type="button" class="btn-live-reg" disabled>${EVENT_REGISTRATION_CLOSED_MESSAGE}</button>`;
+        }
+        if (availability.reason === "registration-closed") {
           return '<button type="button" class="btn-live-reg" disabled>Registration Closed</button>';
         }
-        if (!openSlots) {
+        if (availability.reason === "full") {
           return '<button type="button" class="btn-live-reg" disabled>Fully Booked</button>';
         }
-        if (
-          ["cancelled", "canceled", "completed"].includes(ev.status) ||
-          getEventClassification(ev, getNow()) === "ended"
-        ) {
+        if (availability.reason === "event-closed") {
           return '<button type="button" class="btn-live-reg" disabled>This event is no longer open for registration.</button>';
         }
         if (state === "error") {
@@ -3789,18 +3796,11 @@
         }
 
         // Availability filter: "all" | "available" | "full" | "closed"
-        const isSlotsOpen = hasOpenSlots(ev);
-        const isRegClosed = isCompleted || isCancelled || Boolean(ev.registrationClosed) || evStatus === "closed";
-        const isAvailableToJoin = isSlotsOpen && !isRegClosed;
-        const isFull = !isSlotsOpen;
-
-        if (filterState.avail === "available" || filterState.avail === "open") {
-          if (!isAvailableToJoin) return false;
-        } else if (filterState.avail === "full") {
-          if (!isFull) return false;
-        } else if (filterState.avail === "closed") {
-          if (!isRegClosed) return false;
-        }
+        const availability = getRegistrationAvailability(ev, now);
+        const selectedAvailability = normalizeAvailability(filterState.avail);
+        if (selectedAvailability === "available" && !availability.isOpen) return false;
+        if (selectedAvailability === "full" && availability.reason !== "full") return false;
+        if (selectedAvailability === "closed" && availability.isOpen) return false;
 
         return true;
       }
@@ -3823,7 +3823,7 @@
           filterState.status = params.get("reg").trim();
           filterState.reg = filterState.status;
         }
-        if (params.has("avail")) filterState.avail = params.get("avail").trim();
+        if (params.has("avail")) filterState.avail = normalizeAvailability(params.get("avail"));
 
         if (filterState.from && filterState.to && !filterState.quickPreset) {
           const todayStr = new Date().toLocaleDateString("en-CA");
@@ -5032,9 +5032,9 @@
                   </span>
                 `;
               } else if (isRegistered) {
-                actionsHtml = renderRegistrationButton(ev, openSlots, true);
+                actionsHtml = renderRegistrationButton(ev, true);
               } else {
-                actionsHtml = renderRegistrationButton(ev, openSlots);
+                actionsHtml = renderRegistrationButton(ev);
               }
 
               // Details toggle
@@ -5310,7 +5310,7 @@
             } else if (isEnded) {
               actionBtn = "";
             } else {
-              actionBtn = renderRegistrationButton(ev, openSlots);
+              actionBtn = renderRegistrationButton(ev);
             }
 
             const weekday = formatWeekday(ev.startAt);
@@ -5364,6 +5364,20 @@
         renderActiveChips();
       }
 
+      function handleAccessSettingsChanged(event) {
+        if (event.detail?.error) return;
+        systemAccessSettings = {
+          ...systemAccessSettings,
+          ...event.detail,
+        };
+        renderAll();
+      }
+
+      window.addEventListener(
+        "system-access-settings-changed",
+        handleAccessSettingsChanged,
+      );
+
       /* ---------------------------------------------------------
          USER ACTIONS: REGISTER & CANCEL
       --------------------------------------------------------- */
@@ -5372,14 +5386,21 @@
         const evName = ev ? ev.name : "event";
 
         try {
-          const sys = JSON.parse(localStorage.getItem("recovibeSystemSettings") || "{}");
-          if (sys && sys.registrationEnabled === false) {
-            showToast("Event registration is temporarily disabled by system administration.");
-            announce("Event registration is disabled.");
-            return;
-          }
+          systemAccessSettings = await readSystemAccessSettings(db);
         } catch (error) {
-          console.warn("[Student Events] Could not read registration settings:", error);
+          console.error("[Student Events] Could not verify registration availability:", {
+            code: error?.code || "unknown",
+            message: error?.message || String(error),
+          });
+          showToast("Could not verify event registration availability. Check your connection and try again.");
+          announce("Could not verify event registration availability.");
+          return false;
+        }
+        if (!systemAccessSettings.eventRegistrationEnabled) {
+          showToast(EVENT_REGISTRATION_CLOSED_MESSAGE);
+          announce(EVENT_REGISTRATION_CLOSED_MESSAGE);
+          renderAll();
+          return false;
         }
 
         if (registrationPendingIds.has(eventId)) return false;
@@ -5441,11 +5462,22 @@
           }
           const eventRef = doc(db, "events", eventId);
           const registrationRef = doc(db, "events", eventId, "registrations", uid);
+          const accessSettingsRef = doc(db, "systemSettings", "default");
           const registeredCount = await runTransaction(db, async (transaction) => {
-            const [eventSnapshot, registrationSnapshot] = await Promise.all([
+            const [eventSnapshot, registrationSnapshot, accessSettingsSnapshot] = await Promise.all([
               transaction.get(eventRef),
               transaction.get(registrationRef),
+              transaction.get(accessSettingsRef),
             ]);
+            const accessData = accessSettingsSnapshot.exists()
+              ? accessSettingsSnapshot.data()
+              : {};
+            const registrationEnabled = typeof accessData.eventRegistrationEnabled === "boolean"
+              ? accessData.eventRegistrationEnabled
+              : accessData.registrationEnabled !== false;
+            if (!registrationEnabled) {
+              throw new Error(EVENT_REGISTRATION_CLOSED_MESSAGE);
+            }
             if (!eventSnapshot.exists()) {
               throw new Error("This event is no longer available.");
             }
@@ -5509,6 +5541,11 @@
           registrationStates.set(eventId, "not-registered");
           const code = String(error?.code || "").toLowerCase();
           const message = String(error?.message || "").toLowerCase();
+          if (message.includes("currently closed by the administrator")) {
+            showToast(EVENT_REGISTRATION_CLOSED_MESSAGE);
+            announce(EVENT_REGISTRATION_CLOSED_MESSAGE);
+            return false;
+          }
           const eventStatus = String(ev?.status || "").toLowerCase();
           const eventIsClosed = Boolean(
             ev &&
@@ -5729,7 +5766,7 @@
                 filterState.status = val;
                 filterState.reg = val;
               } else if (type === "availability") {
-                filterState.avail = val;
+                filterState.avail = normalizeAvailability(val);
               }
 
               menu.classList.remove("show");
@@ -5894,8 +5931,13 @@
           unsub();
         }
         attendanceListeners.clear();
+        window.removeEventListener(
+          "system-access-settings-changed",
+          handleAccessSettingsChanged,
+        );
       }
       window.addEventListener("beforeunload", cleanup);
+      window.addEventListener("pagehide", cleanup, { once: true });
 
       /* ---------------------------------------------------------
          INITIALIZATION

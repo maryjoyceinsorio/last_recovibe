@@ -6,136 +6,75 @@ import { askGemini, geminiEnabled, geminiStatus } from "./recoVibeGemini.js";
 const FAQ = [
   {
     id: "hello", q: "Hello",
-    keywords: ["hello", "hi", "hey", "good morning", "good afternoon", "help"],
-    a: "Hi! I'm the RecoVibe helper. Ask me about registering for events, attendance, profile corrections, the calendar, notifications, or what each role can do."
+    keywords: ["hello", "hi", "hey", "good morning", "good afternoon", "kumusta", "tulong"],
+    a: "Hi! I'm the RecoVibe helper. Ask me about finding or joining events, schedules, venues, slots, attendance, preferences, or your account and profile."
+  },
+  {
+    id: "find-events", q: "How do I find events?",
+    keywords: ["find events", "browse events", "search events", "available events", "hanap event", "maghanap ng event", "saan makikita event", "list of events"],
+    a: "Open Events to browse published campus events. Use the search and filters to narrow the list, or open an event for its schedule, venue, registration details and available slots."
+  },
+  {
+    id: "event-details", q: "Where can I check an event's schedule and venue?",
+    keywords: ["event schedule", "event date", "event time", "event venue", "event location", "when is event", "where is event", "kailan ang event", "saan ang event", "oras ng event", "petsa ng event"],
+    a: "Open Events and select an event to see its date, time and venue. The Calendar also shows events by date."
   },
   {
     id: "register", q: "How do I register for an event?",
-    keywords: ["register", "registration", "join event", "sign up", "enroll event", "participate"],
+    keywords: ["register", "registration", "join event", "sign up", "enroll event", "participate", "sumali", "mag register", "paano sumali", "paano mag register"],
     a: "To register for an event:\n1. Open the Events page and pick a published event.\n2. Open its details and press Register.\n3. You will see your status as Registered, and the event appears in your registered list.\nYou can only register for events that are published. Teachers do not register for or participate in events."
   },
   {
     id: "cancel", q: "How do I cancel my registration?",
-    keywords: ["cancel registration", "unregister", "withdraw", "cancel event", "cancel my"],
+    keywords: ["cancel registration", "unregister", "withdraw", "cancel event", "cancel my", "alis sa event", "kanselahin registration"],
     a: "Open the event you registered for and press Cancel registration. Your status changes to Cancelled. If the event is still open you can register again later."
   },
   {
     id: "attendance", q: "How does attendance scanning work?",
-    keywords: ["attendance", "scan", "scanning", "qr", "check in", "check-in", "time in", "present"],
-    // EDIT: describe your real flow (QR on the student's phone, organizer scanner, etc.).
+    keywords: ["attendance", "scan", "scanning", "qr", "check in", "check-in", "time in", "present", "dumalo", "attendance ko", "paano mag attendance"],
     a: "Attendance is recorded at the event:\n1. Register for the event beforehand.\n2. At the venue, show your QR code or ID to the organizer.\n3. The organizer scans it and your attendance is recorded.\nOnly registered students can be marked present."
   },
   {
     id: "attendance-missing", q: "My attendance was not recorded",
-    keywords: ["attendance missing", "not recorded", "not counted", "absent", "wasn't scanned", "scan failed", "scan not working"],
+    keywords: ["attendance missing", "not recorded", "not counted", "absent", "wasn't scanned", "scan failed", "scan not working", "di na record", "hindi na record", "wala attendance"],
     a: "If your attendance is not showing:\n• Make sure your registration status was Registered before the event.\n• Refresh the page and check again after a few minutes.\n• If it is still missing, tell the event organizer on the day, with your name and student number, so they can check the scan list."
   },
   {
-    id: "correction-how", q: "How do I request a profile correction?",
-    keywords: ["correction", "request correction", "correct", "wrong", "mistake", "change my", "edit profile", "update profile", "wrong department", "wrong student number", "typo"],
+    id: "profile-help", q: "How do I update incorrect profile information?",
+    keywords: ["correction", "request correction", "correct", "wrong", "mistake", "change my", "edit profile", "update profile", "wrong department", "wrong student number", "typo", "ayusin profile", "mali profile", "palitan profile"],
     a: "Profile details such as department, student number, year and section, teacher ID or organization cannot be edited directly. To fix one:\n1. Open your Profile.\n2. Press Request a correction.\n3. Choose the field, enter the correct value, and write a reason (10 to 500 characters).\n4. Submit. Your request shows up under My correction requests."
   },
   {
-    id: "correction-rules", q: "What are the correction request rules?",
-    keywords: ["correction rules", "correction rule", "rules", "same value", "different value", "reason", "how long", "limit"],
-    a: "Correction rules:\n• The new value must be different from your current value.\n• The reason must be 10 to 500 characters.\n• The new value can be up to 200 characters.\n• Only OSAS can review requests. Nobody else can approve them.\n• When OSAS approves, your profile is updated automatically. If rejected, your profile stays the same and you can send a new request with a better reason."
-  },
-  {
-    id: "correction-status", q: "Where can I see my correction request status?",
-    keywords: ["correction status", "my correction requests", "pending", "approved", "rejected", "track request", "status of request"],
-    a: "Open your Profile and look at My correction requests. Each request shows Pending, Approved or Rejected, along with any note from OSAS. You also receive a notification when it is reviewed."
-  },
-  {
-    id: "who-approves", q: "Who approves correction requests?",
-    keywords: ["who approves", "who approve", "approver", "osas", "who reviews", "review request"],
-    a: "Only the OSAS office reviews correction requests. Teachers, event organizers, advisers and other admins cannot approve or reject them.",
-    roles: ["osas", "admin"]
-  },
-  {
-    id: "roles", q: "What can each role do?",
-    keywords: ["role", "roles", "permission", "permissions", "access", "who can", "allowed", "what can i do", "can i"],
-    a: "Roles in RecoVibe:\n• Student: browse and register for published events, view the calendar, request profile corrections.\n• Event Organizer: create and manage events for their own organization.\n• Adviser / Admin: review and manage events for their organization.\n• OSAS: reviews correction requests and manages the academic calendar.\n• Teacher: views events, the calendar and notifications. Teachers do not participate in events or approve anything.\n• Super Admin: manages system settings and accounts."
-  },
-  {
-    id: "about", topic: "Questions", q: "What is RecoVibe?",
-    keywords: ["what is recovibe", "recovibe", "about", "about recovibe", "what is this", "what does this system do", "system", "ano ang recovibe", "purpose", "features"],
-    a: "RecoVibe is the campus event platform of PUP Biñan Campus.\n• Students browse and register for events, check attendance, and view the academic calendar.\n• Event organizers create and manage events.\n• Advisers, admins and OSAS review events and manage approvals.\n• OSAS also reviews profile correction requests and manages the PUP academic calendar.\nAsk me about registering, attendance, corrections, the calendar, notifications or roles."
-  },
-  {
-    id: "features", topic: "Questions", q: "What can I do in RecoVibe?",
-    keywords: ["what can i do", "features", "what can recovibe do", "functions", "capabilities", "what is available", "menu", "navigation", "where to find"],
-    byRole: {
-      student: "As a student you can:\n1. Browse published events under Events.\n2. Register or cancel your registration.\n3. See events, holidays and official dates on the Calendar.\n4. Get updates under Notifications.\n5. Request a profile correction from your Profile.",
-      eventorganizer: "As an event organizer you can:\n1. Create and edit events for your organization.\n2. Track registrations and attendance.\n3. See event status and approvals.\n4. Use the Calendar and Notifications.\n5. Request a profile correction from your Profile.",
-      osas: "As OSAS you can:\n1. Review and approve profile correction requests.\n2. Import and manage the PUP academic calendar.\n3. Review events in the Review Queue.\n4. Follow updates under Notifications.",
-      admin: "As an admin you can:\n1. Review events in the Review Queue.\n2. Follow event activity in the Activity Summary.\n3. Use the Calendar and Notifications.\n4. Manage your Profile.",
-      teacher: "As a teacher you can view events, the Calendar and Notifications, and request a profile correction. Teachers do not register for or participate in events."
-    },
-    a: "RecoVibe lets you browse and register for campus events, check the academic calendar and holidays, get notifications, and request profile corrections. Use the menu on the left to open the pages available to your role."
-  },
-  {
-    id: "create-event", q: "How do I create an event?",
-    keywords: ["create event", "new event", "add event", "make event", "organize", "organizer", "post event", "submit event"],
-    a: "Event Organizers can create events from the Events page using Create event. Fill in the title, date, venue and details, then submit. Events are reviewed before they are published to students, and you are notified of the result.",
-    roles: ["eventorganizer"]
+    id: "preferences", q: "How do preferences and recommendations work?",
+    keywords: ["preferences", "recommendations", "recommended events", "personalize", "interests", "suggest events", "gusto ko", "rekomendasyon", "event suggestions"],
+    a: "Use your event preferences to help RecoVibe highlight events that may interest you. Browse the recommended events on your dashboard, and open Events to see the full published list."
   },
   {
     id: "event-status", q: "Why can't I see an event?",
-    keywords: ["can't see event", "cannot see event", "event missing", "event not showing", "hidden event", "not published", "draft"],
+    keywords: ["can't see event", "cannot see event", "event missing", "event not showing", "hidden event", "not published", "draft", "di makita event", "hindi lumalabas event"],
     a: "Students only see published events. An event that is still pending, rejected or in draft is visible only to its organizer and reviewers. If an event should be visible, ask the organizer to check its status."
   },
-  {
-    id: "calendar", q: "What do the calendar colors mean?",
-    keywords: ["calendar", "holiday", "holidays", "official date", "colors", "colour", "dot", "academic calendar", "semester dates", "deadline"],
-    a: "The calendar shows events together with official academic dates from OSAS. Holidays are orange; other official dates (exams, enrollment, deadlines, breaks and so on) use their own colors. Click a day to see everything on that date."
-  },
-  {
-    id: "calendar-import", q: "How do I add the academic calendar?",
-    keywords: ["import calendar", "add calendar", "upload calendar", "paste calendar", "parse calendar", "academic calendar import", "save calendar"],
-    a: "OSAS can paste the official calendar text in Admin Calendar, review the preview table, fix any warnings, and press Save. Importing the same semester again overwrites the old entries instead of duplicating them.",
-    roles: ["osas"]
-  },
-  {
-    id: "notifications", q: "How do notifications work?",
-    keywords: ["notification", "notifications", "alert", "bell", "unread", "mark as read", "delete notification", "reminder"],
-    a: "The Notifications page lists updates about your events, correction requests and upcoming or ongoing academic dates. Mark items as read or remove them from the list. These actions only affect your own view."
-  },
-  {
-    id: "login", q: "I can't log in",
-    keywords: ["login", "log in", "sign in", "password", "forgot password", "reset password", "can't login", "cannot login", "locked", "account disabled"],
-    a: "Check that you are using your registered email and the correct password. If you forgot it, use Forgot password on the login page. If your account says it is disabled or inactive, contact the OSAS office or your administrator."
-  },
-  {
-    id: "support", q: "Who do I contact for more help?",
-    keywords: ["contact", "support", "help desk", "report problem", "bug", "issue", "human", "email"],
-    // EDIT: put your real office / email here.
-    a: "For anything I can't answer, visit the PUP Biñan OSAS office or contact your event organizer or adviser. Please include your name, student number and a screenshot of the problem."
-  }
 ];
 
 const SUGGESTIONS = {
-  student: ["register", "attendance", "correction-how", "calendar"],
-  teacher: ["correction-how", "roles", "calendar", "notifications"],
-  eventorganizer: ["create-event", "attendance", "correction-how", "roles"],
-  osas: ["who-approves", "calendar-import", "correction-rules", "roles"],
-  admin: ["roles", "event-status", "calendar", "notifications"],
-  default: ["register", "correction-how", "attendance", "roles"]
+  student: ["find-events", "register", "preferences", "event-details", "profile-help", "attendance"]
 };
+let activeUnmount = null;
 
 // ---------- matching ----------
-const STOP = new Set("a an the is are am to of in on for and or my me i do does can how what why where when it this that with be there any".split(" "));
+const STOP = new Set("a an the is are am to of in on for and or my me i do does can how what why where when it this that with be there any ang mga ng sa ko mo po ba paano ano saan kailan the".split(" "));
 const stem = (w) => (w.length > 4 ? w.replace(/(ing|ed|es|s)$/, "") : w);
-const words = (s) => String(s).toLowerCase().replace(/[^a-z0-9\s]/g, " ").split(/\s+/).filter(Boolean).map(stem);
+const words = (s) => String(s).normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[^a-z0-9\s]/g, " ").split(/\s+/).filter(Boolean).map(stem);
 const meaningful = (s) => words(s).filter((w) => !STOP.has(w));
 
 const INDEX = FAQ.map((f) => ({
   f,
-  phrases: f.keywords.map((k) => " " + words(k).join(" ") + " "),
+  phrases: f.keywords.map((k) => " " + meaningful(k).join(" ") + " ").filter((p) => p.trim()),
   title: new Set(meaningful(f.q))
 }));
 
 function findAnswer(text) {
-  const all = " " + words(text).join(" ") + " ";
+  const all = " " + meaningful(text).join(" ") + " ";
   const tokens = new Set(meaningful(text));
   let best = null, bestScore = 0;
   for (const it of INDEX) {
@@ -144,7 +83,72 @@ function findAnswer(text) {
     for (const t of it.title) if (tokens.has(t)) s += 1;
     if (s > bestScore) { bestScore = s; best = it.f; }
   }
-  return bestScore >= 3 ? best : null;
+  const titleOverlap = best
+    ? [...tokens].filter((token) => INDEX.find((it) => it.f === best)?.title.has(token)).length
+    : 0;
+  return bestScore >= 3 || titleOverlap >= 2 ? best : null;
+}
+
+function eventIntent(text) {
+  const q = words(text).join(" ");
+  const hasEvent = /\b(event|activity|activiti)\b/.test(q);
+  if (/\b(slot|capacity|bakante|ilan pa)\b/.test(q) || (hasEvent && /\bavailable\b/.test(q))) return "slots";
+  if ((hasEvent || /\b(venue|location|lugar)\b/.test(q)) && /\b(venue|location|where|saan|lugar)\b/.test(q)) return "venue";
+  if (/\b(registration|register|deadline|until|hanggang|enrollment)\b/.test(q) && (hasEvent || /\b(deadline|until|hanggang)\b/.test(q))) return "registration";
+  if (/\b(when|date|schedule|time|kailan|petsa|oras|iskedyul)\b/.test(q) && hasEvent) return "schedule";
+  if (/\b(upcoming|next|coming|list|what|ano|meron|hanap)\b/.test(q) && hasEvent) return "upcoming";
+  return null;
+}
+
+function eventAnswer(text, getEvents) {
+  const intent = eventIntent(text);
+  if (!intent) return null;
+  if (typeof getEvents !== "function") {
+    return "I can't access the live event list on this page. Open Events or Calendar in the portal to check current event details.";
+  }
+  const events = getEvents();
+  const now = Date.now();
+  const upcoming = (Array.isArray(events) ? events : [])
+    .filter((event) => event && Number(event.startMs || new Date(event.startAt || event.dateISO || 0).getTime()) >= now)
+    .sort((a, b) => Number(a.startMs || 0) - Number(b.startMs || 0));
+  if (!upcoming.length) return "There are no upcoming events in the event list currently loaded on this page. Open Events or Calendar to refresh and check again.";
+
+  const questionWords = meaningful(text).filter((word) => !new Set(["event", "activiti", "slot", "venue", "location", "where", "saan", "lugar", "when", "date", "schedule", "time", "kailan", "petsa", "oras", "iskedyul", "registration", "register", "deadline", "until", "hanggang", "enrollment", "upcoming", "next", "coming", "list", "what", "ano", "meron", "hanap", "available", "bakante", "capacity", "ilan"]).has(word));
+  const matching = upcoming.filter((event) => {
+    const title = new Set(meaningful(event.name || event.title || ""));
+    return questionWords.length > 0 && questionWords.some((word) => title.has(word));
+  });
+  const selected = matching.length ? matching.slice(0, 3) : upcoming.slice(0, 5);
+  const dateText = (event) => {
+    const value = Number(event.startMs) || new Date(event.startAt || event.dateISO || 0).getTime();
+    return Number.isFinite(value) && value > 0
+      ? new Intl.DateTimeFormat("en-PH", { dateStyle: "medium", timeStyle: "short", timeZone: "Asia/Manila" }).format(value)
+      : "schedule not listed";
+  };
+  const rows = selected.map((event) => {
+    const title = event.name || event.title || "Untitled event";
+    if (intent === "venue") return `${title}: ${event.venue || event.location || "venue not listed"}`;
+    if (intent === "registration") {
+      const deadline = Number(event.registrationDeadlineAt) || new Date(event.registrationDeadline || event.registrationEnd || 0).getTime();
+      return `${title}: ${Number.isFinite(deadline) && deadline > 0 ? new Intl.DateTimeFormat("en-PH", { dateStyle: "medium", timeZone: "Asia/Manila" }).format(deadline) : "registration date not listed"}`;
+    }
+    if (intent === "slots") {
+      const slots = event.availableSlots != null && Number.isFinite(Number(event.availableSlots))
+        ? Number(event.availableSlots)
+        : event.slotsOpen != null && Number.isFinite(Number(event.slotsOpen))
+          ? Number(event.slotsOpen)
+          : null;
+      return `${title}: ${slots === null ? "available slots not listed" : `${slots} slot${slots === 1 ? "" : "s"} available`}`;
+    }
+    return `${title}: ${dateText(event)}${event.venue || event.location ? ` · ${event.venue || event.location}` : ""}`;
+  });
+  const heading = matching.length ? "Event details from the loaded portal data:" : "Upcoming events from the loaded portal data:";
+  return `${heading}\n${rows.map((row) => `• ${row}`).join("\n")}${!matching.length && upcoming.length > selected.length ? "\nOpen Events to see the full list." : ""}`;
+}
+
+function isPortalQuestion(text) {
+  const portalTerms = new Set("event activity register registration join attendance scan qr calendar schedule venue location slot profile account correction notification preference recommendation".split(" "));
+  return words(text).some((word) => portalTerms.has(word) || ["sumali", "dumalo", "iskedyul", "kalendaryo", "lugar", "bakante", "profile", "tulong"].includes(word));
 }
 
 function contextFor(q, n = 6) {
@@ -276,11 +280,15 @@ function resolveHits(q) {
   return f ? [{ f }] : [];
 }
 
-export function mountHelpBot({ role = "default", onUnanswered } = {}) {
+export function mountHelpBot({ role = "default", onUnanswered, getEvents } = {}) {
+  const roleKey = String(role).toLowerCase().replace(/[^a-z]/g, "");
+  if (roleKey !== "student") {
+    if (activeUnmount) activeUnmount();
+    return () => {};
+  }
   if (typeof document === "undefined" || document.getElementById("rv-hb")) return () => {};
   console.info("[RecoVibe help] AI status:", geminiStatus());
-  const roleKey = String(role).toLowerCase().replace(/[^a-z]/g, "");
-  const defaults = () => SUGGESTIONS[roleKey] || SUGGESTIONS.default;
+  const defaults = () => SUGGESTIONS.student;
   let currentChips = [];
   let currentChipsLabel = "";
 
@@ -488,9 +496,13 @@ export function mountHelpBot({ role = "default", onUnanswered } = {}) {
 
     const roleAnswer = (f) => (f.byRole && f.byRole[roleKey]) || f.a;
 
-    function answerLocally() {
+    function answerLocally(dynamicAnswer) {
       const hits = known ? [{ f: known }] : resolveHits(q);
-      if (hits.length) {
+      if (dynamicAnswer) {
+        lastId = null;
+        addMsg(dynamicAnswer, "bot");
+        showChips(defaults(), "Suggested");
+      } else if (hits.length) {
         const f = hits[0].f;
         lastId = f.id;
         asked.add(f.id);
@@ -499,7 +511,7 @@ export function mountHelpBot({ role = "default", onUnanswered } = {}) {
         showChips(related.length ? related : defaults(), related.length ? "Related questions" : "Suggested");
       } else {
         lastId = null;
-        addMsg("I couldn't find that. Try one of these, or rephrase with words like register, attendance, correction, calendar or role.", "bot");
+        addMsg("I can help with the RECOVIBE PUP Biñan portal, including events, schedules, registration, attendance, preferences, and account or profile help. Try rephrasing your question around one of those topics.", "bot");
         showChips(defaults(), "Try asking");
         if (typeof onUnanswered === "function") onUnanswered(q);
       }
@@ -507,8 +519,9 @@ export function mountHelpBot({ role = "default", onUnanswered } = {}) {
 
     (async () => {
       try {
-        // Typed questions go to Gemini first. Chip clicks (known FAQ questions) are answered locally: instant, and no quota used.
-        if (!known && geminiEnabled()) {
+        const dynamicAnswer = eventAnswer(q, getEvents);
+        const localHits = known ? [known] : resolveHits(q).map((hit) => hit.f);
+        if (!known && !dynamicAnswer && !localHits.length && isPortalQuestion(q) && geminiEnabled()) {
           try {
             const answer = await askGemini(q, { role: roleKey, entries: contextFor(q, 6), history: chat.slice(0, -1) });
             typing.remove();
@@ -524,7 +537,7 @@ export function mountHelpBot({ role = "default", onUnanswered } = {}) {
           await new Promise((r) => setTimeout(r, 350));
         }
         typing.remove();
-        answerLocally();
+        answerLocally(dynamicAnswer);
       } finally {
         typing.remove();
         busy = false;
@@ -534,7 +547,7 @@ export function mountHelpBot({ role = "default", onUnanswered } = {}) {
 
   function greet() {
     lastId = null;
-    addMsg("Hi! I can help with events, attendance, profile corrections, the calendar and roles. What do you need?", "bot");
+    addMsg("Hi! I can help with finding events, schedules and venues, registration, attendance, preferences, and account or profile help. What do you need?", "bot");
     showChips(defaults(), "Popular questions");
   }
 
@@ -576,9 +589,12 @@ export function mountHelpBot({ role = "default", onUnanswered } = {}) {
   allBtn.addEventListener("click", openSheet);
   sheetClose.addEventListener("click", closeSheet);
 
-  return function unmount() {
+  const unmount = function () {
     document.removeEventListener("keydown", onKey);
     root.remove();
     style.remove();
+    if (activeUnmount === unmount) activeUnmount = null;
   };
+  activeUnmount = unmount;
+  return unmount;
 }

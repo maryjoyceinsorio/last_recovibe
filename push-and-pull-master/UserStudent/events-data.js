@@ -61,12 +61,46 @@ window.enhanceDropdownSelects =
           item.className = `filter-option${option.selected ? " active" : ""}`;
           item.type = "button";
           item.disabled = option.disabled;
+          item.tabIndex = -1;
           item.setAttribute("role", "option");
           item.setAttribute("aria-selected", String(option.selected));
           item.dataset.value = option.value;
           item.textContent = option.textContent.trim();
           menu.appendChild(item);
         });
+      }
+
+      function focusOption(direction = 1) {
+        const options = [...menu.querySelectorAll(".filter-option:not(:disabled)")];
+        if (!options.length) return;
+        const selectedIndex = options.findIndex((option) =>
+          option.getAttribute("aria-selected") === "true",
+        );
+        const index = selectedIndex >= 0
+          ? selectedIndex
+          : direction > 0
+            ? 0
+            : options.length - 1;
+        options[index].focus({ preventScroll: true });
+      }
+
+      function openMenu(focusDirection) {
+        closeMenus(wrapper);
+        menu.classList.add("show");
+        button.setAttribute("aria-expanded", "true");
+        if (focusDirection) focusOption(focusDirection);
+      }
+
+      function selectOption(item) {
+        if (!item || item.disabled) return;
+        const value = item.dataset.value;
+        if (select.value !== value) {
+          select.value = value;
+          select.dispatchEvent(new Event("change", { bubbles: true }));
+        }
+        syncOptions();
+        closeMenus();
+        button.focus({ preventScroll: true });
       }
 
       syncOptions();
@@ -89,19 +123,60 @@ window.enhanceDropdownSelects =
         const wasOpen = menu.classList.contains("show");
         closeMenus();
         if (!wasOpen) {
-          menu.classList.add("show");
-          button.setAttribute("aria-expanded", "true");
+          openMenu();
         }
       });
+      button.addEventListener("keydown", (event) => {
+        if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+          event.preventDefault();
+          openMenu(event.key === "ArrowDown" ? 1 : -1);
+        } else if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          if (menu.classList.contains("show")) {
+            closeMenus();
+          } else {
+            openMenu(1);
+          }
+        } else if (event.key === "Escape") {
+          event.preventDefault();
+          closeMenus();
+          button.focus({ preventScroll: true });
+        }
+      });
+      const handleOptionPointerDown = (event) => {
+        const item = event.target.closest(".filter-option");
+        if (!item || item.disabled) return;
+        event.preventDefault();
+        event.stopPropagation();
+        selectOption(item);
+      };
+      menu.addEventListener("pointerdown", handleOptionPointerDown);
       menu.addEventListener("click", (event) => {
         const item = event.target.closest(".filter-option");
         if (!item || item.disabled) return;
         event.stopPropagation();
-        select.value = item.dataset.value;
-        select.dispatchEvent(new Event("change", { bubbles: true }));
-        syncOptions();
-        closeMenus();
-        button.focus();
+        selectOption(item);
+      });
+      menu.addEventListener("keydown", (event) => {
+        const options = [...menu.querySelectorAll(".filter-option:not(:disabled)")];
+        if (!options.length) return;
+        const currentIndex = options.indexOf(document.activeElement);
+        if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+          event.preventDefault();
+          const direction = event.key === "ArrowDown" ? 1 : -1;
+          const nextIndex = currentIndex < 0
+            ? direction > 0 ? 0 : options.length - 1
+            : (currentIndex + direction + options.length) % options.length;
+          options[nextIndex].focus({ preventScroll: true });
+        } else if (event.key === "Home" || event.key === "End") {
+          event.preventDefault();
+          options[event.key === "Home" ? 0 : options.length - 1]
+            .focus({ preventScroll: true });
+        } else if (event.key === "Escape") {
+          event.preventDefault();
+          closeMenus();
+          button.focus({ preventScroll: true });
+        }
       });
       select.addEventListener("change", syncOptions);
       new MutationObserver(syncOptions).observe(select, {
@@ -113,8 +188,18 @@ window.enhanceDropdownSelects =
 
     if (!window.dropdownMenusCloseHandler) {
       window.dropdownMenusCloseHandler = true;
-      document.addEventListener("click", (event) => {
-        if (event.target.closest(".native-filter-dropdown")) return;
+      const closeOutsideDropdowns = (event) => {
+        const target = event.target instanceof Element
+          ? event.target
+          : event.target?.parentElement;
+        const openWrappers = [
+          ...document.querySelectorAll(
+            ".native-filter-dropdown .filter-menu.show",
+          ),
+        ].map((menu) => menu.closest(".native-filter-dropdown")).filter(Boolean);
+        if (openWrappers.some((dropdownWrapper) =>
+          dropdownWrapper.contains(target),
+        )) return;
         document
           .querySelectorAll(".native-filter-dropdown .filter-menu.show")
           .forEach((menu) => menu.classList.remove("show"));
@@ -123,7 +208,9 @@ window.enhanceDropdownSelects =
             '.native-filter-dropdown .filter-button[aria-expanded="true"]',
           )
           .forEach((button) => button.setAttribute("aria-expanded", "false"));
-      });
+      };
+      document.addEventListener("pointerdown", closeOutsideDropdowns);
+      document.addEventListener("click", closeOutsideDropdowns);
       document.addEventListener("keydown", (event) => {
         if (event.key !== "Escape") return;
         document

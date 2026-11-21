@@ -3095,19 +3095,31 @@ body {
     width: 100%;
     height: 100%;
     min-height: 0;
-    overflow: hidden;
+    overflow: visible;
   }
 
   #calendarMain .calendar-side-panel {
     flex: 0 0 auto;
     min-height: 0;
     padding: clamp(8px, 1vh, 12px);
-    overflow: hidden;
+    overflow: visible;
   }
 
   #calendarMain .upcoming-panel {
-    display: block;
+    display: flex;
     flex: 0 0 auto;
+    flex-direction: column;
+    min-height: 0;
+    overflow: visible;
+  }
+
+  #calendarMain .upcoming-panel > .upcoming-list,
+  #calendarMain .upcoming-panel > .academic-upcoming-list {
+    flex: 0 1 auto;
+    min-height: 0;
+    max-height: min(34vh, 280px);
+    overflow-y: auto;
+    overscroll-behavior: contain;
   }
 
   #calendarMain .upcoming-panel h3,
@@ -3118,11 +3130,13 @@ body {
   }
 
   #calendarMain .upcoming-list {
-    max-height: none;
-    overflow: visible;
+    max-height: min(34vh, 280px);
+    overflow-y: auto;
   }
 
   #calendarMain .upcoming-panel .upcoming-item {
+    flex: 0 0 auto;
+    min-height: 0;
     align-items: center;
     gap: 8px;
     padding: 4px 0;
@@ -3224,12 +3238,12 @@ body {
     accent-color: var(--cat-holiday);
   }
   #calendarMain .cal-legend {
-    flex: 1 1 auto;
+    flex: 0 0 auto;
     align-content: start;
     grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 5px 8px;
     padding: clamp(8px, 1vh, 12px);
-    overflow: hidden;
+    overflow: visible;
   }
 
   #calendarMain .legend-title {
@@ -3543,14 +3557,24 @@ body {
   transform: none !important;
 }
 
+.day-modal-empty {
+  margin: 0;
+  color: var(--ink-500);
+}
+
+.cal-day-full[data-iso] {
+  cursor: pointer;
+  pointer-events: auto;
+}
+
 .cal-day-full.only-holiday,
 .cal-day-full.only-holiday:hover,
 .cal-day-full.only-holiday:focus-visible {
-  cursor: default !important;
+  cursor: pointer !important;
   transform: none !important;
 }
 
 .calendar-day-event.dot-holiday {
-  cursor: default !important;
-  pointer-events: none !important;
+  cursor: pointer !important;
+  pointer-events: auto !important;
 }

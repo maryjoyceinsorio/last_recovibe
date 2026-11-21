@@ -244,6 +244,7 @@ const PARTNER_ORGS_POOL = [
 const TARGET_ORGANIZATIONS = ["ACES", "HRSS", "IBITS", "PIIE", "SMS", "YES"];
 
 let partnerOrgsPool = [...PARTNER_ORGS_POOL];
+let configuredOrganizationRecords = [];
 
 function getCanonicalPartnerOrganization(value) {
   const key = String(value || "").trim().toUpperCase().replace(/[^A-Z0-9]/g, "");
@@ -263,6 +264,7 @@ function loadCachedOrganizations() {
     if (cached) {
       const parsed = JSON.parse(cached);
       if (Array.isArray(parsed) && parsed.length > 0) {
+        configuredOrganizationRecords = parsed;
         partnerOrgsPool = normalizePartnerOrganizations(parsed);
       }
     }
@@ -330,12 +332,7 @@ loadCachedOrganizations();
     );
     return organization?.name || "";
   }
-  let organizerOrganizationIdentifier = [
-    organizerProfile.organizationId,
-    organizerProfile.orgId,
-    organizerProfile.organizationCode,
-    organizerProfile.orgCode,
-  ].find((value) => String(value || "").trim()) || "";
+  let organizerOrganizationIdentifier = getOrganizerOrganizationIdentifier(organizerProfile);
   const organizerDisplayValue = isOrganizerPage
     ? [
         organizerProfile.organizationCode,
@@ -350,6 +347,7 @@ loadCachedOrganizations();
     : teacherName;
   let organizerAccountProfileUid = "";
   let organizerAccountProfilePromise = null;
+  let refreshAudienceControls = null;
 
   const readOnlyOrganizerValue = isOrganizerPage ? organizerOrgName : teacherName;
   function getAutomaticEventSource() {
@@ -377,12 +375,156 @@ loadCachedOrganizations();
   }
 
   function getOrganizerOrganizationIdentifier(profile) {
-    return [
+    const values = [
       profile?.organizationId,
       profile?.orgId,
       profile?.organizationCode,
       profile?.orgCode,
-    ].map((value) => String(value || "").trim()).find(Boolean) || "";
+      profile?.org,
+      profile?.organization,
+      profile?.organizationName,
+      profile?.orgName,
+    ];
+    for (const value of values) {
+      const code = getCanonicalOrganizationCode(value);
+      if (code) return code;
+    }
+    return "";
+  }
+
+  function getCanonicalOrganizationCode(value) {
+    if (value && typeof value === "object") {
+      return getCanonicalOrganizationCode(
+        value.organizationCode ||
+        value.orgCode ||
+        value.organizationId ||
+        value.orgId ||
+        value.code ||
+        value.id ||
+        value.acronym ||
+        value.name ||
+        value.organizationName ||
+        value.orgName ||
+        "",
+      );
+    }
+    const key = String(value || "").trim().toUpperCase().replace(/[^A-Z0-9]/g, "");
+    if (!key) return "";
+    if (key === "PIIE" || key === "PIEE" ||
+        key.includes("PHILIPPINEINSTITUTEOFINDUSTRIALENGINEERS")) return "PIIE";
+    const configuredOrganization = [
+      ...configuredOrganizationRecords,
+      ...partnerOrgsPool,
+    ].find((organization) => {
+      const aliases = typeof organization === "string"
+        ? [organization]
+        : [
+            organization?.organizationCode,
+            organization?.orgCode,
+            organization?.organizationId,
+            organization?.orgId,
+            organization?.code,
+            organization?.id,
+            organization?.acronym,
+            organization?.organization?.organizationCode,
+            organization?.organization?.orgCode,
+            organization?.organization?.code,
+            organization?.organization?.id,
+            organization?.name,
+            organization?.organization,
+            organization?.organizationName,
+            organization?.orgName,
+            organization?.subtitle,
+          ];
+      return aliases.some((candidate) =>
+        String(candidate || "").trim().toUpperCase().replace(/[^A-Z0-9]/g, "") === key,
+      );
+    });
+    if (!configuredOrganization) return key;
+    if (typeof configuredOrganization === "string") {
+      return configuredOrganization.trim().toUpperCase().replace(/[^A-Z0-9]/g, "");
+    }
+    const nestedOrganization = configuredOrganization.organization;
+    return String(
+      configuredOrganization.organizationCode ||
+      configuredOrganization.orgCode ||
+      configuredOrganization.organizationId ||
+      configuredOrganization.orgId ||
+      configuredOrganization.code ||
+      configuredOrganization.id ||
+      configuredOrganization.acronym ||
+      nestedOrganization?.organizationCode ||
+      nestedOrganization?.orgCode ||
+      nestedOrganization?.code ||
+      nestedOrganization?.id ||
+      (typeof nestedOrganization === "string" ? nestedOrganization : "") ||
+      configuredOrganization.name ||
+      key,
+    ).trim().toUpperCase().replace(/[^A-Z0-9]/g, "");
+  }
+
+  function getTargetOrganizationOptions() {
+    const configuredValues = [
+      ...configuredOrganizationRecords,
+      ...partnerOrgsPool,
+    ].flatMap((organization) => typeof organization === "string"
+      ? [organization]
+      : [
+          organization?.organizationCode,
+          organization?.orgCode,
+          organization?.organizationId,
+          organization?.orgId,
+          organization?.code,
+          organization?.id,
+          organization?.acronym,
+          organization?.name,
+          organization?.organization,
+        ]);
+    const ownOrganization = isOrganizerPage
+      ? getCanonicalOrganizationCode(organizerOrganizationIdentifier)
+      : "";
+    return [...new Set([
+      ...TARGET_ORGANIZATIONS,
+      ...configuredValues,
+      ownOrganization,
+      ...(Array.isArray(state?.targetOrganizations) ? state.targetOrganizations : []),
+    ].map(getCanonicalOrganizationCode).filter(Boolean))];
+  }
+
+  function ensureTargetOrganizationOption(value) {
+    const code = getCanonicalOrganizationCode(value);
+    const container = document.querySelector("#wrap-targetDepartments .ce-audience-options");
+    if (!code || !container) return;
+    const inputs = [...container.querySelectorAll(".ce-target-organization")];
+    const matchingInput = inputs.find((input) =>
+      getCanonicalOrganizationCode(input.value) === code,
+    );
+    if (matchingInput) {
+      if (matchingInput.value !== code) {
+        matchingInput.value = code;
+        const label = matchingInput.closest("label");
+        label?.replaceChildren(matchingInput, document.createTextNode(` ${code}`));
+      }
+      return;
+    }
+    const label = document.createElement("label");
+    const input = document.createElement("input");
+    input.type = "checkbox";
+    input.className = "ce-target-organization";
+    input.value = code;
+    input.checked = (state.targetOrganizations || []).some((organization) =>
+      getCanonicalOrganizationCode(organization) === code,
+    );
+    label.append(input, document.createTextNode(` ${code}`));
+    container.appendChild(label);
+  }
+
+  function syncOrganizerTargetOrganization() {
+    if (!isOrganizerPage) return;
+    const code = getCanonicalOrganizationCode(organizerOrganizationIdentifier);
+    if (!code) return;
+    ensureTargetOrganizationOption(code);
+    refreshAudienceControls?.();
   }
 
   function loadOrganizerAccountProfile(organizerUid) {
@@ -412,6 +554,7 @@ loadCachedOrganizations();
           }
           organizerOrganizationIdentifier = getOrganizerOrganizationIdentifier(profile);
           renderApprovers();
+          syncOrganizerTargetOrganization();
           return profile;
         })
         .catch((error) => {
@@ -428,22 +571,17 @@ loadCachedOrganizations();
 
   async function getOrganizerOrganizationCode(organizerUid) {
     const profile = await loadOrganizerAccountProfile(organizerUid);
-    const rawOrganizationCode = String(
+    const organizationCode = getCanonicalOrganizationCode(
       profile.organizationCode ||
       profile.orgCode ||
+      profile.organizationId ||
+      profile.orgId ||
+      profile.org ||
       profile.organization ||
       profile.organizationName ||
       profile.orgName ||
       "",
-    ).trim().replace(/\s+/g, " ").toUpperCase();
-    const normalizedOrganizationCode = rawOrganizationCode
-      .replace(/[^A-Z0-9]/g, "");
-    const organizationCode =
-      normalizedOrganizationCode === "PIIE" ||
-      normalizedOrganizationCode === "PIEE" ||
-      normalizedOrganizationCode.includes("PHILIPPINEINSTITUTEOFINDUSTRIALENGINEERS")
-        ? "PIIE"
-        : rawOrganizationCode;
+    );
     if (!organizationCode) {
       throw new Error("Your organizer profile must have an organization assigned before submitting an event.");
     }
@@ -817,6 +955,8 @@ loadCachedOrganizations();
   applyApprovalStagesForOrganization(getCurrentApprovalOrganizationCode());
 
   const autoPartnerTargetDepartments = new Set();
+  let previousOrganizationOnlyTargetOrganizations = null;
+  let previousOrganizationOnlyPartnerOrganizations = null;
   function getPartnerOrganizationDepartment(organization) {
     const values = typeof organization === "string"
       ? [organization]
@@ -861,7 +1001,8 @@ loadCachedOrganizations();
     );
     const selectedAudienceOrganizations = [...document.querySelectorAll(".ce-target-organization:checked")]
       .map((input) => String(input.value || "").trim())
-      .filter((organization) => TARGET_ORGANIZATIONS.includes(organization));
+      .map(getCanonicalOrganizationCode)
+      .filter(Boolean);
     const seen = new Set();
     const partnerOrganizations = organizations
       .map((organization) => String(organization || "").trim())
@@ -1140,11 +1281,13 @@ loadCachedOrganizations();
             }
 
             if (Array.isArray(data.organizations) && data.organizations.length > 0) {
+              configuredOrganizationRecords = data.organizations;
               partnerOrgsPool = normalizePartnerOrganizations(data.organizations);
               try {
                 localStorage.setItem("recovibe_organizations", JSON.stringify(data.organizations));
               } catch {}
               renderPartnerOrgSelectOptions();
+              syncOrganizerTargetOrganization();
             }
 
             if (data.mainOrganization) {
@@ -2496,8 +2639,8 @@ loadCachedOrganizations();
                     <fieldset class="ce-field" id="wrap-targetDepartments">
                       <legend>Target Organization</legend>
                       <div class="ce-audience-options">
-                        ${TARGET_ORGANIZATIONS.map((organization) => `
-                          <label><input type="checkbox" class="ce-target-organization" value="${escapeHTML(organization)}" ${state.targetOrganizations.includes(organization) ? "checked" : ""}> ${escapeHTML(organization)}</label>
+                        ${getTargetOrganizationOptions().map((organization) => `
+                          <label><input type="checkbox" class="ce-target-organization" value="${escapeHTML(organization)}" ${state.targetOrganizations.some((selected) => getCanonicalOrganizationCode(selected) === organization) ? "checked" : ""}> ${escapeHTML(organization)}</label>
                         `).join("")}
                       </div>
                       <p class="ce-error" id="error-targetDepartments" hidden></p>
@@ -2512,13 +2655,20 @@ loadCachedOrganizations();
                       </div>
                     </fieldset>
                     <div class="ce-field" id="wrap-targetSections">
-                      <label for="targetSections">Target Section</label>
-                      <div class="ce-chips-container" id="targetSectionsContainer">
-                        <div id="targetSectionsList" class="ce-chips-list"></div>
-                        <input type="text" id="targetSections" name="targetSections" class="ce-chip-input" placeholder="e.g. 1-1" aria-describedby="error-targetSections" autocomplete="off">
+                      <label for="targetSectionsMode">Target Section</label>
+                      <select id="targetSectionsMode" name="targetSectionsMode" class="ce-select">
+                        <option value="all" ${state.targetSections.length ? "" : "selected"}>All Sections</option>
+                        <option value="others" ${state.targetSections.length ? "selected" : ""}>Others</option>
+                      </select>
+                      <div id="targetSectionsCustomWrap" ${state.targetSections.length ? "" : "hidden"}>
+                        <label for="targetSections">Specific section(s)</label>
+                        <div class="ce-chips-container" id="targetSectionsContainer">
+                          <div id="targetSectionsList" class="ce-chips-list"></div>
+                          <input type="text" id="targetSections" name="targetSections" class="ce-chip-input" placeholder="e.g. 1-1" aria-describedby="error-targetSections" autocomplete="off">
+                        </div>
+                        <small class="ce-hint">Press Enter or comma to add each section.</small>
+                        <p class="ce-error" id="error-targetSections" hidden></p>
                       </div>
-                      <small class="ce-hint">Press Enter or comma to add each section.</small>
-                      <p class="ce-error" id="error-targetSections" hidden></p>
                     </div>
                   </div>
                 </div>
@@ -3129,11 +3279,7 @@ loadCachedOrganizations();
       : ev.targetYear && ev.targetYear !== "All Levels"
         ? String(ev.targetYear).split(",").map((year) => year.trim()).filter((year) => TARGET_YEARS.includes(year))
         : [];
-    state.targetSections = Array.isArray(ev.targetSections)
-      ? [...ev.targetSections]
-      : ev.targetSections
-        ? String(ev.targetSections).split(/[,\n]/).map((section) => section.trim()).filter(Boolean)
-        : [];
+    state.targetSections = normalizeTargetSections(ev.targetSections);
     state.isCollaboration = ev.isCollaboration !== undefined ? Boolean(ev.isCollaboration) : Boolean(Array.isArray(ev.partnerOrganizations) && ev.partnerOrganizations.length > 0);
     state.partnerOrganizations = Array.isArray(ev.partnerOrganizations) ? [...ev.partnerOrganizations] : [];
     state.collaborationNotes = ev.collaborationNotes || "";
@@ -3148,7 +3294,7 @@ loadCachedOrganizations();
       if (form.eventSource) form.eventSource.value = defaultEventSource;
       if (form.targetYear) form.targetYear.value = state.targetYearLevels.join(", ") || "All Levels";
       if (form.targetAudience) form.targetAudience.value = state.targetAudience;
-      renderTargetSectionTags();
+      syncTargetSectionControlFromState();
       if (form.isCollaboration) form.isCollaboration.checked = state.isCollaboration;
       if (form.collaborationNotes) form.collaborationNotes.value = state.collaborationNotes;
       const savedDate = ev.date || ev.dateISO || ev.eventDate || "";
@@ -5512,6 +5658,35 @@ loadCachedOrganizations();
     });
   }
 
+  function normalizeTargetSections(value) {
+    const entries = Array.isArray(value)
+      ? value
+      : value
+        ? String(value).split(/[,\n]/)
+        : [];
+    const seen = new Set();
+    return entries
+      .map((section) => String(section || "").trim())
+      .filter((section) => {
+        const key = section.toLowerCase();
+        if (!key || key === "all" || /^all\s+sections?$/.test(key) || seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
+  }
+
+  function syncTargetSectionControlFromState() {
+    state.targetSections = normalizeTargetSections(state.targetSections);
+    const mode = document.getElementById("targetSectionsMode");
+    const customWrap = document.getElementById("targetSectionsCustomWrap");
+    const input = document.getElementById("targetSections");
+    const hasSpecificSections = state.targetSections.length > 0;
+    if (mode) mode.value = hasSpecificSections ? "others" : "all";
+    if (customWrap) customWrap.hidden = !hasSpecificSections;
+    if (!hasSpecificSections && input) input.value = "";
+    renderTargetSectionTags();
+  }
+
   function renderTargetSectionTags() {
     const list = document.getElementById("targetSectionsList");
     if (!list) return;
@@ -5731,8 +5906,25 @@ loadCachedOrganizations();
   function setupAudienceAndCollaboration() {
     const targetAudienceSelect = document.getElementById("targetAudience");
     const targetAudienceDetails = document.getElementById("targetAudienceDetails");
+    const targetSectionsMode = document.getElementById("targetSectionsMode");
+    const targetSectionsCustomWrap = document.getElementById("targetSectionsCustomWrap");
     const targetSectionsInput = document.getElementById("targetSections");
-    renderTargetSectionTags();
+    syncTargetSectionControlFromState();
+    if (targetSectionsMode) {
+      targetSectionsMode.addEventListener("change", () => {
+        const useSpecificSections = targetSectionsMode.value === "others";
+        if (targetSectionsCustomWrap) targetSectionsCustomWrap.hidden = !useSpecificSections;
+        if (!useSpecificSections) {
+          state.targetSections = [];
+          if (targetSectionsInput) targetSectionsInput.value = "";
+          renderTargetSectionTags();
+          clearFieldError("targetSections");
+        }
+        state.dirty = true;
+        updateLivePreview();
+        updateAllReadinessChecks();
+      });
+    }
     if (targetSectionsInput) {
       const commitTargetSections = () => {
         if (!targetSectionsInput.value.trim()) return;
@@ -5758,7 +5950,6 @@ loadCachedOrganizations();
     const isCollabCheckbox = document.getElementById("isCollaboration");
     const partnerBody = document.getElementById("partnerBody");
     const departmentInputs = [...document.querySelectorAll(".ce-target-department")];
-    const organizationInputs = [...document.querySelectorAll(".ce-target-organization")];
     let previousDepartmentSelection = null;
     let lastAudience = "";
     const updateAudienceControls = () => {
@@ -5767,6 +5958,41 @@ loadCachedOrganizations();
       if (targetAudienceDetails) targetAudienceDetails.hidden = !needsAudienceDetails;
 
       const organizationMembersOnly = state.targetAudience === "Organization Members Only";
+      const organizerOrganization = isOrganizerPage
+        ? getCanonicalOrganizationCode(organizerOrganizationIdentifier)
+        : "";
+      if (organizationMembersOnly && organizerOrganization) {
+        ensureTargetOrganizationOption(organizerOrganization);
+      }
+      const organizationInputs = [...document.querySelectorAll(".ce-target-organization")];
+      if (organizationMembersOnly && isOrganizerPage && organizerOrganization) {
+        if (lastAudience !== "Organization Members Only") {
+          previousOrganizationOnlyTargetOrganizations = organizationInputs
+            .filter((input) => input.checked)
+            .map((input) => input.value);
+        }
+        organizationInputs.forEach((input) => {
+          input.checked = getCanonicalOrganizationCode(input.value) === organizerOrganization;
+          input.disabled = true;
+        });
+      } else {
+        if (lastAudience === "Organization Members Only" &&
+            Array.isArray(previousOrganizationOnlyTargetOrganizations)) {
+          const previousOrganizations = new Set(
+            previousOrganizationOnlyTargetOrganizations.map(getCanonicalOrganizationCode),
+          );
+          organizationInputs.forEach((input) => {
+            input.checked = previousOrganizations.has(getCanonicalOrganizationCode(input.value));
+            input.disabled = false;
+          });
+          previousOrganizationOnlyTargetOrganizations = null;
+        } else {
+          organizationInputs.forEach((input) => {
+            input.disabled = false;
+          });
+        }
+      }
+
       if (organizationMembersOnly) {
         if (lastAudience !== "Organization Members Only") {
           previousDepartmentSelection = departmentInputs
@@ -5800,6 +6026,35 @@ loadCachedOrganizations();
         previousDepartmentSelection = null;
       }
 
+      if (organizationMembersOnly) {
+        if (lastAudience !== "Organization Members Only") {
+          previousOrganizationOnlyPartnerOrganizations = (state.partnerOrganizations || [])
+            .map((organization) =>
+              organization && typeof organization === "object"
+                ? { ...organization }
+                : organization,
+            );
+        }
+        if (state.isCollaboration || (state.partnerOrganizations || []).length) {
+          state.dirty = true;
+        }
+        state.isCollaboration = false;
+        state.partnerOrganizations = [];
+        renderPartnerOrgList();
+        if (isCollabCheckbox) {
+          isCollabCheckbox.checked = false;
+          isCollabCheckbox.disabled = true;
+        }
+      } else {
+        if (lastAudience === "Organization Members Only" &&
+            Array.isArray(previousOrganizationOnlyPartnerOrganizations)) {
+          state.partnerOrganizations = previousOrganizationOnlyPartnerOrganizations;
+          previousOrganizationOnlyPartnerOrganizations = null;
+          renderPartnerOrgList();
+        }
+        if (isCollabCheckbox) isCollabCheckbox.disabled = false;
+      }
+
       syncPartnerTargetDepartments();
       const departments = departmentInputs
         .filter((input) => input.checked)
@@ -5808,12 +6063,16 @@ loadCachedOrganizations();
         .map((input) => input.value);
       const organizations = organizationInputs
         .filter((input) => input.checked)
-        .map((input) => input.value);
+        .map((input) => getCanonicalOrganizationCode(input.value))
+        .filter(Boolean);
       state.targetDepartments = needsAudienceDetails ? departments : [];
       state.targetOrganizations = needsAudienceDetails ? organizations : [];
       state.targetYearLevels = needsAudienceDetails ? yearLevels : [];
       if (!needsAudienceDetails) {
         state.targetSections = [];
+        if (targetSectionsMode) targetSectionsMode.value = "all";
+        if (targetSectionsCustomWrap) targetSectionsCustomWrap.hidden = true;
+        if (targetSectionsInput) targetSectionsInput.value = "";
         renderTargetSectionTags();
       }
       const allYears = document.getElementById("targetAllYears");
@@ -5842,7 +6101,7 @@ loadCachedOrganizations();
       });
     }
 
-    document.querySelectorAll(".ce-target-department, .ce-target-organization, .ce-target-year, #targetAllYears")
+    document.querySelectorAll(".ce-target-department, .ce-target-year, #targetAllYears")
       .forEach((input) => {
         input.addEventListener("change", () => {
           if (input.id === "targetAllYears" && input.checked) {
@@ -5857,12 +6116,22 @@ loadCachedOrganizations();
           updateAudienceControls();
         });
       });
+    document.getElementById("targetAudienceDetails")?.addEventListener("change", (event) => {
+      if (!event.target.classList?.contains("ce-target-organization")) return;
+      state.dirty = true;
+      updateAudienceControls();
+    });
     if (isCollabCheckbox) {
       isCollabCheckbox.checked = Boolean(state.isCollaboration);
       if (partnerBody) {
         partnerBody.style.display = isCollabCheckbox.checked ? "" : "none";
       }
       isCollabCheckbox.addEventListener("change", (e) => {
+        if (state.targetAudience === "Organization Members Only") {
+          e.target.checked = false;
+          state.isCollaboration = false;
+          return;
+        }
         if (state.targetAudience === "Mixed Audience" && !e.target.checked) {
           e.target.checked = true;
           state.isCollaboration = true;
@@ -5941,6 +6210,7 @@ loadCachedOrganizations();
       });
     }
 
+    refreshAudienceControls = updateAudienceControls;
     renderPartnerOrgList();
     renderExternalGuestCards();
     updateAudienceControls();
@@ -7402,14 +7672,21 @@ loadCachedOrganizations();
         );
       }
       const sectionsInput = document.getElementById("targetSections");
-      if (sectionsInput?.value.trim()) {
-        addTargetSectionTags(sectionsInput.value);
-        sectionsInput.value = "";
-      }
-      const sections = state.targetSections;
-      if (sections.some((section) => !/^\d{1,2}-\d{1,2}$/.test(section)) ||
-          new Set(sections.map((section) => section.toLowerCase())).size !== sections.length) {
-        markError("targetSections", "Use unique section values such as 1-1 or 2-3.");
+      const sectionsMode = document.getElementById("targetSectionsMode")?.value || "all";
+      if (sectionsMode === "others") {
+        if (sectionsInput?.value.trim()) {
+          addTargetSectionTags(sectionsInput.value);
+          sectionsInput.value = "";
+        }
+        const sections = state.targetSections;
+        if (sections.length === 0) {
+          markError("targetSections", "Add at least one section or choose All Sections.");
+        } else if (sections.some((section) => !/^\d{1,2}-\d{1,2}$/.test(section)) ||
+            new Set(sections.map((section) => section.toLowerCase())).size !== sections.length) {
+          markError("targetSections", "Use unique section values such as 1-1 or 2-3.");
+        }
+      } else {
+        state.targetSections = [];
       }
     }
 
@@ -7765,11 +8042,7 @@ loadCachedOrganizations();
         : target.targetYear && target.targetYear !== "All Levels"
           ? String(target.targetYear).split(",").map((year) => year.trim()).filter((year) => TARGET_YEARS.includes(year))
           : [];
-      state.targetSections = Array.isArray(target.targetSections)
-        ? [...target.targetSections]
-        : target.targetSections
-          ? String(target.targetSections).split(/[,\n]/).map((section) => section.trim()).filter(Boolean)
-          : [];
+      state.targetSections = normalizeTargetSections(target.targetSections);
       state.isCollaboration = target.isCollaboration !== undefined ? Boolean(target.isCollaboration) : Boolean(Array.isArray(target.partnerOrganizations) && target.partnerOrganizations.length > 0);
       state.partnerOrganizations = Array.isArray(target.partnerOrganizations) ? [...target.partnerOrganizations] : [];
       state.collaborationNotes = target.collaborationNotes || "";

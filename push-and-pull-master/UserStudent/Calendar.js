@@ -58,7 +58,6 @@ import {
   let disposed = false;
   let authRequestSequence = 0;
   let holidayRequestSequence = 0;
-  let activeSources = [];
   const state = {
     date: new Date(),
   };
@@ -189,169 +188,13 @@ import {
         })[char],
     );
 
-  function resolveSourceMeta(sourceStr) {
-    const norm = String(sourceStr || "")
-      .normalize("NFD")
-      .replace(/[\u0300-\u036f]/g, "")
-      .trim()
-      .toLowerCase();
-
-    if (norm.includes("holiday")) {
-      return {
-        key: "Holiday",
-        label: "Holiday",
-        dotClass: "holiday",
-        accent: "var(--cat-holiday, #d97706)",
-      };
-    }
-    if (
-      norm === "csc" ||
-      norm.includes("centralstudentcouncil") ||
-      norm.includes("central student council") ||
-      norm === "council"
-    ) {
-      return {
-        key: "CSC",
-        label: "CSC",
-        dotClass: "csc",
-        accent: "var(--cat-cite, #c79a2b)",
-      };
-    }
-    if (norm.includes("binan")) {
-      return {
-        key: "PUP Biñan Campus",
-        label: "PUP Biñan",
-        dotClass: "binan",
-        accent: "var(--cat-binan, #3a76c4)",
-      };
-    }
-    if (
-      norm.includes("pup") ||
-      norm.includes("official") ||
-      norm.includes("cite") ||
-      norm.includes("teacher") ||
-      norm.includes("faculty")
-    ) {
-      return {
-        key: "PUP Official",
-        label: "PUP Official",
-        dotClass: "official",
-        accent: "var(--cat-official, #8f2536)",
-      };
-    }
-    if (
-      norm.includes("organizer") ||
-      norm.includes("organization") ||
-      norm.includes("organizational") ||
-      /^(ibits|aces|jpcs|pice|iie|piie|hrss|sms|yes|jma|jphia|pasoa|chrms|cites)\b/i.test(norm)
-    ) {
-      return {
-        key: "Organizational",
-        label: "Organizational",
-        dotClass: "organizational",
-        accent: "var(--cat-ibits, #7c5cc4)",
-      };
-    }
-    return {
-      key: "Others/External",
-      label: "Others/External",
-      dotClass: "external",
-      accent: "var(--cat-external, #64748b)",
-    };
-  }
-
-  function getStudentActiveSources() {
-    let rawList = null;
-    try {
-      if (
-        studentProfile.preferences &&
-        Array.isArray(studentProfile.preferences.sources) &&
-        studentProfile.preferences.sources.length
-      ) {
-        rawList = studentProfile.preferences.sources;
-      } else {
-        const accountPreferenceKey = `recovibePreferences:${studentProfile.uid || "student"}`;
-        const accPref = JSON.parse(localStorage.getItem(accountPreferenceKey) || "null");
-        if (
-          accPref &&
-          Array.isArray(accPref.sources) &&
-          accPref.sources.length
-        ) {
-          rawList = accPref.sources;
-        }
-      }
-    } catch (e) {
-      console.warn("Could not read student preferences:", e);
-    }
-
-    if (!Array.isArray(rawList) || !rawList.length) {
-      rawList = [
-        "PUP Official",
-        "PUP Biñan",
-        "CSC",
-        "Organizational",
-        "Others/External",
-      ];
-    }
-
-    const metas = [];
-    const seen = new Set();
-    const allowedKeys = new Set([
-      "PUP Official",
-      "PUP Biñan Campus",
-      "CSC",
-      "Organizational",
-      "Others/External",
-    ]);
-    for (const item of rawList) {
-      const meta = resolveSourceMeta(item);
-      if (!allowedKeys.has(meta.key)) continue;
-      if (!seen.has(meta.key)) {
-        seen.add(meta.key);
-        metas.push(meta);
-      }
-    }
-
-    if (!seen.has("Holiday")) {
-      metas.push(resolveSourceMeta("Holiday"));
-      seen.add("Holiday");
-    }
-
-    return metas;
-  }
-
-  function renderFilterAndLegend() {
-    activeSources = getStudentActiveSources();
-
+  function bindCalendarFilters() {
     const filterPanel = document.querySelector(".filter-panel");
-    if (filterPanel) {
-      filterPanel.querySelectorAll(".filter-option").forEach((el) => el.remove());
-      activeSources.forEach((source) => {
-        const label = document.createElement("label");
-        label.className = "filter-option";
-        label.innerHTML = `<input type="checkbox" checked data-source="${escape(source.key)}" style="accent-color: var(--maroon-700);" /><span>${escape(source.label)}</span>`;
-        filterPanel.appendChild(label);
-      });
-
-      filterPanel.querySelectorAll(".filter-option input").forEach((input) => {
-        input.addEventListener("change", () => {
-          renderCalendar();
-        });
-      });
-    }
-
-    const legendPanel = document.getElementById("calendarLegend");
-    if (legendPanel) {
-      const legendTitle = legendPanel.querySelector(".legend-title");
-      if (legendTitle) legendTitle.textContent = "Legend";
-      legendPanel.querySelectorAll(".legend-item").forEach((el) => el.remove());
-      activeSources.forEach((source) => {
-        const item = document.createElement("span");
-        item.className = "legend-item";
-        item.innerHTML = `<span class="dot dot-${source.dotClass}" aria-hidden="true"></span>${escape(source.label)}`;
-        legendPanel.appendChild(item);
-      });
-    }
+    if (!filterPanel || filterPanel.dataset.calendarFiltersBound === "true") return;
+    filterPanel.dataset.calendarFiltersBound = "true";
+    filterPanel.querySelectorAll(".filter-option input").forEach((input) => {
+      input.addEventListener("change", renderCalendar);
+    });
   }
 
   function eventSource(event) {
@@ -364,6 +207,11 @@ import {
       event.organizer,
       event.organizerName,
       event.tag,
+      event.calendarSource,
+      event.calendarName,
+      event.feedSource,
+      event.origin,
+      event.campus,
       event.title,
       event.eventName,
       event.name,
@@ -377,6 +225,11 @@ import {
         .toLowerCase(),
     );
 
+    const sourceText = normalizedSources.join(" ");
+    if (
+      sourceText.includes("pup") &&
+      /\b(?:sta\.?\s*mesa|santa\s+mesa)\b/.test(sourceText)
+    ) return "PUP Official";
     if (normalizedSources.some((source) => source.includes("holiday"))) return "Holiday";
     if (normalizedSources.some((source) =>
       /(^|[^a-z])csc([^a-z]|$)/.test(source) ||
@@ -526,11 +379,11 @@ import {
         const categoryClass = `dot-${eventDotClass(event)}`;
         if (isHolidayEvent(event)) {
           return `
-            <div class="upcoming-item upcoming-item--holiday" style="cursor: default;" aria-label="${escape(event.title || "Holiday")} (Holiday)">
+            <div class="upcoming-item upcoming-item--holiday" style="cursor: default;" aria-label="${escape(event.title || "Holiday")} (${escape(sourceLabel)})">
               <div class="upcoming-date ${categoryClass}"><span>${day}</span><small>${month}</small></div>
               <div class="upcoming-copy">
                 <strong title="${escape(event.title || "Holiday")}">${escape(event.title || "Holiday")}</strong>
-                <span>Holiday</span>
+                <span>${escape(sourceLabel)}</span>
               </div>
             </div>
           `;
@@ -554,30 +407,43 @@ import {
     openEventList("More upcoming events", getUpcomingEvents().slice(5), undefined, true);
   }
 
-  function openEventList(listTitle, listedEvents, iso, showStartDate = false) {
+  function openEventList(
+    listTitle,
+    listedEvents,
+    iso,
+    showStartDate = false,
+    academicEntries = [],
+  ) {
     const dayTitle = document.getElementById("organizerDayTitle");
     const dayList = document.getElementById("organizerDayList");
     dayTitle.textContent = listTitle;
     const openDayHeader = iso
       ? `<div style="display:flex; justify-content:flex-end; margin-bottom:10px;"><a href="Events.html?from=${encodeURIComponent(iso)}&to=${encodeURIComponent(iso)}" class="btn-open-day" style="font-size:12px; font-weight:600; color:var(--maroon-700, #7a1f2e); text-decoration:underline;" title="Open this day in Events">Open day &rarr;</a></div>`
       : "";
-    dayList.innerHTML = openDayHeader + listedEvents
-      .map((event) => {
-        const range = eventDateRange(event);
-        const startDate = range ? dateFromISO(manilaDateKey(range.start)) : null;
-        const dateLabel = startDate
-          ? startDate.toLocaleDateString("en-US", { month: "short", day: "numeric" })
-          : "";
-        if (isHolidayEvent(event)) {
-          return `<div class="day-modal-row day-modal-row--holiday dot-${eventDotClass(event)}" style="cursor: default; pointer-events: none;" aria-label="${escape(event.title || "Holiday")} (Holiday)"><strong>${escape(event.title || "Holiday")}</strong><small>${escape(showStartDate ? dateLabel : "Holiday")}</small></div>`;
-        }
-        const detail = showStartDate
-          ? dateLabel
-          : event.time || "Time TBA";
-        const selectable = isSelectableEvent(event);
-        return `<button class="day-modal-row dot-${eventDotClass(event)}" type="button" ${selectable ? `data-event-id="${escape(event.id || event.eventId || "")}"` : "disabled aria-disabled=\"true\""}><strong>${escape(event.title || "Untitled event")}</strong><small>${escape(detail)}</small></button>`;
+    const eventRows = listedEvents.map((event) => {
+      const range = eventDateRange(event);
+      const startDate = range ? dateFromISO(manilaDateKey(range.start)) : null;
+      const dateLabel = startDate
+        ? startDate.toLocaleDateString("en-US", { month: "short", day: "numeric" })
+        : "";
+      if (isHolidayEvent(event)) {
+        const sourceLabel = eventSource(event);
+        return `<div class="day-modal-row day-modal-row--holiday dot-${eventDotClass(event)}" style="cursor: default; pointer-events: none;" aria-label="${escape(event.title || "Holiday")} (${escape(sourceLabel)})"><strong>${escape(event.title || "Holiday")}</strong><small>${escape(showStartDate ? dateLabel : sourceLabel)}</small></div>`;
+      }
+      const detail = showStartDate
+        ? dateLabel
+        : event.time || "Time TBA";
+      const selectable = isSelectableEvent(event);
+      return `<button class="day-modal-row dot-${eventDotClass(event)}" type="button" ${selectable ? `data-event-id="${escape(event.id || event.eventId || "")}"` : "disabled aria-disabled=\"true\""}><strong>${escape(event.title || "Untitled event")}</strong><small>${escape(detail)}</small></button>`;
       })
       .join("");
+    const academicRows = academicEntries.map((entry) => {
+      const title = entry.title || "Official date";
+      return `<div class="day-modal-row dot-official academic-calendar-day-row" data-source="PUP Official" aria-label="${escape(title)} (PUP Official)"><strong>${escape(title)}</strong><small>PUP Official</small></div>`;
+    }).join("");
+    const rows = eventRows + academicRows ||
+      '<p class="day-modal-empty" role="status">No events scheduled for this day.</p>';
+    dayList.innerHTML = openDayHeader + rows;
     dayModal.classList.add("is-open");
   }
 
@@ -661,13 +527,13 @@ import {
           .map(
             (event) =>
               isHolidayEvent(event)
-                ? `<span class="calendar-day-event dot-holiday" style="pointer-events: none; cursor: default;" title="${escape(event.title || "Holiday")}">${escape(event.title || "Holiday")}</span>`
+                ? `<span class="calendar-day-event dot-${eventDotClass(event)}" style="pointer-events: none; cursor: default;" title="${escape(event.title || "Holiday")}">${escape(event.title || "Holiday")}</span>`
                 : `<span class="calendar-day-event dot-${eventDotClass(event)}" title="${escape(event.title || "Untitled event")}">${escape(event.title || "Untitled event")}</span>`,
           )
           .join("");
         const dotOverflowCount = Math.max(0, eventCount - 3);
         return `
-        <div class="cal-day-full ${cell.muted ? "is-muted" : ""} ${eventCount ? "has-event" : ""} ${isOnlyHoliday ? "only-holiday" : ""} ${today ? "is-today" : ""}" ${cell.iso ? `data-date="${cell.iso}" data-iso="${cell.iso}" tabindex="${cell.iso <= todayISO() ? "0" : "-1"}" aria-disabled="${cell.iso > todayISO()}" aria-label="${cell.iso}: ${eventCount ? `${eventCount} event${eventCount === 1 ? "" : "s"}` : "no events"}"` : ""}>
+        <div class="cal-day-full ${cell.muted ? "is-muted" : ""} ${eventCount ? "has-event" : ""} ${isOnlyHoliday ? "only-holiday" : ""} ${today ? "is-today" : ""}" ${cell.iso ? `data-date="${cell.iso}" data-iso="${cell.iso}" role="button" tabindex="0" aria-disabled="false" aria-label="${cell.iso}: ${eventCount ? `${eventCount} event${eventCount === 1 ? "" : "s"}` : "no events"}"` : ""}>
           <span class="day-num">${cell.day || ""}</span>
           ${eventCount ? `<span class="event-dots" aria-hidden="true">${eventDots}${dotOverflowCount ? `<span class="event-dot-overflow">+${dotOverflowCount}</span>` : ""}</span>` : ""}
           ${eventCount ? `<span class="calendar-day-event-list">${eventTitles}<button class="calendar-day-more" type="button" hidden></button></span>` : ""}
@@ -744,17 +610,9 @@ import {
   }
 
   function openDay(iso, forceList = false) {
-    if (iso > todayISO()) return;
     const dayEvents = visibleEvents().filter((event) => eventOccursOn(event, iso));
-    if (!dayEvents.length) return;
-
-    const regularEvents = dayEvents.filter((event) => !isHolidayEvent(event));
-    if (regularEvents.length === 1 && dayEvents.length === 1 && !forceList) {
-      openEventModal(regularEvents[0].id || regularEvents[0].eventId);
-      return;
-    }
-    if (!regularEvents.length && dayEvents.length === 1) return;
-
+    const academicEntries =
+      window.RecoVibeCalendarShell?.getAcademicEntriesForDate?.(iso) || [];
     const date = dateFromISO(iso);
     const title = date
       ? date.toLocaleDateString("en-US", {
@@ -763,7 +621,23 @@ import {
           year: "numeric",
         })
       : iso;
-    openEventList(title, dayEvents, iso);
+    if (!dayEvents.length && !academicEntries.length) {
+      openEventList(title, [], iso);
+      return;
+    }
+
+    const regularEvents = dayEvents.filter((event) => !isHolidayEvent(event));
+    if (
+      regularEvents.length === 1 &&
+      dayEvents.length === 1 &&
+      academicEntries.length === 0 &&
+      !forceList
+    ) {
+      openEventModal(regularEvents[0].id || regularEvents[0].eventId);
+      return;
+    }
+
+    openEventList(title, dayEvents, iso, false, academicEntries);
   }
 
   function renderYearOptions() {
@@ -1000,12 +874,13 @@ import {
     });
 
     calendarDays.addEventListener("keydown", (event) => {
-      if (event.key === "Enter" || event.key === " ") {
-        const cell = event.target.closest("[data-iso]");
-        if (cell) {
-          event.preventDefault();
-          openDay(cell.dataset.iso);
-        }
+      if (event.key !== "Enter" && event.key !== " ") return;
+      if (event.target.matches("[data-iso]")) {
+        event.preventDefault();
+        openDay(event.target.dataset.iso);
+      } else if (event.target.matches("[data-academic-date]")) {
+        event.preventDefault();
+        openDay(event.target.dataset.academicDate, true);
       }
     });
 
@@ -1138,7 +1013,6 @@ import {
       (event.key && event.key.startsWith("recovibePreferences:")) ||
       event.key === "recovibeCurrentUser"
     ) {
-      renderFilterAndLegend();
       renderCalendar();
       return;
     }
@@ -1214,7 +1088,7 @@ import {
     if (event.persisted) startCalendarListeners();
   });
 
-  renderFilterAndLegend();
+  bindCalendarFilters();
   renderCalendar();
   startCalendarListeners();
 })();

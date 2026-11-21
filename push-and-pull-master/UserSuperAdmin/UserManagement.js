@@ -9,15 +9,19 @@ import {
 import {
   addDoc,
   collection,
+  deleteDoc,
+  deleteField,
   doc,
   getDoc,
   onSnapshot,
+  runTransaction,
   serverTimestamp,
   setDoc,
   updateDoc,
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 import { auth, db, isFirebaseConfigured } from "../UserStudent/firebaseConfig.js";
 import { logoutSuperAdmin } from "./superAdminLogout.js";
+import { DEFAULTS, getSystemSettings } from "../systemSettingsDefaults.js";
 
 (() => {
   "use strict";
@@ -39,10 +43,18 @@ import { logoutSuperAdmin } from "./superAdminLogout.js";
   const DETAILS_DIALOG = document.getElementById("user-details-modal-backdrop");
   const CREATE_DIALOG = document.getElementById("create-user-dialog");
   const ACCOUNT_TYPE_DIALOG = document.getElementById("account-type-dialog");
-  const ROLE_CHANGE_DIALOG = document.getElementById("change-role-dialog");
+  const EDIT_PROFILE_DIALOG = document.getElementById("edit-profile-dialog");
   const ACTION_CONFIRM_DIALOG = document.getElementById("action-confirm-dialog");
   const CREATE_FORM = document.getElementById("create-user-form");
-  const ROLE_CHANGE_FORM = document.getElementById("change-role-form");
+  const EDIT_PROFILE_FORM = document.getElementById("edit-profile-form");
+  const EDIT_FIRST_NAME_INPUT = document.getElementById("edit-user-first-name");
+  const EDIT_MIDDLE_NAME_INPUT = document.getElementById("edit-user-middle-name");
+  const EDIT_LAST_NAME_INPUT = document.getElementById("edit-user-last-name");
+  const EDIT_ACCOUNT_INPUT = document.getElementById("edit-user-account-number");
+  const EDIT_EMAIL_INPUT = document.getElementById("edit-user-email");
+  const EDIT_CONTACT_INPUT = document.getElementById("edit-user-contact-number");
+  const EDIT_SUFFIX_INPUT = document.getElementById("edit-user-role-suffix");
+  const EDIT_PROGRAM_INPUT = document.getElementById("edit-user-program");
   const CREATE_ROLE_INPUT = document.getElementById("new-user-role-value");
   const CREATE_ROLE_SELECT = document.getElementById("new-user-role");
   const CREATE_FIRST_NAME_INPUT = document.getElementById("new-user-first-name");
@@ -54,17 +66,24 @@ import { logoutSuperAdmin } from "./superAdminLogout.js";
   const CREATE_PASSWORD_INPUT = document.getElementById("new-user-password");
   const CREATE_PASSWORD_CONFIRMATION_INPUT = document.getElementById("new-user-password-confirmation");
   const CREATE_ORGANIZATION_INPUT = document.getElementById("new-user-organization");
+  const CREATE_ORGANIZATION_SELECT = document.getElementById("new-user-organization-select");
   const CREATE_SUFFIX_INPUT = document.getElementById("new-user-role-suffix");
   const CREATE_AUTH_FIELDS = document.getElementById("staff-auth-fields");
   const CREATE_ORGANIZATION_FIELD = document.getElementById("field-user-organization");
+  const CREATE_ORGANIZATION_SELECT_FIELD = document.getElementById("field-user-organization-select");
   const CREATE_SUFFIX_FIELD = document.getElementById("field-user-suffix");
   const CREATE_ACCOUNT_LABEL = document.getElementById("new-user-account-label");
   const STATUS_ACTION_BUTTON = document.getElementById("toggle-user-status-button");
-  const ROLE_ACTION_BUTTON = document.getElementById("change-user-role-button");
-  const RESET_ACTION_BUTTON = document.getElementById("send-password-reset-button");
+  const EDIT_PROFILE_BUTTON = document.getElementById("edit-user-button");
+  const DELETE_USER_BUTTON = document.getElementById("delete-user-button");
   const AUDIT_LINK = document.getElementById("view-user-activity");
-  const ROLE_SELECT = document.getElementById("change-user-role-select");
-  const ROLE_HINT = document.getElementById("role-change-hint");
+  const EDIT_ROLE_SELECT = document.getElementById("edit-user-role");
+  const EDIT_PROFILE_HINT = document.getElementById("edit-profile-hint");
+  const EDIT_ORGANIZATION_SELECT = document.getElementById("edit-user-organization");
+  const EDIT_ORGANIZATION_FIELD = document.getElementById("edit-user-organization-field");
+  const EDIT_PROGRAM_FIELD = document.getElementById("edit-user-program-field");
+  const EDIT_ROLE_SUFFIX_FIELD = document.getElementById("edit-user-role-suffix-field");
+  const EDIT_PROFILE_SAVE_BUTTON = document.getElementById("save-edit-profile-button");
   const CONFIRM_TITLE = document.getElementById("action-confirm-title");
   const CONFIRM_MESSAGE = document.getElementById("action-confirm-message");
   const CONFIRM_BUTTON = document.getElementById("confirm-action-button");
@@ -459,36 +478,35 @@ import { logoutSuperAdmin } from "./superAdminLogout.js";
     element.className = `user-role-pill role--${getRoleClass(role)}`;
   }
 
-  function setRoleChoices(user) {
-    if (!ROLE_SELECT) return;
+  function setEditRoleChoices(user) {
+    if (!EDIT_ROLE_SELECT) return;
     const lastSuperAdmin = isLastActiveSuperAdmin(user);
-    Array.from(ROLE_SELECT.options).forEach((option) => {
+    const ownAccount = isOwnAccount(user);
+    Array.from(EDIT_ROLE_SELECT.options).forEach((option) => {
       const sameCollection = canChangeToRole(user, option.value);
       const wouldDemoteLastSuperAdmin = lastSuperAdmin && option.value !== "Super Admin";
-      option.disabled = !sameCollection || wouldDemoteLastSuperAdmin;
+      const wouldChangeOwnRole = ownAccount && option.value !== user.role;
+      option.disabled = !sameCollection || wouldDemoteLastSuperAdmin || wouldChangeOwnRole;
       option.title = !sameCollection
         ? "Changing to this role requires moving the profile to another collection, which is not supported."
         : wouldDemoteLastSuperAdmin
           ? "The last active superadmin cannot be demoted."
+          : wouldChangeOwnRole
+            ? "You cannot change your own role."
           : "";
     });
-    ROLE_SELECT.value = user.role;
-    if (ROLE_HINT) {
-      ROLE_HINT.textContent = user.collectionName === "users"
-        ? "This profile is stored in users. Only Student is safe to assign without moving profile data."
-        : "This profile is stored in adminUser. Student requires a different collection and is disabled.";
-      if (lastSuperAdmin) ROLE_HINT.textContent += " The last active superadmin cannot be demoted.";
+    EDIT_ROLE_SELECT.value = user.role;
+    if (EDIT_PROFILE_HINT) {
+      const collectionNote = user.collectionName === "users"
+        ? "This profile is stored in users; only Student can be assigned."
+        : "This profile is stored in adminUser; Student cannot be assigned without moving profile data.";
+      EDIT_PROFILE_HINT.textContent = [
+        collectionNote,
+        ownAccount ? "Your own role cannot be changed here." : "",
+        lastSuperAdmin ? "The last active superadmin cannot be demoted or deleted." : "",
+        "Email changes update the Firestore profile; Firebase Authentication email is unchanged.",
+      ].filter(Boolean).join(" ");
     }
-    const submit = ROLE_CHANGE_FORM?.querySelector('button[type="submit"]');
-    if (submit) submit.disabled = true;
-  }
-
-  function updateRoleSubmitState() {
-    const user = selectedUserKey ? getCurrentUser(selectedUserKey) : null;
-    const submit = ROLE_CHANGE_FORM?.querySelector('button[type="submit"]');
-    if (!user || !submit || !ROLE_SELECT) return;
-    submit.disabled = ROLE_SELECT.value === user.role || !canChangeToRole(user, ROLE_SELECT.value)
-      || (isLastActiveSuperAdmin(user) && ROLE_SELECT.value !== "Super Admin");
   }
 
   function updateDetailsPanel() {
@@ -531,29 +549,24 @@ import { logoutSuperAdmin } from "./superAdminLogout.js";
           ? "The last active superadmin cannot be suspended."
           : "";
     }
-    const hasSafeRole = ALLOWED_ROLES.some((candidate) => candidate !== user.role
-      && canChangeToRole(user, candidate)
-      && !(lastSuperAdmin && candidate !== "Super Admin"));
-    if (ROLE_ACTION_BUTTON) {
-      ROLE_ACTION_BUTTON.disabled = ownAccount || !hasSafeRole;
-      ROLE_ACTION_BUTTON.title = ownAccount
-        ? "You cannot change your own role."
-        : hasSafeRole
-          ? ""
-          : lastSuperAdmin
-            ? "The last active superadmin cannot be demoted."
-            : "Changing this role requires moving the profile to another collection.";
+    if (EDIT_PROFILE_BUTTON) {
+      EDIT_PROFILE_BUTTON.disabled = false;
+      EDIT_PROFILE_BUTTON.title = "Edit this user's profile details.";
     }
-    if (RESET_ACTION_BUTTON) {
-      RESET_ACTION_BUTTON.disabled = !user.email;
-      RESET_ACTION_BUTTON.title = user.email ? "" : "No email address is on file.";
+    if (DELETE_USER_BUTTON) {
+      DELETE_USER_BUTTON.disabled = ownAccount || lastSuperAdmin;
+      DELETE_USER_BUTTON.title = ownAccount
+        ? "You cannot delete your own account profile."
+        : lastSuperAdmin
+          ? "The last active superadmin profile cannot be deleted."
+          : "Remove this user's Firestore profile.";
     }
     const safetyNote = document.getElementById("user-safety-note");
     if (safetyNote) {
       safetyNote.textContent = ownAccount
-        ? "Your own account cannot be suspended, deactivated, or demoted here."
+        ? "Your own account cannot be suspended or deleted here. Your role also cannot be changed."
         : lastSuperAdmin && isActive(user)
-          ? "This is the last active superadmin and cannot be suspended or demoted."
+          ? "This is the last active superadmin and cannot be suspended, demoted, or deleted."
           : "";
     }
     if (AUDIT_LINK) {
@@ -562,6 +575,56 @@ import { logoutSuperAdmin } from "./superAdminLogout.js";
       params.set("uid", user.uid || user.id);
       AUDIT_LINK.href = `SuperAdminAuditLogs.html?${params.toString()}`;
     }
+  }
+
+  function updateEditOrganizationFields(role) {
+    if (EDIT_ORGANIZATION_FIELD) EDIT_ORGANIZATION_FIELD.hidden = role === "Student";
+    if (EDIT_PROGRAM_FIELD) EDIT_PROGRAM_FIELD.hidden = role !== "Student";
+    if (EDIT_ROLE_SUFFIX_FIELD) {
+      EDIT_ROLE_SUFFIX_FIELD.hidden = !["Admin", "Teacher", "Super Admin"].includes(role);
+    }
+  }
+
+  async function openEditProfile() {
+    const user = selectedUserKey ? getCurrentUser(selectedUserKey) : null;
+    if (!user || !EDIT_PROFILE_FORM) return;
+    const parts = user.fullName.split(/\s+/).filter(Boolean);
+    const data = user.data || {};
+    EDIT_FIRST_NAME_INPUT.value = String(data.firstName || parts[0] || "");
+    EDIT_MIDDLE_NAME_INPUT.value = String(
+      data.middleName || (parts.length > 2 ? parts.slice(1, -1).join(" ") : ""),
+    );
+    EDIT_LAST_NAME_INPUT.value = String(
+      data.lastName || (parts.length > 1 ? parts[parts.length - 1] : ""),
+    );
+    EDIT_ACCOUNT_INPUT.value = user.accountNumber;
+    EDIT_EMAIL_INPUT.value = user.email;
+    EDIT_CONTACT_INPUT.value = String(data.contactNumber || "");
+    EDIT_SUFFIX_INPUT.value = String(data.roleSuffix || "");
+    EDIT_PROGRAM_INPUT.value = String(
+      data.program || data.department || data.organizationDepartment || data.organization || "",
+    );
+    setEditRoleChoices(user);
+    updateEditOrganizationFields(user.role);
+    await loadOrganizationOptions(EDIT_ORGANIZATION_SELECT);
+    const organizationCode = organizationCodeFromRecord({
+      organizationCode: data.organizationCode,
+      orgCode: data.orgCode,
+      organization: data.organization,
+      organizationName: data.organizationName,
+      orgName: data.orgName,
+    });
+    if (
+      organizationCode &&
+      !Array.from(EDIT_ORGANIZATION_SELECT.options).some(
+        (option) => option.value === organizationCode,
+      )
+    ) {
+      EDIT_ORGANIZATION_SELECT.add(new Option(organizationCode, organizationCode));
+    }
+    EDIT_ORGANIZATION_SELECT.value = organizationCode;
+    EDIT_PROFILE_DIALOG?.showModal();
+    EDIT_FIRST_NAME_INPUT.focus();
   }
 
   function openUserDetails(key) {
@@ -642,38 +705,230 @@ import { logoutSuperAdmin } from "./superAdminLogout.js";
     showToast(`${user.fullName} was ${action.status === "Suspended" ? "suspended" : "reactivated"}.`);
   }
 
-  async function confirmRoleChange(action) {
-    const user = currentUserForAction(action);
-    if (!user) throw new Error("The selected user is no longer available. Refresh the list and try again.");
-    if (isOwnAccount(user)) throw new Error("You cannot change your own role.");
-    if (!canChangeToRole(user, action.role)) {
-      throw new Error("This role change would require moving the profile to a different collection. No data was changed.");
+  function getProfileMemberships(data, previousOrganizationCode, nextOrganizationCode) {
+    const memberships = Array.isArray(data.organizations) ? data.organizations : [];
+    return memberships.filter((membership) => {
+      const code = organizationCodeFromRecord(membership);
+      return !code || (code !== previousOrganizationCode && code !== nextOrganizationCode);
+    });
+  }
+
+  function buildEditProfileUpdates(user) {
+    const role = EDIT_ROLE_SELECT.value;
+    if (!canChangeToRole(user, role)) {
+      throw new Error("Changing this role would require moving the profile to a different collection.");
     }
-    if (isLastActiveSuperAdmin(user) && action.role !== "Super Admin") {
+    if (isOwnAccount(user) && role !== user.role) {
+      throw new Error("You cannot change your own role.");
+    }
+    if (isLastActiveSuperAdmin(user) && role !== "Super Admin") {
       throw new Error("The last active superadmin cannot be demoted.");
     }
-    await updateDoc(doc(db, user.collectionName, user.id), {
-      role: action.role,
+
+    const firstName = EDIT_FIRST_NAME_INPUT.value.trim();
+    const middleName = EDIT_MIDDLE_NAME_INPUT.value.trim();
+    const lastName = EDIT_LAST_NAME_INPUT.value.trim();
+    const email = EDIT_EMAIL_INPUT.value.trim().toLowerCase();
+    const accountNumber = EDIT_ACCOUNT_INPUT.value.trim();
+    if (duplicateProfileEmail(email, userKey(user))) {
+      throw new Error("Another profile already uses this email address.");
+    }
+    if (duplicateAccountNumber(accountNumber, userKey(user))) {
+      throw new Error("Another profile already uses this account number.");
+    }
+
+    const fullName = [firstName, middleName, lastName].filter(Boolean).join(" ");
+    const profileUpdates = {
+      firstName,
+      lastName,
+      fullName,
+      email,
+      accountNumber,
+      role,
+    };
+    if (user.data.userRole !== undefined) profileUpdates.userRole = role;
+    if (user.data.accountNo !== undefined) profileUpdates.accountNo = accountNumber;
+    if (user.collectionName === "users" || user.data.studentNumber !== undefined) {
+      profileUpdates.studentNumber = accountNumber;
+    }
+    if (user.data.studentNo !== undefined) profileUpdates.studentNo = accountNumber;
+    const removeFields = [];
+    if (middleName) profileUpdates.middleName = middleName;
+    else removeFields.push("middleName");
+
+    const contactNumber = EDIT_CONTACT_INPUT.value.trim();
+    if (contactNumber) profileUpdates.contactNumber = contactNumber;
+    else removeFields.push("contactNumber");
+    if (user.data.contactNo !== undefined) {
+      if (contactNumber) profileUpdates.contactNo = contactNumber;
+      else removeFields.push("contactNo");
+    }
+
+    const roleSuffix = ["Admin", "Teacher", "Super Admin"].includes(role)
+      ? EDIT_SUFFIX_INPUT.value.trim().toUpperCase()
+      : "";
+    if (roleSuffix) profileUpdates.roleSuffix = roleSuffix;
+    else removeFields.push("roleSuffix");
+
+    const oldOrganizationCode = organizationCodeFromRecord({
+      organizationCode: user.data.organizationCode,
+      orgCode: user.data.orgCode,
+      organization: user.data.organization,
+      organizationName: user.data.organizationName,
+      orgName: user.data.orgName,
+    });
+    const nextOrganizationCode = role === "Student"
+      ? ""
+      : normalizeOrganizationCode(EDIT_ORGANIZATION_SELECT.value);
+    if (role === "Student") {
+      const program = EDIT_PROGRAM_INPUT.value.trim();
+      if (program) {
+        profileUpdates.program = program;
+        profileUpdates.organization = program;
+        profileUpdates.department = program;
+        profileUpdates.organizationDepartment = program;
+      } else {
+        removeFields.push("program", "organization", "department", "organizationDepartment");
+      }
+    } else {
+      if (nextOrganizationCode) {
+        profileUpdates.organization = nextOrganizationCode;
+        profileUpdates.organizationCode = nextOrganizationCode;
+        profileUpdates.orgCode = nextOrganizationCode;
+        profileUpdates.department = nextOrganizationCode;
+        profileUpdates.organizationDepartment = nextOrganizationCode;
+        const memberships = getProfileMemberships(
+          user.data,
+          oldOrganizationCode,
+          nextOrganizationCode,
+        );
+        profileUpdates.organizations = [...memberships, nextOrganizationCode];
+      } else {
+        removeFields.push(
+          "organization",
+          "organizationCode",
+          "orgCode",
+          "organizationName",
+          "orgName",
+          "department",
+          "organizationDepartment",
+        );
+        const memberships = getProfileMemberships(user.data, oldOrganizationCode, "");
+        if (memberships.length) profileUpdates.organizations = memberships;
+        else removeFields.push("organizations");
+      }
+    }
+
+    const isOrgAdviser = role === "Admin" && isOrgAdviserSuffix(roleSuffix);
+    if (isOrgAdviser && nextOrganizationCode) {
+      const oldAdviserEmails = Array.isArray(user.data.adviserEmails)
+        ? user.data.adviserEmails
+        : [];
+      profileUpdates.adviserEmail = email;
+      profileUpdates.adviserEmails = [
+        ...new Set([
+          ...oldAdviserEmails
+            .map((value) => String(value || "").trim().toLowerCase())
+            .filter((value) => value && value !== normalizedText(user.email)),
+          email,
+        ]),
+      ];
+    } else {
+      removeFields.push("adviserEmail", "adviserEmails");
+    }
+
+    return { profileUpdates, removeFields };
+  }
+
+  async function saveProfileEdits() {
+    const user = selectedUserKey ? getCurrentUser(selectedUserKey) : null;
+    if (!user) throw new Error("The selected user is no longer available. Refresh the list and try again.");
+    const { profileUpdates, removeFields } = buildEditProfileUpdates(user);
+    const firestoreUpdates = {
+      ...profileUpdates,
       updatedAt: serverTimestamp(),
       updatedBy: currentAdmin.uid,
+    };
+    removeFields.forEach((field) => {
+      firestoreUpdates[field] = deleteField();
     });
+    await updateDoc(doc(db, user.collectionName, user.id), firestoreUpdates);
+
+    const updatedData = { ...user.data, ...profileUpdates };
+    removeFields.forEach((field) => delete updatedData[field]);
+    const updatedUser = {
+      ...user,
+      data: updatedData,
+      fullName: profileUpdates.fullName,
+      email: profileUpdates.email,
+      accountNumber: profileUpdates.accountNumber,
+      role: profileUpdates.role,
+    };
+    if (user.collectionName === "users") {
+      users = users.map((entry) => userKey(entry) === userKey(user) ? updatedUser : entry);
+    } else {
+      adminUsers = adminUsers.map((entry) => userKey(entry) === userKey(user) ? updatedUser : entry);
+    }
+
     await writeAuditEntry({
-      action: "role_change",
-      target: user,
-      summary: `${user.fullName}'s role changed from ${user.role} to ${action.role}.`,
-      changes: [{ field: "role", from: user.role, to: action.role }],
+      action: "user_profile_updated",
+      target: updatedUser,
+      summary: `Updated ${user.fullName}'s profile.`,
+      changes: [
+        { field: "fullName", from: user.fullName, to: profileUpdates.fullName },
+        { field: "email", from: user.email, to: profileUpdates.email },
+        { field: "accountNumber", from: user.accountNumber, to: profileUpdates.accountNumber },
+        { field: "contactNumber", from: user.data.contactNumber || "", to: profileUpdates.contactNumber || "" },
+        { field: "role", from: user.role, to: profileUpdates.role },
+        { field: "roleSuffix", from: user.data.roleSuffix || "", to: profileUpdates.roleSuffix || "" },
+        {
+          field: "organizationCode",
+          from: organizationCodeFromRecord(user.data),
+          to: profileUpdates.organizationCode || "",
+        },
+      ],
     });
-    showToast(`${user.fullName}'s role was changed to ${action.role}.`);
+    EDIT_PROFILE_DIALOG?.close();
+    renderUsers();
+    updateDetailsPanel();
+    showToast(`${updatedUser.fullName}'s profile was updated.`);
   }
 
-  function duplicateProfileEmail(email) {
+  async function confirmDeleteUserProfile(action) {
+    const user = currentUserForAction(action);
+    if (!user) throw new Error("The selected user is no longer available. Refresh the list and try again.");
+    if (isOwnAccount(user)) throw new Error("You cannot delete your own account profile.");
+    if (isLastActiveSuperAdmin(user)) {
+      throw new Error("The last active superadmin profile cannot be deleted.");
+    }
+    await deleteDoc(doc(db, user.collectionName, user.id));
+    if (user.collectionName === "users") {
+      users = users.filter((entry) => userKey(entry) !== userKey(user));
+    } else {
+      adminUsers = adminUsers.filter((entry) => userKey(entry) !== userKey(user));
+    }
+    await writeAuditEntry({
+      action: "user_profile_deleted",
+      target: user,
+      summary: `Removed ${user.fullName}'s Firestore profile. Firebase Authentication account remains.`,
+      changes: [{ field: "profile", from: "present", to: "deleted" }],
+    });
+    closeDetails();
+    showToast("Firestore profile deleted. The Firebase Authentication account remains.");
+  }
+
+  function duplicateProfileEmail(email, excludeKey = "") {
     const normalizedEmail = normalizedText(email);
-    return getAllUsers().some((user) => normalizedText(user.email) === normalizedEmail);
+    return getAllUsers().some((user) =>
+      userKey(user) !== excludeKey && normalizedText(user.email) === normalizedEmail,
+    );
   }
 
-  function duplicateAccountNumber(accountNumber) {
+  function duplicateAccountNumber(accountNumber, excludeKey = "") {
     const normalizedAccount = normalizedText(accountNumber);
-    return normalizedAccount && getAllUsers().some((user) => normalizedText(user.accountNumber) === normalizedAccount);
+    return normalizedAccount && getAllUsers().some((user) =>
+      userKey(user) !== excludeKey && normalizedText(user.accountNumber) === normalizedAccount,
+    );
   }
 
   function validateCreateUser() {
@@ -713,6 +968,22 @@ import { logoutSuperAdmin } from "./superAdminLogout.js";
     return true;
   }
 
+  function normalizeOrganizationCode(value) {
+    return String(value || "").trim().replace(/\s+/g, " ").toUpperCase();
+  }
+
+  function organizationCodeFromRecord(organization, fallback = "") {
+    if (typeof organization === "string") return normalizeOrganizationCode(organization);
+    return normalizeOrganizationCode(
+      organization?.code ||
+      organization?.organizationCode ||
+      organization?.orgCode ||
+      organization?.id ||
+      organization?.organization ||
+      fallback,
+    );
+  }
+
   function profileDataForCreate({
     role,
     fullName,
@@ -723,8 +994,12 @@ import { logoutSuperAdmin } from "./superAdminLogout.js";
     accountNumber,
     contactNumber,
     organization,
+    organizationCode,
     roleSuffix,
   }) {
+    const orgAdviser = role === "Admin" &&
+      String(roleSuffix || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "") === "orgadviser";
+    const normalizedOrganizationCode = normalizeOrganizationCode(organizationCode);
     const profile = {
       fullName,
       firstName,
@@ -743,6 +1018,20 @@ import { logoutSuperAdmin } from "./superAdminLogout.js";
       profile.organization = organization;
       profile.department = organization;
       profile.organizationDepartment = organization;
+    }
+    if (normalizedOrganizationCode) {
+      const profileOrganization = normalizedOrganizationCode;
+      profile.organization = profileOrganization;
+      profile.organizationCode = profileOrganization;
+      profile.orgCode = profileOrganization;
+      profile.organizations = [profileOrganization];
+      profile.department = profileOrganization;
+      profile.organizationDepartment = profileOrganization;
+      if (orgAdviser) {
+        const adviserEmail = String(email || "").trim().toLowerCase();
+        profile.adviserEmail = adviserEmail;
+        profile.adviserEmails = [adviserEmail];
+      }
     }
     if (role === "Student") {
       profile.studentNumber = accountNumber;
@@ -789,8 +1078,96 @@ import { logoutSuperAdmin } from "./superAdminLogout.js";
     }
   }
 
+  async function syncOrganizationAdviserMapping(data) {
+    const organizationCode = normalizeOrganizationCode(data.organizationCode);
+    const email = String(data.email || "").trim().toLowerCase();
+    if (!db || !organizationCode || !email) {
+      throw new Error("Organization and email are required to sync an adviser mapping.");
+    }
+
+    const configRef = doc(db, "system_settings", "global_config");
+    await runTransaction(db, async (transaction) => {
+      const snapshot = await transaction.get(configRef);
+      const config = snapshot.exists() ? snapshot.data() || {} : {};
+      const configuredOrganizations = config.organizations;
+      const isObjectMap = configuredOrganizations &&
+        typeof configuredOrganizations === "object" &&
+        !Array.isArray(configuredOrganizations);
+      const hasConfiguredOrganizations = Array.isArray(configuredOrganizations)
+        ? configuredOrganizations.length > 0
+        : Boolean(isObjectMap && Object.keys(configuredOrganizations).length);
+      const sourceOrganizations = hasConfiguredOrganizations && Array.isArray(configuredOrganizations)
+        ? configuredOrganizations.map((organization) => ({ organization }))
+        : hasConfiguredOrganizations && isObjectMap
+          ? Object.entries(configuredOrganizations).map(([key, organization]) => ({
+              key,
+              organization: typeof organization === "object" && organization
+                ? { code: key, ...organization }
+                : { code: key, name: typeof organization === "string" ? organization : key },
+            }))
+          : DEFAULTS.global_config.organizations.map((organization) => ({ organization }));
+      const organizations = sourceOrganizations.map(({ key, organization }) => {
+        const record = typeof organization === "string"
+          ? { code: organization }
+          : { ...(organization || {}) };
+        return { key, record };
+      });
+
+      let organizationEntry = organizations.find(({ key, record }) =>
+        organizationCodeFromRecord(record, key) === organizationCode,
+      );
+      if (!organizationEntry) {
+        const officialOrganization = DEFAULTS.global_config.organizations.find(
+          (organization) => normalizeOrganizationCode(organization.code) === organizationCode,
+        );
+        organizationEntry = {
+          record: officialOrganization
+            ? { ...officialOrganization }
+            : { code: organizationCode, name: organizationCode },
+        };
+        organizations.push(organizationEntry);
+      }
+
+      const existingAdviserEmails = [
+        organizationEntry.record.adviserEmail,
+        ...(Array.isArray(organizationEntry.record.adviserEmails)
+          ? organizationEntry.record.adviserEmails
+          : typeof organizationEntry.record.adviserEmails === "string"
+            ? [organizationEntry.record.adviserEmails]
+            : []),
+      ].map((value) => String(value || "").trim().toLowerCase()).filter(Boolean);
+      const updatedRecord = {
+        ...organizationEntry.record,
+        adviserEmail: existingAdviserEmails[0] || email,
+        adviserEmails: [...new Set([...existingAdviserEmails, email])],
+      };
+      organizationEntry.record = updatedRecord;
+
+      const nextOrganizations = isObjectMap
+        ? Object.fromEntries(organizations.map(({ key, record }) => [
+            key || organizationCodeFromRecord(record),
+            record,
+          ]))
+        : organizations.map(({ record }) => record);
+      transaction.set(configRef, { organizations: nextOrganizations }, { merge: true });
+    });
+  }
+
   async function createUserAndNotify(action) {
     const account = await createAuthAndProfile(action.data);
+    let adviserMappingError = null;
+    if (
+      action.data.role === "Admin" &&
+      isOrgAdviserSuffix(action.data.roleSuffix) &&
+      action.data.organizationCode
+    ) {
+      try {
+        await syncOrganizationAdviserMapping(action.data);
+      } catch (error) {
+        adviserMappingError = error;
+        console.error("Could not sync the organization adviser mapping.", error);
+      }
+    }
     const target = {
       uid: account.uid,
       id: account.uid,
@@ -807,6 +1184,9 @@ import { logoutSuperAdmin } from "./superAdminLogout.js";
         { field: "status", from: "", to: "Active" },
       ],
     });
+    const mappingNotice = adviserMappingError
+      ? " Organization adviser mapping could not be synced; the user profile was saved."
+      : "";
     try {
       await sendPasswordResetEmail(auth, action.data.email);
       await writeAuditEntry({
@@ -815,26 +1195,13 @@ import { logoutSuperAdmin } from "./superAdminLogout.js";
         summary: `Sent a password reset email to ${action.data.fullName}.`,
         changes: [{ field: "passwordResetEmail", from: "not sent", to: "sent" }],
       });
-      showToast(`Account created. A password reset email was sent to ${action.data.email}.`);
+      showToast(`Account created. A password reset email was sent to ${action.data.email}.${mappingNotice}`);
     } catch (error) {
-      showToast(`Account created, but the password reset email could not be sent: ${userActionError(error, "sending the password reset email")} UID: ${account.uid}`, "error");
+      showToast(`Account created, but the password reset email could not be sent: ${userActionError(error, "sending the password reset email")} UID: ${account.uid}.${mappingNotice}`, "error");
     }
     CREATE_FORM?.reset();
     accountNumberManuallyEdited = false;
     CREATE_DIALOG?.close();
-  }
-
-  async function confirmReset(action) {
-    const user = currentUserForAction(action);
-    if (!user?.email) throw new Error("This profile does not have an email address.");
-    await sendPasswordResetEmail(auth, user.email);
-    await writeAuditEntry({
-      action: "password_reset_sent",
-      target: user,
-      summary: `Sent a password reset email to ${user.fullName}.`,
-      changes: [{ field: "passwordResetEmail", from: "not sent", to: "sent" }],
-    });
-    showToast(`Password reset email sent to ${user.email}.`);
   }
 
   async function executePendingAction() {
@@ -846,8 +1213,7 @@ import { logoutSuperAdmin } from "./superAdminLogout.js";
     }
     try {
       if (action.type === "status") await confirmStatusChange(action);
-      else if (action.type === "role") await confirmRoleChange(action);
-      else if (action.type === "reset") await confirmReset(action);
+      else if (action.type === "delete-profile") await confirmDeleteUserProfile(action);
       else if (action.type === "create") await createUserAndNotify(action);
       ACTION_CONFIRM_DIALOG?.close();
       pendingAction = null;
@@ -895,10 +1261,66 @@ import { logoutSuperAdmin } from "./superAdminLogout.js";
     if (!force && accountNumberManuallyEdited) return;
     const suggestion = suggestAccountNumber(
       CREATE_ROLE_INPUT.value,
-      CREATE_ORGANIZATION_INPUT?.value.trim(),
+      CREATE_ORGANIZATION_SELECT?.value || CREATE_ORGANIZATION_INPUT?.value.trim(),
       CREATE_SUFFIX_INPUT?.value.trim(),
     );
     if (suggestion) CREATE_ACCOUNT_INPUT.value = suggestion;
+  }
+
+  function isOrgAdviserSuffix(value) {
+    return String(value || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "") === "orgadviser";
+  }
+
+  function updateCreateOrganizationField() {
+    const role = CREATE_ROLE_INPUT?.value;
+    const showOrganizationSelect = role === "Event Organizer" || role === "Admin";
+    if (CREATE_ORGANIZATION_SELECT_FIELD) {
+      CREATE_ORGANIZATION_SELECT_FIELD.hidden = !showOrganizationSelect;
+    }
+    if (CREATE_ORGANIZATION_FIELD) {
+      CREATE_ORGANIZATION_FIELD.hidden = role !== "Student";
+    }
+    if (CREATE_ORGANIZATION_INPUT) CREATE_ORGANIZATION_INPUT.required = false;
+    const label = CREATE_ORGANIZATION_SELECT_FIELD?.querySelector("span");
+    if (label) label.textContent = role === "Admin" ? "Organization (optional)" : "Organization";
+  }
+
+  async function loadOrganizationOptions(select = CREATE_ORGANIZATION_SELECT) {
+    if (!select) return;
+    const settings = await getSystemSettings("global_config");
+    const configuredOrganizations = Array.isArray(settings.organizations)
+      ? settings.organizations
+      : settings.organizations && typeof settings.organizations === "object"
+        ? Object.entries(settings.organizations).map(([code, organization]) =>
+            typeof organization === "object" && organization
+              ? { code, ...organization }
+              : code,
+          )
+        : [];
+    const organizations = configuredOrganizations.length
+      ? configuredOrganizations
+      : DEFAULTS.global_config.organizations;
+    const options = organizations
+      .map((organization) => ({
+        code: organizationCodeFromRecord(organization),
+        name: typeof organization === "object" && organization
+          ? String(organization.name || organization.organizationName || "")
+          : "",
+      }))
+      .filter((organization) => organization.code)
+      .filter((organization, index, values) => values.findIndex(
+        (value) => value.code === organization.code,
+      ) === index)
+      .map(({ code, name }) => {
+        const option = document.createElement("option");
+        option.value = code;
+        option.textContent = name ? `${code} — ${name}` : code;
+        return option;
+      });
+    select.replaceChildren(
+      new Option("Unassigned", ""),
+      ...options,
+    );
   }
 
   function setCreateRole(role) {
@@ -909,14 +1331,12 @@ import { logoutSuperAdmin } from "./superAdminLogout.js";
     if (CREATE_AUTH_FIELDS) CREATE_AUTH_FIELDS.hidden = false;
     if (CREATE_PASSWORD_INPUT) CREATE_PASSWORD_INPUT.required = true;
     if (CREATE_PASSWORD_CONFIRMATION_INPUT) CREATE_PASSWORD_CONFIRMATION_INPUT.required = true;
-    const needsOrganization = role === "Student" || role === "Event Organizer";
     const needsSuffix = ["Admin", "Teacher", "Super Admin"].includes(role);
-    if (CREATE_ORGANIZATION_FIELD) CREATE_ORGANIZATION_FIELD.hidden = !needsOrganization;
     if (CREATE_SUFFIX_FIELD) CREATE_SUFFIX_FIELD.hidden = !needsSuffix;
     if (CREATE_ACCOUNT_LABEL) {
       CREATE_ACCOUNT_LABEL.textContent = role === "Student" ? "Student number" : "Account number";
     }
-    if (CREATE_ORGANIZATION_INPUT) CREATE_ORGANIZATION_INPUT.required = role === "Event Organizer";
+    updateCreateOrganizationField();
     accountNumberManuallyEdited = false;
     updateAccountSuggestion(true);
     ACCOUNT_TYPE_DIALOG?.close();
@@ -930,6 +1350,9 @@ import { logoutSuperAdmin } from "./superAdminLogout.js";
       showToast("Wait for both user collections to load before creating an account.", "error");
       return;
     }
+    void loadOrganizationOptions().catch((error) => {
+      console.error("Could not load configured organizations for account creation.", error);
+    });
     ACCOUNT_TYPE_DIALOG?.showModal();
   }
 
@@ -1090,12 +1513,12 @@ import { logoutSuperAdmin } from "./superAdminLogout.js";
     CREATE_DIALOG?.addEventListener("close", () => {
       CREATE_FORM?.reset();
       if (CREATE_AUTH_FIELDS) CREATE_AUTH_FIELDS.hidden = true;
-      if (CREATE_ORGANIZATION_FIELD) CREATE_ORGANIZATION_FIELD.hidden = false;
       if (CREATE_SUFFIX_FIELD) CREATE_SUFFIX_FIELD.hidden = true;
       if (CREATE_MIDDLE_NAME_INPUT) CREATE_MIDDLE_NAME_INPUT.disabled = false;
       if (CREATE_PASSWORD_INPUT) CREATE_PASSWORD_INPUT.required = false;
       if (CREATE_PASSWORD_CONFIRMATION_INPUT) CREATE_PASSWORD_CONFIRMATION_INPUT.required = false;
       if (CREATE_ORGANIZATION_INPUT) CREATE_ORGANIZATION_INPUT.required = false;
+      updateCreateOrganizationField();
       accountNumberManuallyEdited = false;
     });
 
@@ -1107,7 +1530,11 @@ import { logoutSuperAdmin } from "./superAdminLogout.js";
     CREATE_PASSWORD_INPUT?.addEventListener("input", () => CREATE_PASSWORD_INPUT.setCustomValidity(""));
     CREATE_PASSWORD_CONFIRMATION_INPUT?.addEventListener("input", () => CREATE_PASSWORD_CONFIRMATION_INPUT.setCustomValidity(""));
     CREATE_ORGANIZATION_INPUT?.addEventListener("input", () => updateAccountSuggestion(false));
-    CREATE_SUFFIX_INPUT?.addEventListener("input", () => updateAccountSuggestion(false));
+    CREATE_ORGANIZATION_SELECT?.addEventListener("change", () => updateAccountSuggestion(false));
+    CREATE_SUFFIX_INPUT?.addEventListener("input", () => {
+      updateCreateOrganizationField();
+      updateAccountSuggestion(false);
+    });
 
     CREATE_NO_MIDDLE_NAME_INPUT?.addEventListener("change", () => {
       if (!CREATE_MIDDLE_NAME_INPUT) return;
@@ -1133,6 +1560,7 @@ import { logoutSuperAdmin } from "./superAdminLogout.js";
         password: CREATE_PASSWORD_INPUT.value,
         contactNumber: document.getElementById("new-user-contact")?.value.trim() || "",
         organization: CREATE_ORGANIZATION_INPUT?.value.trim() || "",
+        organizationCode: normalizeOrganizationCode(CREATE_ORGANIZATION_SELECT?.value),
         roleSuffix: CREATE_SUFFIX_INPUT?.value.trim() || "",
       };
       showConfirm(
@@ -1154,35 +1582,42 @@ import { logoutSuperAdmin } from "./superAdminLogout.js";
         status === "Suspended" ? "Suspend account" : "Reactivate account",
       );
     });
-    ROLE_ACTION_BUTTON?.addEventListener("click", () => {
-      const user = selectedUserKey ? getCurrentUser(selectedUserKey) : null;
-      if (!user || isOwnAccount(user)) return;
-      setRoleChoices(user);
-      ROLE_CHANGE_DIALOG?.showModal();
-      ROLE_SELECT?.focus();
+    EDIT_PROFILE_BUTTON?.addEventListener("click", () => {
+      void openEditProfile().catch((error) => {
+        console.error("Could not open the edit profile form.", error);
+        showToast(userActionError(error, "opening the profile editor"), "error");
+      });
     });
-    ROLE_SELECT?.addEventListener("change", updateRoleSubmitState);
-    ROLE_CHANGE_FORM?.addEventListener("submit", (event) => {
+    EDIT_ROLE_SELECT?.addEventListener("change", () => {
+      updateEditOrganizationFields(EDIT_ROLE_SELECT.value);
+    });
+    EDIT_PROFILE_FORM?.addEventListener("submit", async (event) => {
       event.preventDefault();
-      const user = selectedUserKey ? getCurrentUser(selectedUserKey) : null;
-      const role = ROLE_SELECT?.value;
-      if (!user || !role || !canChangeToRole(user, role)) return;
-      ROLE_CHANGE_DIALOG?.close();
-      showConfirm(
-        { type: "role", role, userKey: selectedUserKey },
-        "Confirm role change",
-        `Change ${user.fullName}'s role from ${user.role} to ${role}?`,
-        "Confirm role change",
-      );
+      if (!EDIT_PROFILE_FORM.reportValidity()) return;
+      if (EDIT_PROFILE_SAVE_BUTTON) {
+        EDIT_PROFILE_SAVE_BUTTON.disabled = true;
+        EDIT_PROFILE_SAVE_BUTTON.setAttribute("aria-busy", "true");
+      }
+      try {
+        await saveProfileEdits();
+      } catch (error) {
+        showToast(userActionError(error, "saving the profile"), "error");
+        console.error("User profile update failed.", error);
+      } finally {
+        if (EDIT_PROFILE_SAVE_BUTTON) {
+          EDIT_PROFILE_SAVE_BUTTON.disabled = false;
+          EDIT_PROFILE_SAVE_BUTTON.removeAttribute("aria-busy");
+        }
+      }
     });
-    RESET_ACTION_BUTTON?.addEventListener("click", () => {
+    DELETE_USER_BUTTON?.addEventListener("click", () => {
       const user = selectedUserKey ? getCurrentUser(selectedUserKey) : null;
-      if (!user?.email) return;
+      if (!user || DELETE_USER_BUTTON.disabled) return;
       showConfirm(
-        { type: "reset", userKey: selectedUserKey },
-        "Send password reset email",
-        `Send a password reset email to ${user.fullName} at ${user.email}?`,
-        "Send email",
+        { type: "delete-profile", userKey: selectedUserKey },
+        "Delete account profile?",
+        `Delete ${user.fullName}'s Firestore profile? This removes the profile from User Management, but the Firebase Authentication account will remain.`,
+        "Delete profile",
       );
     });
 

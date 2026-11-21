@@ -19,9 +19,8 @@
     student: [
       ["official", "PUP Official"],
       ["binan", "PUP Biñan"],
-      ["cite", "PUP CITE"],
-      ["ibits", "IBITS"],
-      ["faculty", "Teachers/Faculty"],
+      ["csc", "CSC"],
+      ["organizational", "Organizational"],
       ["external", "Others/External"],
       ["holiday", "Holiday"],
     ],
@@ -48,6 +47,7 @@
   let holidayRequestSequence = 0;
   let academicEntries = [];
   let academicByDate = new Map();
+  const academicEntriesByRange = new Map();
   let academicRangeKey = "";
   let academicUnsubscribe = null;
   let academicSequence = 0;
@@ -92,6 +92,33 @@
   function academicCategory(entry) {
     const category = String(entry?.category || "").trim().toLowerCase();
     return academicCategories[category] ? category : "other";
+  }
+
+  function isStudentCalendar() {
+    return Boolean(
+      document.querySelector('#calendarLegend[data-calendar-legend="student"]'),
+    );
+  }
+
+  function syncStudentOfficialColor() {
+    if (!isStudentCalendar()) return;
+    const swatch = document.querySelector(
+      '#calendarLegend .legend-item .dot-official',
+    );
+    if (!swatch) {
+      console.error("[Calendar] PUP Official legend swatch is missing.");
+      return;
+    }
+
+    const color = getComputedStyle(swatch).backgroundColor;
+    if (!color || color === "rgba(0, 0, 0, 0)") {
+      console.error("[Calendar] PUP Official legend swatch has no visible color.");
+      return;
+    }
+    document.documentElement.style.setProperty(
+      "--pup-official-calendar-color",
+      color,
+    );
   }
 
   function displayTitle(title) {
@@ -193,6 +220,13 @@
         }
       `).join("")}
       #calendarMain .calendar-day-event.academic-official-date::before { display: none; }
+      #calendarMain .calendar-day-event.academic-calendar-entry {
+        background-color: var(--pup-official-calendar-color, var(--cat-official, #8f2536)) !important;
+        color: #fff !important;
+      }
+      #calendarMain .dot-official {
+        background-color: var(--pup-official-calendar-color, var(--cat-official, #8f2536)) !important;
+      }
       ${Object.keys(academicCategories).map((category) => `
         .event-dots .dot-academic-${category},
         .legend-item .dot-academic-${category},
@@ -299,6 +333,7 @@
   function syncAcademicLegendItems() {
     const legend = document.getElementById("calendarLegend");
     if (!legend) return;
+    if (isStudentCalendar()) return;
 
     const categories = academicLegendCategories();
     const existing = [
@@ -349,6 +384,7 @@
     }
 
     const kind = legend.dataset.calendarLegend || "student";
+    if (kind === "student" && legend.querySelector(".legend-item")) return;
     const entries = legendSets[kind] || legendSets.student;
     if (kind === "organizer" || kind === "teacher") {
       legend.innerHTML = [
@@ -424,6 +460,13 @@
   }
 
   function isAcademicCategoryVisible(entry) {
+    if (isStudentCalendar()) {
+      const officialFilter = document.querySelector(
+        'input[type="checkbox"][data-source="PUP Official"]',
+      );
+      return !officialFilter || officialFilter.checked;
+    }
+
     const holidayFilter = document.querySelector(
       '[data-source="Holiday"], [data-category-key="holiday"], [data-calendar-category="Holiday"]',
     );
@@ -437,8 +480,25 @@
   }
 
   function visibleAcademicEntries(date) {
-    return (academicByDate.get(date) || [])
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date || "")) return [];
+    const mappedEntries = academicByDate.get(date) || [];
+    const rangedEntries = academicEntries.filter((entry) =>
+      /^\d{4}-\d{2}-\d{2}$/.test(entry.startDate || "") &&
+      /^\d{4}-\d{2}-\d{2}$/.test(entry.endDate || "") &&
+      entry.startDate <= date &&
+      date <= entry.endDate,
+    );
+    const seen = new Set();
+    return [...mappedEntries, ...rangedEntries]
       .filter(isAcademicCategoryVisible)
+      .filter((entry) => {
+        const key = String(
+          entry.id || `${entry.title || ""}:${entry.startDate}:${entry.endDate}`,
+        );
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      })
       .sort((first, second) => {
         const firstHoliday = academicCategory(first) === "holiday";
         const secondHoliday = academicCategory(second) === "holiday";
@@ -451,6 +511,7 @@
   }
 
   function ensureOfficialDateFilter() {
+    if (isStudentCalendar()) return;
     const adminFilter = document.querySelector(".admin-filter-panel");
     const panel = adminFilter || document.querySelector(".filter-panel");
     if (!panel) return;
@@ -538,11 +599,12 @@
   function makeAcademicBar(entry, date, kind) {
     const category = academicCategory(entry);
     const holiday = category === "holiday";
+    const studentCalendar = isStudentCalendar();
     const title = displayTitle(entry.title);
     let bar;
     if (kind === "student") {
       bar = document.createElement("span");
-      bar.className = `calendar-day-event ${holiday ? "dot-holiday" : "academic-official-date"}`;
+      bar.className = "calendar-day-event dot-official academic-official-date";
     } else if (kind === "admin") {
       bar = document.createElement("span");
       bar.className = `admin-event-bar ${holiday ? "category-holiday" : "academic-official-date"}`;
@@ -557,21 +619,35 @@
     bar.classList.add(
       "academic-calendar-entry",
       holiday ? "academic-holiday" : "academic-official-date",
-      `academic-category-${category}`,
     );
+    if (!studentCalendar) bar.classList.add(`academic-category-${category}`);
     if (kind !== "shared") bar.textContent = title;
     bar.title = title;
     bar.dataset.academicDate = date;
     bar.dataset.academicCategory = category;
+    if (studentCalendar) bar.dataset.source = "PUP Official";
+    if (studentCalendar) {
+      bar.style.setProperty(
+        "background-color",
+        "var(--pup-official-calendar-color, var(--cat-official, #8f2536))",
+        "important",
+      );
+    }
     bar.tabIndex = 0;
     bar.setAttribute("role", "button");
-    bar.setAttribute("aria-label", `${holiday ? "Holiday" : "Official Date"}: ${title}`);
+    bar.setAttribute(
+      "aria-label",
+      `${studentCalendar ? "PUP Official" : holiday ? "Holiday" : "Official Date"}: ${title}`,
+    );
     bar.style.pointerEvents = "auto";
     return bar;
   }
 
   function isHolidayBar(bar, kind) {
-    if (kind === "student") return bar.classList.contains("dot-holiday");
+    if (kind === "student") {
+      return bar.dataset.academicCategory === "holiday" ||
+        bar.classList.contains("dot-holiday");
+    }
     if (kind === "admin") return bar.classList.contains("category-holiday");
     return bar.classList.contains("bar-holiday") || bar.classList.contains("is-holiday-bar");
   }
@@ -593,9 +669,11 @@
     dots.replaceChildren();
     bars.slice(0, 3).forEach((bar) => {
       const categoryClass = bar.classList.contains("academic-calendar-entry")
-        ? bar.dataset.academicCategory === "holiday"
-          ? "dot-holiday"
-          : `dot-academic-${bar.dataset.academicCategory || "other"}`
+        ? isStudentCalendar()
+          ? "dot-official"
+          : bar.dataset.academicCategory === "holiday"
+            ? "dot-holiday"
+            : `dot-academic-${bar.dataset.academicCategory || "other"}`
         : [...bar.classList].find((className) => className.startsWith("dot-")) || "dot-external";
       const dot = document.createElement("span");
       dot.className = `dot ${categoryClass}`;
@@ -807,16 +885,25 @@
         ? todayManilaString()
         : entry.startDate;
       const category = academicCategories[academicCategory(entry)];
+      const studentCalendar = isStudentCalendar();
       const card = document.createElement("article");
       card.className = "academic-upcoming-item";
       card.dataset.academicDate = date;
+      if (studentCalendar) card.dataset.source = "PUP Official";
       card.tabIndex = 0;
       card.setAttribute("role", "button");
       card.style.setProperty(
         "--academic-color",
-        academicUpcomingColors[academicCategory(entry)],
+        studentCalendar
+          ? "var(--pup-official-calendar-color, var(--cat-official, #8f2536))"
+          : academicUpcomingColors[academicCategory(entry)],
       );
-      card.style.setProperty("--academic-tint", category.tint);
+      card.style.setProperty(
+        "--academic-tint",
+        studentCalendar
+          ? "#f7e9eb"
+          : category.tint,
+      );
       const datePart = document.createElement("span");
       datePart.className = "academic-upcoming-date";
       const [year, month, day] = date.split("-").map(Number);
@@ -832,7 +919,10 @@
       const title = document.createElement("strong");
       title.textContent = displayTitle(entry.title);
       const label = document.createElement("small");
-      label.textContent = category.label;
+      label.textContent =
+        studentCalendar
+          ? "PUP Official"
+          : category.label;
       copy.append(title, label);
       card.append(datePart, copy);
       list.appendChild(card);
@@ -856,6 +946,12 @@
 
   function popupLegendCategory(entry) {
     const category = academicCategory(entry);
+    if (isStudentCalendar()) {
+      return {
+        label: "PUP Official",
+        color: "var(--pup-official-calendar-color, var(--cat-official, #8f2536))",
+      };
+    }
     return {
       label: category === "holiday" ? "Holiday" : "Official Date",
       color: academicCategories[category].color,
@@ -877,7 +973,10 @@
       const item = document.createElement("article");
       item.className = "academic-calendar-popup-item";
       item.style.setProperty("--academic-color", legendCategory.color);
-      item.style.setProperty("--academic-tint", category.tint);
+      item.style.setProperty(
+        "--academic-tint",
+        isStudentCalendar() ? "#f7e9eb" : category.tint,
+      );
       const indicator = document.createElement("span");
       indicator.className = "academic-calendar-popup-indicator";
       indicator.setAttribute("aria-hidden", "true");
@@ -949,6 +1048,7 @@
   }
 
   function handleAcademicClick(event) {
+    if (isStudentCalendar()) return;
     const more = event.target.closest("[data-academic-more]");
     const card = event.target.closest("[data-academic-date]");
     const cell = event.target.closest("#calFullDays [data-date], #adminMonthGrid [data-date]");
@@ -958,6 +1058,7 @@
   }
 
   function handleAcademicKeydown(event) {
+    if (isStudentCalendar()) return;
     if (event.key !== "Enter" && event.key !== " ") return;
     const card = event.target.closest("[data-academic-date]");
     if (!card) return;
@@ -976,8 +1077,16 @@
     const sequence = academicSequence;
     academicUnsubscribe?.();
     academicUnsubscribe = null;
-    academicEntries = [];
-    academicByDate = new Map();
+    if (academicEntriesByRange.has(rangeKey)) {
+      academicEntries = academicEntriesByRange.get(rangeKey);
+    }
+    if (academicLookupBuilder) {
+      academicByDate = academicLookupBuilder(
+        academicEntries,
+        range.fromYmd,
+        range.toYmd,
+      );
+    }
     syncAcademicLegendItems();
     renderAcademicGrid();
 
@@ -999,6 +1108,7 @@
         range.toYmd,
         (entries) => {
           if (academicStopped || sequence !== academicSequence) return;
+          academicEntriesByRange.set(rangeKey, entries);
           academicEntries = entries;
           academicByDate = academicLookupBuilder(
             entries,
@@ -1011,8 +1121,11 @@
         },
         (error) => {
           if (academicStopped || sequence !== academicSequence) return;
-          academicEntries = [];
-          academicByDate = new Map();
+          academicByDate = academicLookupBuilder(
+            academicEntries,
+            range.fromYmd,
+            range.toYmd,
+          );
           syncAcademicLegendItems();
           console.error(
             "[Calendar] academicCalendar failed:",
@@ -1029,9 +1142,6 @@
       academicUnsubscribe = unsubscribe;
     }).catch((error) => {
       if (academicStopped || sequence !== academicSequence) return;
-      academicEntries = [];
-      academicByDate = new Map();
-      syncAcademicLegendItems();
       console.error(
         "[Calendar] academicCalendar failed:",
         error?.code || "unknown",
@@ -1152,6 +1262,7 @@
     academicStopped = false;
     addAcademicStyles();
     renderLegends();
+    syncStudentOfficialColor();
     renderGrid();
 
     const { grid, monthSelect, yearSelect } = calendarParts();
@@ -1202,7 +1313,9 @@
       if (
         event.target.matches(
           '[data-source="Holiday"], [data-source="Official Date"], [data-category-key="holiday"], [data-category-key="official-date"], [data-calendar-category="Holiday"], [data-calendar-category="Official Date"]',
-        )
+        ) ||
+        isStudentCalendar() &&
+          event.target.matches('[data-source="PUP Official"]')
       ) {
         renderAcademicGrid();
       }
@@ -1275,7 +1388,7 @@
     renderGrid,
     renderLegends,
     getAcademicEntriesForDate(date) {
-      return [...(academicByDate.get(date) || [])];
+      return [...visibleAcademicEntries(date)];
     },
     renderAcademicCalendar: renderAcademicGrid,
     setHolidays(nextHolidays) {

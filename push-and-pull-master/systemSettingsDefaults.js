@@ -8,6 +8,9 @@ export const DEFAULTS = Object.freeze({
   global_config: Object.freeze({
     loginEnabled: true,
     registrationEnabled: true,
+    userLoginEnabled: true,
+    eventRegistrationEnabled: true,
+    maintenanceMessage: "",
     organizations: [
       { code: "ACES", name: "Association of Computer Engineering Students", adviserEmail: "" },
       { code: "HRSS", name: "Human Resource Students Society", adviserEmail: "" },
@@ -60,6 +63,7 @@ export const DEFAULTS = Object.freeze({
   audience: Object.freeze({
     departments: [
       { code: "BSCpE", name: "Bachelor of Science in Computer Engineering", active: true },
+      { code: "DCET", name: "Diploma in Computer Engineering Technology", active: true },
       { code: "BSBA-HRM", name: "Bachelor of Science in Business Administration major in Human Resource Management", active: true },
       { code: "BSIT", name: "Bachelor of Science in Information Technology", active: true },
       { code: "DIT", name: "Diploma in Information Technology", active: true },
@@ -70,6 +74,7 @@ export const DEFAULTS = Object.freeze({
     ],
     programs: [
       { code: "BSCpE", name: "Bachelor of Science in Computer Engineering", active: true },
+      { code: "DCET", name: "Diploma in Computer Engineering Technology", active: true },
       { code: "BSBA-HRM", name: "Bachelor of Science in Business Administration major in Human Resource Management", active: true },
       { code: "BSIT", name: "Bachelor of Science in Information Technology", active: true },
       { code: "DIT", name: "Diploma in Information Technology", active: true },

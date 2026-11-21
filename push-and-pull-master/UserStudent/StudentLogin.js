@@ -7,8 +7,6 @@ import {
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
 import {
   collection,
-  doc,
-  getDoc,
   getDocs,
   limit,
   query,
@@ -16,6 +14,11 @@ import {
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 import { auth, authReady, db, isFirebaseConfigured } from "./firebaseConfig.js";
 import { clearCachedStudentProfile, loadStudentProfile } from "./studentIdentity.js";
+import {
+  maintenanceMessage,
+  readSystemAccessSettings,
+  takeMaintenanceNotice,
+} from "../systemAccess.js";
 
 const studentNumberInput = document.getElementById("student-number");
 const passwordInput = document.getElementById("student-pass");
@@ -71,6 +74,9 @@ function showBanner(message) {
   banner.classList.add("show");
 }
 
+const maintenanceNotice = takeMaintenanceNotice();
+if (maintenanceNotice) showBanner(maintenanceNotice);
+
 function loginErrorMessage(error) {
   switch (error?.code) {
     case "auth/invalid-credential":
@@ -118,28 +124,19 @@ async function signIn() {
   banner.classList.add("show");
 
   try {
-    let loginAllowed = true;
-    const cached = localStorage.getItem("recovibeSystemSettings");
-    if (cached) {
-      try {
-        const parsed = JSON.parse(cached);
-        if (parsed && parsed.loginEnabled === false) loginAllowed = false;
-      } catch (_) {}
+    let accessSettings;
+    try {
+      accessSettings = await readSystemAccessSettings(db);
+    } catch (error) {
+      console.error("[StudentLogin] Could not verify login availability:", {
+        code: error?.code || "unknown",
+        message: error?.message || String(error),
+      });
+      showBanner("Could not verify sign-in availability. Check your connection and try again.");
+      return;
     }
-    if (loginAllowed && db) {
-      try {
-        const snap = await getDoc(doc(db, "systemSettings", "default"));
-        if (snap.exists() && snap.data()?.loginEnabled === false) {
-          loginAllowed = false;
-        }
-      } catch (sysErr) {
-        if (sysErr?.code !== "permission-denied" && sysErr?.code !== "firestore/permission-denied") {
-          throw sysErr;
-        }
-      }
-    }
-    if (!loginAllowed) {
-      showBanner("System maintenance is in progress. Student sign-in is temporarily disabled. Only super administrators can sign in at this time.");
+    if (!accessSettings.userLoginEnabled) {
+      showBanner(maintenanceMessage(accessSettings));
       return;
     }
 
@@ -180,6 +177,13 @@ async function signIn() {
       );
     }
     const credential = await signInWithEmailAndPassword(auth, email, password);
+    accessSettings = await readSystemAccessSettings(db);
+    if (!accessSettings.userLoginEnabled) {
+      await signOut(auth);
+      clearCachedStudentProfile();
+      showBanner(maintenanceMessage(accessSettings));
+      return;
+    }
     const profile = await loadStudentProfile(credential.user, {
       storage: rememberMe.checked ? "local" : "session",
       createIfMissing: true,

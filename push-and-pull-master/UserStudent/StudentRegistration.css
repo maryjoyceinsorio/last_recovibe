@@ -1452,3 +1452,31 @@ body.is-leaving {
     font-size: 9px;
   }
 }
+
+#student-registration-form .form-error {
+  min-height: 0;
+  padding: 11px 14px;
+  border: 1px solid #f0bfaa;
+  border-left: 4px solid #e0a93b;
+  border-radius: 8px;
+  background: #fff3e7;
+  color: #58111a;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.5;
+}
+
+#student-registration-form .form-error:empty {
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+
+#field-reg-course-organization .filter-button:disabled {
+  border-color: var(--line);
+  background: var(--cream-dim);
+  color: var(--ink-dim);
+  cursor: not-allowed;
+  opacity: 0.8;
+}

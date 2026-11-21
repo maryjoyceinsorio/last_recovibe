@@ -10,6 +10,11 @@ import {
   getDoc,
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 import { auth, authReady, db, isFirebaseConfigured } from "../UserStudent/firebaseConfig.js";
+import {
+  maintenanceMessage,
+  readSystemAccessSettings,
+  takeMaintenanceNotice,
+} from "../systemAccess.js";
 
 (() => {
   const emailInput = document.getElementById("login-email");
@@ -67,6 +72,7 @@ import { auth, authReady, db, isFirebaseConfigured } from "../UserStudent/fireba
       "recovibeAdminId",
       "recovibeOrganizerProfile",
       "recovibeOrganizerId",
+      "recovibeCurrentUser",
     ].forEach((key) => localStorage.removeItem(key));
   }
 
@@ -74,6 +80,9 @@ import { auth, authReady, db, isFirebaseConfigured } from "../UserStudent/fireba
     banner.textContent = message;
     banner.classList.add("show");
   }
+
+  const maintenanceNotice = takeMaintenanceNotice();
+  if (maintenanceNotice) showError(maintenanceNotice);
 
   function authErrorMessage(error) {
     switch (error?.code) {
@@ -249,15 +258,25 @@ import { auth, authReady, db, isFirebaseConfigured } from "../UserStudent/fireba
       };
 
       if (normalizedRole !== "superadmin") {
+        let accessSettings;
         try {
-          const sys = JSON.parse(localStorage.getItem("recovibeSystemSettings") || "{}");
-          if (sys && sys.loginEnabled === false) {
-            await signOut(auth);
-            clearStoredProfiles();
-            showError("System maintenance is in progress. User login is temporarily disabled. Only super administrators can sign in at this time.");
-            return;
-          }
-        } catch (_) {}
+          accessSettings = await readSystemAccessSettings(db);
+        } catch (error) {
+          await signOut(auth);
+          clearStoredProfiles();
+          console.error("[AdminLogin] Could not verify login availability:", {
+            code: error?.code || "unknown",
+            message: error?.message || String(error),
+          });
+          showError("Could not verify sign-in availability. Check your connection and try again.");
+          return;
+        }
+        if (!accessSettings.userLoginEnabled) {
+          await signOut(auth);
+          clearStoredProfiles();
+          showError(maintenanceMessage(accessSettings));
+          return;
+        }
       }
 
       if (normalizedRole === "superadmin") {

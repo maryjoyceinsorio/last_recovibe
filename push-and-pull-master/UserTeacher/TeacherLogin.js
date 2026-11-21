@@ -7,6 +7,11 @@ import {
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
 import { doc, getDoc } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 import { auth, authReady, db, isFirebaseConfigured } from "../UserStudent/firebaseConfig.js";
+import {
+  maintenanceMessage,
+  readSystemAccessSettings,
+  takeMaintenanceNotice,
+} from "../systemAccess.js";
 
 (() => {
   const emailInput = document.getElementById("login-email");
@@ -16,6 +21,11 @@ import { auth, authReady, db, isFirebaseConfigured } from "../UserStudent/fireba
   const rememberMe = document.getElementById("remember-me");
   const rememberedEmailKey = "rememberedEmail_teacher";
   let signInVerified = false;
+  const maintenanceNotice = takeMaintenanceNotice();
+  if (maintenanceNotice) {
+    banner.textContent = maintenanceNotice;
+    banner.classList.add("show");
+  }
   const setInvalid = (id, invalid) =>
     document.getElementById(id).classList.toggle("invalid", invalid);
 
@@ -75,6 +85,24 @@ import { auth, authReady, db, isFirebaseConfigured } from "../UserStudent/fireba
     loginButton.textContent = "Signing in...";
     let authenticated = false;
     try {
+      let accessSettings;
+      try {
+        accessSettings = await readSystemAccessSettings(db);
+      } catch (error) {
+        console.error("[TeacherLogin] Could not verify login availability:", {
+          code: error?.code || "unknown",
+          message: error?.message || String(error),
+        });
+        banner.textContent = "Could not verify sign-in availability. Check your connection and try again.";
+        banner.classList.add("show");
+        return;
+      }
+      if (!accessSettings.userLoginEnabled) {
+        banner.textContent = maintenanceMessage(accessSettings);
+        banner.classList.add("show");
+        return;
+      }
+
       await authReady;
       try {
         await setPersistence(
@@ -108,6 +136,14 @@ import { auth, authReady, db, isFirebaseConfigured } from "../UserStudent/fireba
           code: "profile/role-mismatch",
         });
       }
+      accessSettings = await readSystemAccessSettings(db);
+      if (!accessSettings.userLoginEnabled) {
+        await signOut(auth);
+        authenticated = false;
+        banner.textContent = maintenanceMessage(accessSettings);
+        banner.classList.add("show");
+        return;
+      }
 
       const teacher = {
         ...profile,
@@ -125,10 +161,7 @@ import { auth, authReady, db, isFirebaseConfigured } from "../UserStudent/fireba
       signInVerified = true;
       window.location.assign("TeacherDashBoard.html");
     } catch (error) {
-      if (
-        authenticated &&
-        ["profile/not-found", "profile/role-mismatch"].includes(error?.code)
-      ) {
+      if (authenticated && !signInVerified) {
         try {
           await signOut(auth);
         } catch (signOutError) {

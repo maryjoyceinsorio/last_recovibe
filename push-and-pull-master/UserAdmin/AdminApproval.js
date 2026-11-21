@@ -28,6 +28,7 @@ import {
     "organizationCodes",
     "organizationId",
     "orgCode",
+    "org",
     "orgId",
     "organization",
     "organizationName",
@@ -48,6 +49,7 @@ import {
     "organizationCodes",
     "organizationId",
     "orgCode",
+    "org",
     "orgId",
     "organization",
     "organizationName",
@@ -68,6 +70,7 @@ import {
     "organizationId",
     "organizationCode",
     "organizerOrg",
+    "org",
     "organizerOrganization",
     "organization",
     "organizationName",
@@ -87,6 +90,11 @@ import {
       ) return "piie";
       return normalized;
     };
+  const organizationIdFromRoleSuffix = (value) =>
+    normalizeOrganizationId(value).replace(
+      /(?:organizationadviser|organizationadvisor|orgadviser|orgadvisor)/g,
+      "",
+    );
   const debugLog = (...args) => {
     if (DEBUG) console.debug("[AdminApproval]", ...args);
   };
@@ -105,6 +113,7 @@ import {
           entry.organizationId,
           entry.organizationName,
           entry.orgCode,
+          entry.org,
           entry.orgId,
           entry.orgName,
           entry.organizerOrg,
@@ -174,9 +183,26 @@ import {
     { id: "osas", key: "osas", reviewer: "osas", step: 4, name: "osas", reviewer: "osas", required: true },
   ];
   const normalizeApprovalKey = (value) => String(value || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+  const isOrgAdviserProfile = (profile) => {
+    const identityValues = [
+      profile?.role,
+      profile?.userRole,
+      profile?.roleSuffix,
+      profile?.accountNumber,
+      profile?.accountNo,
+      profile?.account_number,
+      profile?.account_no,
+      profile?.userType,
+      profile?.user_type,
+    ].map(normalizeApprovalKey).filter(Boolean);
+    return identityValues.some((value) =>
+      ["orgadviser", "orgadvisor", "organizationadviser", "organizationadvisor"]
+        .some((marker) => value.includes(marker)),
+    );
+  };
   const isOrganizationAdviserStage = (value) => {
     const values = value && typeof value === "object"
-      ? [value.roleKey, value.key, value.id, value.name, value.label, value.reviewer]
+      ? [value.roleKey, value.key, value.id, value.name, value.label, value.reviewer, value.roleSuffix]
       : [value];
     const adviserKeys = new Set(["orgadv", "orgadviser", "orgadvisor", "organizationadviser", "organizationadvisor", "organizationadviserreview"]);
     return values.some((item) => adviserKeys.has(normalizeApprovalKey(item)));
@@ -206,6 +232,9 @@ import {
     return null;
   };
   const getApprovalStageForProfile = (profile) => {
+    if (isOrgAdviserProfile(profile)) {
+      return APPROVAL_ACCOUNT_STAGES.find((stage) => stage.key === "org_adv");
+    }
     const accountStage = getApprovalStageFromAccountNumber(profile);
     if (accountStage) return accountStage;
 
@@ -217,6 +246,7 @@ import {
       profile?.approverKey,
       profile?.approvalRole,
       profile?.approverRole,
+      profile?.roleSuffix,
       profile?.assignedRole,
       profile?.assignedApprover,
       profile?.adminRole,
@@ -225,6 +255,8 @@ import {
       profile?.position,
       profile?.role,
       profile?.userRole,
+      profile?.userType,
+      profile?.user_type,
     ].map(normalizeApprovalKey).filter(Boolean);
     const matches = APPROVAL_ACCOUNT_STAGES.filter((stage) =>
       [stage.key, ...stage.aliases].some((alias) => identityValues.includes(normalizeApprovalKey(alias))),
@@ -415,6 +447,18 @@ import {
       ? globalConfigResult.value.data() || {}
       : {};
     const signedInEmail = String(user.email || cachedProfile.email || "").trim().toLowerCase();
+    const organizationDirectory = Array.isArray(globalConfig.organizations)
+      ? globalConfig.organizations.map((organization) =>
+          typeof organization === "object" && organization
+            ? organization
+            : { code: String(organization || "") },
+        )
+      : globalConfig.organizations && typeof globalConfig.organizations === "object"
+        ? Object.entries(globalConfig.organizations).map(([code, organization]) => ({
+            code,
+            ...(organization && typeof organization === "object" ? organization : {}),
+          }))
+        : [];
     const emailMatchedOrganizations = [];
     const collectAdviserEmailMatches = (organization) => {
       if (!organization || typeof organization !== "object") return;
@@ -435,28 +479,67 @@ import {
       if (signedInEmail && emails.includes(signedInEmail)) {
         emailMatchedOrganizations.push(
           organization.organizationCode || organization.orgCode ||
-          organization.code || organization.id || organization.organization ||
-          organization.organizationName || organization.organization?.code ||
-          organization.organization?.id || organization.organization?.name ||
+          organization.org?.code || organization.org?.id ||
+          (typeof organization.org === "string" ? organization.org : "") ||
+          organization.code || organization.id ||
+          organization.organization?.code || organization.organization?.id ||
+          organizationIdFromRoleSuffix(organization.roleSuffix) ||
+          (typeof organization.organization === "string" ? organization.organization : "") ||
+          organization.organizationName || organization.organization?.name ||
           organization.name,
         );
       }
     };
-    if (Array.isArray(globalConfig.organizations)) {
-      globalConfig.organizations.forEach(collectAdviserEmailMatches);
-    } else if (globalConfig.organizations && typeof globalConfig.organizations === "object") {
-      Object.entries(globalConfig.organizations).forEach(([code, organization]) =>
-        collectAdviserEmailMatches({
-          code,
-          ...(organization && typeof organization === "object" ? organization : {}),
-        }),
+    organizationDirectory.forEach(collectAdviserEmailMatches);
+    const profileIdentityRecords = [
+      adminProfile,
+      userProfile,
+      approverOrganizations,
+      cachedProfile,
+    ].filter((profile) => profile && typeof profile === "object");
+    const adviserIdentityValues = profileIdentityRecords.flatMap((profile) => [
+      profile.roleSuffix,
+      profile.accountNumber,
+      profile.accountNo,
+      profile.account_number,
+      profile.account_no,
+      profile.userType,
+      profile.user_type,
+    ]).map(normalizeOrganizationId).filter(Boolean);
+    const suffixMatchedOrganizations = organizationDirectory
+      .filter((organization) => {
+        const code = normalizeOrganizationId(
+          organization.organizationCode ||
+          organization.orgCode ||
+          organization.org ||
+          organization.code ||
+          organization.id ||
+          organization.organization?.code ||
+          organization.organization?.id ||
+          organizationIdFromRoleSuffix(organization.roleSuffix),
+        );
+        const hasAdviserMarker = adviserIdentityValues.some((value) =>
+          ["orgadviser", "orgadvisor", "organizationadviser", "organizationadvisor"]
+            .some((marker) => value.includes(marker)),
+        );
+        return code.length >= 3 && hasAdviserMarker &&
+          adviserIdentityValues.some((value) => value.includes(code));
+      })
+      .map((organization) =>
+        organization.organizationCode ||
+        organization.orgCode ||
+        organization.org ||
+        organization.code ||
+        organization.id ||
+        organization.organization?.code ||
+        organization.organization?.id ||
+        organizationIdFromRoleSuffix(organization.roleSuffix),
       );
-    }
     diagnosticAdminUserOrganizations = [...getOrganizationValues(adminProfile)];
     diagnosticUsersOrganizations = [...getOrganizationValues(userProfile)];
     diagnosticApproverOrganizations = [...getOrganizationValues(approverOrganizations)];
     diagnosticGlobalConfigOrganizations = [...getOrganizationValues(
-      { organizations: emailMatchedOrganizations },
+      { organizations: [...emailMatchedOrganizations, ...suffixMatchedOrganizations] },
     )];
     currentAdminOrganizationIds = new Set([
       ...getOrganizationValues(approverOrganizations),
@@ -464,12 +547,17 @@ import {
       ...getOrganizationValues(adminProfile),
       ...getOrganizationValues(cachedProfile),
       ...getOrganizationValues({ organizations: emailMatchedOrganizations }),
+      ...getOrganizationValues({ organizations: suffixMatchedOrganizations }),
     ]);
     currentAdminOrganizationQueryValues = [
       ...getRawOrganizationValues(approverOrganizations, ORGANIZATION_QUERY_FIELDS),
       ...getRawOrganizationValues(adminProfile, ORGANIZATION_QUERY_FIELDS),
       ...getRawOrganizationValues(userProfile, ORGANIZATION_QUERY_FIELDS),
       ...getRawOrganizationValues(cachedProfile, ORGANIZATION_QUERY_FIELDS),
+      ...getRawOrganizationValues(
+        { organizations: [...emailMatchedOrganizations, ...suffixMatchedOrganizations] },
+        ORGANIZATION_QUERY_FIELDS,
+      ),
     ].filter((value, index, values) => value && values.indexOf(value) === index);
     if (approverOrganizationsResult.status === "rejected") {
       debugLog("Could not read approverOrganizations for user.", {
@@ -498,9 +586,31 @@ import {
 
   function isCurrentAdminOrganization(event) {
     if (!isOrgAdviserReviewer(getAccountStage())) return true;
-    if (currentAdminOrganizationIds.size === 0) return false;
-    return getOrganizationValues(event, EVENT_ORGANIZATION_FIELDS)
+    const organizationMatch = getOrganizationValues(event, EVENT_ORGANIZATION_FIELDS)
       .some((organizationId) => currentAdminOrganizationIds.has(organizationId));
+    if (organizationMatch) return true;
+
+    const stageKey = getFirestoreCurrentStageKey(event);
+    const stage = getConfiguredFirestoreStages(event)
+      .find((candidate) => candidate.key === stageKey);
+    const stageRole = resolveApprovalStageFromValues([
+      stage?.key,
+      stage?.source?.key,
+      stage?.source?.roleKey,
+      stage?.source?.id,
+      stage?.label,
+      stage?.name,
+      stage?.reviewer,
+    ])?.key;
+    if (stageRole !== "org_adv") return false;
+    const assignment = getStageAssignment(event, stage);
+    const user = auth?.currentUser;
+    return Boolean(
+      user &&
+      ((assignment.email && user.email &&
+        assignment.email === user.email.trim().toLowerCase()) ||
+        (assignment.uid && assignment.uid === user.uid)),
+    );
   }
 
   function getFirestoreStageEntries(event) {
@@ -1123,84 +1233,92 @@ import {
   }, 15000);
   authStateHandler = async (user) => {
     if (adminStartupExpired) return;
-    if (!user) {
-      clearTimeout(adminStartupTimeout);
-      adminStartupTimeout = null;
-      location.replace("AdminLogin.html");
-      return;
-    }
-    currentAdminUid = user.uid;
-    verifiedAdminProfileUid = null;
+    try {
+      if (!user) {
+        location.replace("AdminLogin.html");
+        return;
+      }
+      currentAdminUid = user.uid;
+      verifiedAdminProfileUid = null;
 
-    let storedProfile = {};
-    try {
-      storedProfile = JSON.parse(localStorage.getItem("recovibeAdminProfile") || "{}");
-    } catch (error) {
-      console.warn("Could not read the cached administrator profile:", error);
-    }
-    if (user && storedProfile.uid && storedProfile.uid !== user.uid) storedProfile = {};
-    try {
+      let storedProfile = {};
+      try {
+        storedProfile = JSON.parse(localStorage.getItem("recovibeAdminProfile") || "{}");
+      } catch (error) {
+        console.warn("Could not read the cached administrator profile:", error);
+      }
+      if (storedProfile.uid && storedProfile.uid !== user.uid) storedProfile = {};
       currentAdminProfile = await loadAdminProfileSafely(user, storedProfile);
       if (adminStartupExpired) return;
-    } catch (error) {
-      clearTimeout(adminStartupTimeout);
-      adminStartupTimeout = null;
-      showDashboardLoadError(error);
-      return;
-    }
-    clearTimeout(adminStartupTimeout);
-    adminStartupTimeout = null;
 
-    const profileRole = String(currentAdminProfile.role || currentAdminProfile.userRole || "")
-      .trim().toLowerCase().replace(/[\s_-]+/g, "");
-    if (profileRole !== "admin" || !getApprovalStageForProfile(currentAdminProfile)) {
-      alert("Access restricted to administrators.");
-      location.replace("AdminLogin.html");
-      return;
-    }
+      const profileRoles = [
+        currentAdminProfile.role,
+        currentAdminProfile.userRole,
+      ].map(normalizeApprovalKey).filter(Boolean);
+      const hasReviewerAccess = profileRoles.some((role) =>
+        ["admin", "administrator", "superadmin", "superadministrator", "orgadviser", "orgadvisor"]
+          .includes(role),
+      ) || isOrgAdviserProfile(currentAdminProfile);
+      if (!hasReviewerAccess) {
+        showDashboardLoadError(new Error("Access restricted to administrators."));
+        alert("Access restricted to administrators.");
+        location.replace("AdminLogin.html");
+        return;
+      }
 
-    const assignedStage = getAccountStage();
-    const adminName = getProfileName(
-      currentAdminProfile,
-      auth?.currentUser?.displayName || auth?.currentUser?.email?.split("@")[0] || "",
-    );
-    const adminPosition = [
-      currentAdminProfile.position,
-      currentAdminProfile.title,
-      currentAdminProfile.role_title,
-      currentAdminProfile.approver_role,
-      currentAdminProfile.approverRole,
-    ].map((value) => String(value || "").trim()).find(Boolean) || "";
-    const nameEl = document.querySelector("[data-name]");
-    const avatarEl = document.querySelector("[data-avatar]");
+      const assignedStage = getAccountStage();
+      const adminName = getProfileName(
+        currentAdminProfile,
+        auth?.currentUser?.displayName || auth?.currentUser?.email?.split("@")[0] || "",
+      );
+      const adminPosition = [
+        currentAdminProfile.position,
+        currentAdminProfile.title,
+        currentAdminProfile.role_title,
+        currentAdminProfile.approver_role,
+        currentAdminProfile.approverRole,
+      ].map((value) => String(value || "").trim()).find(Boolean) || "";
+      const nameEl = document.querySelector("[data-name]");
+      const avatarEl = document.querySelector("[data-avatar]");
 
-    if (nameEl) nameEl.textContent = adminName.toUpperCase();
-    if (avatarEl) {
-      avatarEl.textContent = adminName
-        .trim()
-        .split(/\s+/)
-        .slice(0, 2)
-        .map((p) => p[0])
-        .join("")
-        .toUpperCase();
-    }
-    const roleEl = document.querySelector("[data-role]");
-    if (roleEl) {
-      roleEl.textContent = getStageLabel(assignedStage?.key) || adminPosition;
-      roleEl.title = roleEl.textContent;
-    }
+      if (nameEl) nameEl.textContent = adminName.toUpperCase();
+      if (avatarEl) {
+        avatarEl.textContent = adminName
+          .trim()
+          .split(/\s+/)
+          .slice(0, 2)
+          .map((p) => p[0])
+          .join("")
+          .toUpperCase();
+      }
+      const roleEl = document.querySelector("[data-role]");
+      if (roleEl) {
+        roleEl.textContent = getStageLabel(assignedStage?.key) || adminPosition;
+        roleEl.title = roleEl.textContent;
+      }
 
-    try {
       await initAdminData();
     } catch (error) {
       showDashboardLoadError(error);
+    } finally {
+      clearTimeout(adminStartupTimeout);
+      adminStartupTimeout = null;
+      if (!user && !approvalPageLoadSignaled) {
+        settleInitialApprovalSource("directory");
+        settleInitialApprovalSource("firestore");
+        settleInitialApprovalSource("queue");
+        settleInitialApprovalSource("decisions");
+      }
     }
-
   };
   unsubscribeAuthState = onAuthStateChanged(auth, authStateHandler);
 
   function showDashboardLoadError(error) {
     console.error("Could not initialize the admin approval dashboard:", error);
+    settleInitialApprovalSource("directory");
+    settleInitialApprovalSource("firestore");
+    settleInitialApprovalSource("queue");
+    settleInitialApprovalSource("decisions");
     if (!root) return;
     root.innerHTML = `
       <div class="queue-empty-box" role="alert">
@@ -1210,10 +1328,6 @@ import {
       </div>
     `;
     root.querySelector("#retryApprovalDashboard")?.addEventListener("click", () => window.location.reload());
-    settleInitialApprovalSource("directory");
-    settleInitialApprovalSource("firestore");
-    settleInitialApprovalSource("queue");
-    settleInitialApprovalSource("decisions");
   }
 
   async function initAdminData() {

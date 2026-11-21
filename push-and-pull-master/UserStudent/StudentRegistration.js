@@ -35,9 +35,20 @@ const noMiddleNameBox = document.getElementById("no-middle-name");
 const namePattern = /^[\p{L}\p{M}]+(?:[ .'-][\p{L}\p{M}]+)*\.?$/u;
 const emailPattern =
   /^(?=.{1,254}$)(?!.*\.\.)[A-Z0-9!#$%&'*+/=?^_`{|}~-]+(?:\.[A-Z0-9!#$%&'*+/=?^_`{|}~-]+)*@(?:[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?\.)+[A-Z]{2,}$/i;
-const studentNumberPattern = /^(\d{4})-(\d{5})-BN-([01])$/;
+const studentNumberPattern = /^\d{4}-(?!00000)\d{5}-BN-\d$/;
 const contactPattern = /^09[0-9]{9}$/;
 const yearPattern = /^[1-5]-[1-5]$/;
+const departmentOrganizationMap = Object.freeze({
+  BSCpE: "ACES",
+  DCET: "ACES",
+  "BSBA-HRM": "HRSS",
+  BSIT: "IBITS",
+  DIT: "IBITS",
+  BSIE: "PIIE",
+  BSP: "SMS",
+  BEEd: "YES",
+  BSEd: "YES",
+});
 const touchedFields = new Set();
 let submitted = false;
 let studentNumberPasteError = "";
@@ -118,14 +129,13 @@ function normalizeStudentNumber(value) {
   return String(value || "")
     .replace(/\s/g, "")
     .toUpperCase()
-    .replace(/[^0-9BN-]/g, "")
-    .slice(0, 16);
+    .slice(0, 15);
 }
 
 function studentNumberValidationMessage(value) {
   const normalized = String(value || "").trim().toUpperCase();
   if (!normalized) return "Student number is required.";
-  const parts = /^(\d{4})-(\d{5})-([A-Z]{2})-(\d+)$/.exec(normalized);
+  const parts = /^(\d{4})-(\d{5})-([A-Z]{2})-(\d)$/.exec(normalized);
   if (!parts) return "Student number must follow the format 2025-12345-BN-0.";
   const year = Number(parts[1]);
   const currentYear = new Date().getFullYear();
@@ -134,7 +144,6 @@ function studentNumberValidationMessage(value) {
   }
   if (parts[2] === "00000") return "Enter a valid 5-digit student number.";
   if (parts[3] !== "BN") return "Campus code must be BN (PUP Biñan).";
-  if (!/^[01]$/.test(parts[4])) return "The last digit must be 0 or 1.";
   return studentNumberPattern.test(normalized)
     ? ""
     : "Student number must follow the format 2025-12345-BN-0.";
@@ -549,6 +558,40 @@ Object.entries(fields).forEach(([name, control]) => {
   }
 });
 
+function updateCourseOrganization() {
+  const organization = departmentOrganizationMap[fields.department.value] || "";
+  const locked = Boolean(organization);
+  const organizationChanged = fields.courseOrganization.value !== organization;
+  fields.courseOrganization.value = organization;
+  fields.courseOrganization.disabled = locked;
+  fields.courseOrganization.setAttribute("aria-disabled", String(locked));
+  if (organizationChanged) {
+    fields.courseOrganization.dispatchEvent(
+      new Event("change", { bubbles: true }),
+    );
+  }
+
+  const wrapper = fields.courseOrganization.closest(".field");
+  const button = wrapper.querySelector(
+    ".native-filter-dropdown .filter-button",
+  );
+  const menu = wrapper.querySelector(".native-filter-dropdown .filter-menu");
+  if (button) {
+    button.disabled = locked;
+    button.setAttribute("aria-disabled", String(locked));
+    if (locked) button.setAttribute("aria-expanded", "false");
+  }
+  if (menu) {
+    menu.classList.remove("show");
+    menu.querySelectorAll(".filter-option").forEach((option) => {
+      option.disabled = locked;
+    });
+  }
+}
+
+fields.department.addEventListener("change", updateCourseOrganization);
+updateCourseOrganization();
+
 noMiddleNameBox.addEventListener("change", () => {
   fields.middleName.disabled = noMiddleNameBox.checked;
   fields.middleName.setAttribute(
@@ -649,6 +692,7 @@ form.addEventListener("submit", async (event) => {
   );
   fields.contact.value = normalizePhone(fields.contact.value);
   fields.year.value = normalizeYear(fields.year.value);
+  updateCourseOrganization();
   if (!validateAll()) return;
 
   if (!isFirebaseConfigured || !auth || !db) {
@@ -666,7 +710,9 @@ form.addEventListener("submit", async (event) => {
   const department = fields.department.selectedOptions?.[0]?.textContent.trim() || valueOf(fields.department);
   const departmentCode = fields.department.value;
   const year = valueOf(fields.year);
-  const organization = String(fields.courseOrganization.value || "").trim();
+  const organization =
+    departmentOrganizationMap[departmentCode] ||
+    String(fields.courseOrganization.value || "").trim();
   const gender = fields.gender.value;
 
   // 1:1 Form Layout mapping

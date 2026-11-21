@@ -11,6 +11,7 @@ import {
   setDoc,
   updateDoc,
   where,
+  writeBatch,
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 import { onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
 import { auth, db, isFirebaseConfigured } from "../UserStudent/firebaseConfig.js";
@@ -25,6 +26,8 @@ import {
   const DEBUG = false;
 
   const settingsRef = db ? doc(db, "system_settings", "global_config") : null;
+  const publicAccessSettingsRef = db ? doc(db, "systemSettings", "default") : null;
+  const legacyAccessSettingsRef = db ? doc(db, "system_settings", "access") : null;
 
   // General settings controls
   const mainOrgSelect = document.getElementById("setting-main-org");
@@ -147,6 +150,9 @@ import {
     approvalStages: defaultApprovalStages,
     registrationEnabled: true,
     loginEnabled: true,
+    eventRegistrationEnabled: true,
+    userLoginEnabled: true,
+    maintenanceMessage: "",
     venues: [],
     categories: [],
     eventSources: [],
@@ -167,6 +173,7 @@ import {
   let initializingDocument = false;
   let backfillingDefaults = null;
   let pendingSettingsSync = null;
+  let accessMirrorSynced = false;
   let unsubscribeSettings = null;
   const pendingSettingsKey = "recovibe_system_settings_pending";
 
@@ -463,11 +470,21 @@ import {
         const revision = pending.revision || pending.savedAt;
         const pendingSettings = normalizedSettings(pending.settings);
         delete pendingSettings.approvalStagesByOrg;
-        await setDoc(settingsRef, {
+        const accessFields = getAccessSettingsFields(pendingSettings);
+        const batch = writeBatch(db);
+        batch.set(settingsRef, {
           ...pendingSettings,
           updatedAt: serverTimestamp(),
           updatedBy: actorIdentifier(),
         }, { merge: true });
+        if (publicAccessSettingsRef) {
+          batch.set(publicAccessSettingsRef, {
+            ...accessFields,
+            updatedAt: serverTimestamp(),
+            updatedBy: actorIdentifier(),
+          }, { merge: true });
+        }
+        await batch.commit();
         synced = true;
 
         let latestPending;
@@ -492,7 +509,10 @@ import {
     try {
       return await pendingSettingsSync;
     } catch (error) {
-      if (DEBUG) console.error("Could not sync pending system settings:", error);
+      console.error("[SystemSettings] Pending settings sync failed:", {
+        code: error?.code || "unknown",
+        message: error?.message || String(error),
+      });
       showMessage("Changes are saved locally; cloud sync is still pending.", true);
       return false;
     } finally {
@@ -505,6 +525,16 @@ import {
   });
 
   function normalizedSettings(data) {
+    const userLoginEnabled = typeof data.userLoginEnabled === "boolean"
+      ? data.userLoginEnabled
+      : typeof data.loginEnabled === "boolean"
+        ? data.loginEnabled
+        : true;
+    const eventRegistrationEnabled = typeof data.eventRegistrationEnabled === "boolean"
+      ? data.eventRegistrationEnabled
+      : typeof data.registrationEnabled === "boolean"
+        ? data.registrationEnabled
+        : true;
     return {
       mainOrganization: typeof data.mainOrganization === "string" ? data.mainOrganization : "IBITS",
       maxUploadSizeMb: typeof data.maxUploadSizeMb === "number" ? data.maxUploadSizeMb : 15,
@@ -514,8 +544,13 @@ import {
       approvalStagesByOrg: data.approvalStagesByOrg && typeof data.approvalStagesByOrg === "object"
         ? data.approvalStagesByOrg
         : {},
-      registrationEnabled: typeof data.registrationEnabled === "boolean" ? data.registrationEnabled : true,
-      loginEnabled: typeof data.loginEnabled === "boolean" ? data.loginEnabled : true,
+      registrationEnabled: eventRegistrationEnabled,
+      loginEnabled: userLoginEnabled,
+      eventRegistrationEnabled,
+      userLoginEnabled,
+      maintenanceMessage: typeof data.maintenanceMessage === "string"
+        ? data.maintenanceMessage
+        : "",
       venues: Array.isArray(data.venues) ? data.venues.filter((item) => typeof item === "string") : [],
       categories: Array.isArray(data.categories) ? data.categories.filter((item) => typeof item === "string") : [],
       eventSources: Array.isArray(data.eventSources) ? data.eventSources.filter((item) => typeof item === "string") : [],
@@ -1984,8 +2019,18 @@ import {
   function backfillMissingFields(data) {
     if (backfillingDefaults) return backfillingDefaults;
     const missingFields = {};
+    const normalized = normalizedSettings(data);
     Object.entries(defaultSettings).forEach(([field, defaultValue]) => {
-      if (!(field in data)) missingFields[field] = defaultValue;
+      if (field in data) return;
+      if (field === "userLoginEnabled") {
+        missingFields[field] = normalized.userLoginEnabled;
+      } else if (field === "eventRegistrationEnabled") {
+        missingFields[field] = normalized.eventRegistrationEnabled;
+      } else if (field === "maintenanceMessage") {
+        missingFields[field] = currentSettings.maintenanceMessage || "";
+      } else {
+        missingFields[field] = defaultValue;
+      }
     });
     if (!Object.keys(missingFields).length) return Promise.resolve();
 
@@ -2131,10 +2176,10 @@ import {
       try {
         if (typeof pendingConfirmAction === "function") {
           const action = pendingConfirmAction;
-          pendingConfirmAction = null;
-          pendingCancelAction = null;
           const ok = await action();
           if (ok !== false) {
+            pendingConfirmAction = null;
+            pendingCancelAction = null;
             confirmDialog?.close();
           }
         } else {
@@ -2571,15 +2616,20 @@ import {
   }
 
   async function loadNewSettings() {
-    const [loadedSettings, accessSettings] = await Promise.all([
+    const [loadedSettings, accessSettings, globalSettings] = await Promise.all([
       Promise.all(newSections.map(async (section) => [section, await getSystemSettings(section)])),
       getSystemSettings("access"),
+      getSystemSettings("global_config"),
     ]);
     loadedSettings.forEach(([section, values]) => setSettingsSection(section, values));
     const messageInput = document.getElementById("setting-maintenance-message");
-    if (messageInput) messageInput.value = String(accessSettings.message || "");
-    sectionBaseline.access = { message: String(accessSettings.message || "") };
-    updateLastSaved(accessSettings);
+    const message = String(
+      globalSettings.maintenanceMessage || accessSettings.message || "",
+    );
+    currentSettings.maintenanceMessage = message;
+    if (messageInput) messageInput.value = message;
+    sectionBaseline.access = { message };
+    updateLastSaved(globalSettings);
     newSettingsReady = true;
     newSections.forEach(updateSectionDirty);
     refreshLegacyDirty();
@@ -2766,12 +2816,28 @@ import {
       button.textContent = "Saving...";
     }
     try {
-      await setDoc(doc(db, "system_settings", "access"), {
+      currentSettings.maintenanceMessage = message;
+      const accessFields = getAccessSettingsFields(currentSettings);
+      const batch = writeBatch(db);
+      batch.set(settingsRef, {
+        ...accessFields,
+        updatedBy: actorIdentifier(),
+        updatedAt: serverTimestamp(),
+      }, { merge: true });
+      batch.set(publicAccessSettingsRef, {
+        ...accessFields,
+        updatedBy: actorIdentifier(),
+        updatedAt: serverTimestamp(),
+      }, { merge: true });
+      batch.set(legacyAccessSettingsRef, {
         message,
         updatedBy: actorIdentifier(),
         updatedAt: serverTimestamp(),
       }, { merge: true });
+      await batch.commit();
+      cacheSettings(currentSettings);
       sectionBaseline.access = { message };
+      invalidateSystemSettingsCache("global_config");
       invalidateSystemSettingsCache("access");
       updateLastSaved({ updatedAt: new Date(), updatedByName: actorDisplayName() });
       try {
@@ -2973,16 +3039,19 @@ import {
     }
 
     try {
-      await setDoc(
-        settingsRef,
-        {
-          loginEnabled: currentSettings.loginEnabled ?? true,
-          registrationEnabled: currentSettings.registrationEnabled ?? true,
-          updatedAt: serverTimestamp(),
-          updatedBy: actorIdentifier(),
-        },
-        { merge: true }
-      );
+      const accessFields = getAccessSettingsFields(currentSettings);
+      const batch = writeBatch(db);
+      batch.set(settingsRef, {
+        ...accessFields,
+        updatedAt: serverTimestamp(),
+        updatedBy: actorIdentifier(),
+      }, { merge: true });
+      batch.set(publicAccessSettingsRef, {
+        ...accessFields,
+        updatedAt: serverTimestamp(),
+        updatedBy: actorIdentifier(),
+      }, { merge: true });
+      await batch.commit();
       updateLastSaved({ updatedAt: new Date(), updatedBy: actorIdentifier() });
 
       try {
@@ -3001,9 +3070,65 @@ import {
       showMessage("Access and registration settings saved.");
       return true;
     } catch (err) {
-      if (DEBUG) console.error("Unable to save access settings:", err);
+      console.error("[SystemSettings] Access settings save failed:", {
+        code: err?.code || "unknown",
+        message: err?.message || String(err),
+      });
       showMessage("Saved locally. Cloud sync is pending and will retry when the connection is available.", true);
       return true;
+    }
+  }
+
+  function getAccessSettingsFields(settings) {
+    const loginEnabled = settings.loginEnabled !== false;
+    const registrationEnabled = settings.registrationEnabled !== false;
+    const maintenanceMessage = typeof settings.maintenanceMessage === "string"
+      ? settings.maintenanceMessage
+      : "";
+    return {
+      userLoginEnabled: loginEnabled,
+      eventRegistrationEnabled: registrationEnabled,
+      maintenanceMessage,
+      loginEnabled,
+      registrationEnabled,
+    };
+  }
+
+  async function syncAccessSettingsMirror(data) {
+    if (accessMirrorSynced || !publicAccessSettingsRef || !settingsRef) return;
+    accessMirrorSynced = true;
+    try {
+      const [mirrorSnapshot, legacyAccess] = await Promise.all([
+        getDoc(publicAccessSettingsRef),
+        getSystemSettings("access"),
+      ]);
+      const mirror = mirrorSnapshot.exists() ? mirrorSnapshot.data() : {};
+      const settings = normalizedSettings(data);
+      const maintenanceMessage = Object.prototype.hasOwnProperty.call(
+        data,
+        "maintenanceMessage",
+      )
+        ? settings.maintenanceMessage
+        : String(legacyAccess.message || mirror.maintenanceMessage || mirror.message || "");
+      settings.maintenanceMessage = maintenanceMessage;
+      currentSettings.maintenanceMessage = maintenanceMessage;
+      const accessFields = getAccessSettingsFields(settings);
+      const isCurrent = mirrorSnapshot.exists() &&
+        Object.keys(accessFields).every((field) => mirror[field] === accessFields[field]);
+      if (!isCurrent) {
+        await setDoc(publicAccessSettingsRef, {
+          ...accessFields,
+          updatedAt: serverTimestamp(),
+          updatedBy: actorIdentifier(),
+        }, { merge: true });
+      }
+      cacheSettings(currentSettings);
+    } catch (error) {
+      console.error("[SystemSettings] Could not sync public access settings:", {
+        code: error?.code || "unknown",
+        message: error?.message || String(error),
+      });
+      showMessage("The student access settings could not be synchronized.", true);
     }
   }
 
@@ -3030,9 +3155,10 @@ import {
           requireLock: true,
           onConfirm: async () => {
             currentSettings.loginEnabled = false;
+            currentSettings.userLoginEnabled = false;
             loginToggle.checked = false;
             updateToggleBadge("login", false);
-            return await persistSystemToggles([{ field: "loginEnabled", from: previousValue, to: false }]);
+            return await persistSystemToggles([{ field: "userLoginEnabled", from: previousValue, to: false }]);
           },
           onCancel: () => {
             loginToggle.checked = true;
@@ -3049,9 +3175,10 @@ import {
           cancelText: "No, Keep Off",
           onConfirm: async () => {
             currentSettings.loginEnabled = true;
+            currentSettings.userLoginEnabled = true;
             loginToggle.checked = true;
             updateToggleBadge("login", true);
-            return await persistSystemToggles([{ field: "loginEnabled", from: previousValue, to: true }]);
+            return await persistSystemToggles([{ field: "userLoginEnabled", from: previousValue, to: true }]);
           },
           onCancel: () => {
             loginToggle.checked = false;
@@ -3084,9 +3211,10 @@ import {
           cancelText: "No, Keep On",
           onConfirm: async () => {
             currentSettings.registrationEnabled = false;
+            currentSettings.eventRegistrationEnabled = false;
             registrationToggle.checked = false;
             updateToggleBadge("registration", false);
-            return await persistSystemToggles([{ field: "registrationEnabled", from: previousValue, to: false }]);
+            return await persistSystemToggles([{ field: "eventRegistrationEnabled", from: previousValue, to: false }]);
           },
           onCancel: () => {
             registrationToggle.checked = true;
@@ -3103,9 +3231,10 @@ import {
           cancelText: "No, Keep Off",
           onConfirm: async () => {
             currentSettings.registrationEnabled = true;
+            currentSettings.eventRegistrationEnabled = true;
             registrationToggle.checked = true;
             updateToggleBadge("registration", true);
-            return await persistSystemToggles([{ field: "registrationEnabled", from: previousValue, to: true }]);
+            return await persistSystemToggles([{ field: "eventRegistrationEnabled", from: previousValue, to: true }]);
           },
           onCancel: () => {
             registrationToggle.checked = false;
@@ -3174,7 +3303,7 @@ import {
     try {
       unsubscribeSettings = onSnapshot(
         settingsRef,
-        (snapshot) => {
+        async (snapshot) => {
           clearOrganizationApprovalLoadTimeout();
           try {
             if (!snapshot.exists()) {
@@ -3236,6 +3365,7 @@ import {
               updateToggleBadge("login", currentSettings.loginEnabled !== false);
             }
             cacheSettings(currentSettings);
+            await syncAccessSettingsMirror(data);
             refreshLegacyDirty();
             if (orgApprovalError) orgApprovalError.hidden = true;
             setOrganizationApprovalLoading(false);

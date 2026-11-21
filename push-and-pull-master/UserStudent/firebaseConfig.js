@@ -1,12 +1,9 @@
 import { getApps, initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
-import {
-  browserLocalPersistence,
-  getAuth,
-  setPersistence,
-} from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
+import { getAuth } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
 import { getFirestore } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 import { getDatabase } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-database.js";
 import { getFunctions } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-functions.js";
+import { startActiveSessionAccessGuard } from "../systemAccess.js";
 
 const RTDB_URL = "https://recovibe-v1-default-rtdb.asia-southeast1.firebasedatabase.app";
 
@@ -34,16 +31,8 @@ export const app = isFirebaseConfigured
   : null;
 
 export const auth = app ? getAuth(app) : null;
-const authPersistenceReady = auth
-  ? setPersistence(auth, browserLocalPersistence).catch((error) => {
-    console.error("[Firebase] Could not enable browser-local auth persistence:", {
-      code: error?.code || "unknown",
-      message: error?.message || String(error),
-    });
-  })
-  : Promise.resolve();
 export const authReady = auth
-  ? Promise.all([auth.authStateReady(), authPersistenceReady]).then(() => undefined)
+  ? auth.authStateReady().then(() => undefined)
   : Promise.resolve();
 export const db = app ? getFirestore(app) : null;
 
@@ -70,3 +59,5 @@ if (app) {
   }
 }
 export const functions = functionsInstance;
+
+startActiveSessionAccessGuard(auth, db);

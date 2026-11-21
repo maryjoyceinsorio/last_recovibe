@@ -7,6 +7,11 @@ import {
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
 import { doc, getDoc } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 import { auth, authReady, db, isFirebaseConfigured } from "../UserStudent/firebaseConfig.js";
+import {
+  maintenanceMessage,
+  readSystemAccessSettings,
+  takeMaintenanceNotice,
+} from "../systemAccess.js";
 
 (() => {
   document
@@ -19,6 +24,11 @@ import { auth, authReady, db, isFirebaseConfigured } from "../UserStudent/fireba
   const rememberMe = document.getElementById("remember-me");
   const rememberedEmailKey = "rememberedEmail_event_organizer";
   let signInVerified = false;
+  const maintenanceNotice = takeMaintenanceNotice();
+  if (maintenanceNotice) {
+    banner.textContent = maintenanceNotice;
+    banner.classList.add("show");
+  }
 
   function clearRememberedEmail() {
     try {
@@ -146,22 +156,24 @@ import { auth, authReady, db, isFirebaseConfigured } from "../UserStudent/fireba
       return;
     }
 
+    let accessSettings;
     try {
-      const settings = JSON.parse(
-        localStorage.getItem("recovibeSystemSettings") || "{}",
-      );
-      if (settings.loginEnabled === false) {
-        clearRememberedEmail();
-        banner.textContent =
-          "System maintenance is in progress. Organizer sign-in is temporarily disabled.";
-        banner.classList.add("show");
-        return;
-      }
+      accessSettings = await readSystemAccessSettings(db);
     } catch (error) {
-      console.warn("[EventOrganizerLogin] Could not read cached settings:", {
+      console.error("[EventOrganizerLogin] Could not verify login availability:", {
         code: error?.code || "unknown",
         message: error?.message || String(error),
       });
+      clearRememberedEmail();
+      banner.textContent = "Could not verify sign-in availability. Check your connection and try again.";
+      banner.classList.add("show");
+      return;
+    }
+    if (!accessSettings.userLoginEnabled) {
+      clearRememberedEmail();
+      banner.textContent = maintenanceMessage(accessSettings);
+      banner.classList.add("show");
+      return;
     }
 
     loginButton.disabled = true;
@@ -189,6 +201,14 @@ import { auth, authReady, db, isFirebaseConfigured } from "../UserStudent/fireba
         findOrganizerProfile(credential.user.uid),
         PROFILE_VERIFICATION_TIMEOUT_MS,
       );
+      accessSettings = await readSystemAccessSettings(db);
+      if (!accessSettings.userLoginEnabled) {
+        await signOut(auth);
+        clearRememberedEmail();
+        banner.textContent = maintenanceMessage(accessSettings);
+        banner.classList.add("show");
+        return;
+      }
 
       const organizerProfile = {
         ...profile,

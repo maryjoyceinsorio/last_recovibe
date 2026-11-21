@@ -275,8 +275,14 @@
             </div>
           </div>
         </div>
-        <label class="form-field" id="field-user-organization" for="new-user-organization">
-          <span>Organization / Department</span>
+        <label class="form-field" id="field-user-organization-select" for="new-user-organization-select" hidden>
+          <span>Organization</span>
+          <select id="new-user-organization-select" name="organizationCode">
+            <option value="">Unassigned</option>
+          </select>
+        </label>
+        <label class="form-field" id="field-user-organization" for="new-user-organization" hidden>
+          <span>Program / Department</span>
           <input id="new-user-organization" name="organizationDepartment" type="text" />
         </label>
         <label class="form-field" id="field-user-suffix" for="new-user-role-suffix" hidden>
@@ -313,21 +319,47 @@
         </section>
         <div class="user-details-actions">
           <button class="user-modal-button danger" id="toggle-user-status-button" type="button">Suspend account</button>
-          <button class="user-modal-button secondary" id="change-user-role-button" type="button">Change role</button>
-          <button class="user-modal-button secondary" id="send-password-reset-button" type="button">Send password reset email</button>
+          <button class="user-modal-button secondary" id="edit-user-button" type="button">Edit Profile</button>
+          <button class="user-modal-button danger" id="delete-user-button" type="button">Delete acc</button>
           <a class="user-modal-button secondary" id="view-user-activity" href="SuperAdminAuditLogs.html">View activity in Audit Logs</a>
         </div>
         <p class="details-safety-note" id="user-safety-note"></p>
       </div>
     </dialog>
 
-    <dialog class="user-dialog confirm-dialog" id="change-role-dialog" aria-labelledby="change-role-title">
-      <form class="user-dialog-content confirm-dialog-content" id="change-role-form">
-        <h2 id="change-role-title">Change role</h2>
-        <p id="change-role-description">Choose a role in the same profile collection.</p>
-        <label class="form-field" for="change-user-role-select">
-          <span>New role</span>
-          <select id="change-user-role-select" required>
+    <dialog class="user-dialog edit-user-dialog" id="edit-profile-dialog" aria-labelledby="edit-profile-title">
+      <form class="user-dialog-content user-form" id="edit-profile-form">
+        <div class="user-dialog-heading">
+          <h2 id="edit-profile-title">Edit Profile</h2>
+          <button class="dialog-dismiss" type="button" data-close-dialog aria-label="Close edit profile form">×</button>
+        </div>
+        <label class="form-field" for="edit-user-first-name">
+          <span>First Name</span>
+          <input id="edit-user-first-name" name="firstName" type="text" autocomplete="given-name" required />
+        </label>
+        <label class="form-field" for="edit-user-middle-name">
+          <span>Middle Name</span>
+          <input id="edit-user-middle-name" name="middleName" type="text" autocomplete="additional-name" />
+        </label>
+        <label class="form-field" for="edit-user-last-name">
+          <span>Last Name</span>
+          <input id="edit-user-last-name" name="lastName" type="text" autocomplete="family-name" />
+        </label>
+        <label class="form-field" for="edit-user-account-number">
+          <span>Account number</span>
+          <input id="edit-user-account-number" name="accountNumber" type="text" />
+        </label>
+        <label class="form-field" for="edit-user-email">
+          <span>Email</span>
+          <input id="edit-user-email" name="email" type="email" autocomplete="email" required />
+        </label>
+        <label class="form-field" for="edit-user-contact-number">
+          <span>Contact Number</span>
+          <input id="edit-user-contact-number" name="contactNumber" type="tel" maxlength="11" autocomplete="tel" />
+        </label>
+        <label class="form-field" for="edit-user-role">
+          <span>Role</span>
+          <select id="edit-user-role" name="role" required>
             <option value="Student">Student</option>
             <option value="Event Organizer">Event Organizer</option>
             <option value="Admin">Admin</option>
@@ -335,10 +367,26 @@
             <option value="Super Admin">Super Admin</option>
           </select>
         </label>
-        <p class="role-change-hint" id="role-change-hint"></p>
+        <label class="form-field" id="edit-user-role-suffix-field" for="edit-user-role-suffix" hidden>
+          <span>Role Suffix</span>
+          <input id="edit-user-role-suffix" name="roleSuffix" type="text" maxlength="20" />
+        </label>
+        <label class="form-field" id="edit-user-organization-field" for="edit-user-organization">
+          <span>Organization</span>
+          <select id="edit-user-organization" name="organizationCode">
+            <option value="">Unassigned</option>
+          </select>
+        </label>
+        <label class="form-field" id="edit-user-program-field" for="edit-user-program" hidden>
+          <span>Program / Department</span>
+          <input id="edit-user-program" name="program" type="text" />
+        </label>
+        <p class="role-change-hint" id="edit-profile-hint">
+          Role changes must stay within the profile's existing collection. Email changes update the Firestore profile; Firebase Authentication email is unchanged.
+        </p>
         <div class="user-dialog-actions">
           <button class="user-modal-button secondary" type="button" data-close-dialog>Cancel</button>
-          <button class="user-modal-button primary" type="submit">Continue</button>
+          <button class="user-modal-button primary" id="save-edit-profile-button" type="submit">Save Profile</button>
         </div>
       </form>
     </dialog>

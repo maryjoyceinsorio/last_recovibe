@@ -50,6 +50,11 @@ import {
   renderStudentSidebar,
 } from "./studentIdentity.js";
 import { mountHelpBot } from "../recoVibeHelpBot.js";
+import {
+  EVENT_REGISTRATION_CLOSED_MESSAGE,
+  getCachedSystemAccessSettings,
+  readSystemAccessSettings,
+} from "../systemAccess.js";
 
 /* ---------------------------------------------------------
    STATE
@@ -58,6 +63,7 @@ let currentUid = null;
 let academicCalendarItems = [];
 let serverTimeOffset = 0;
 let permanentQrToken = "";
+let systemAccessSettings = getCachedSystemAccessSettings();
 
 function renderAcademicCalendarAlerts() {
   const container = document.getElementById("academicCalendarAlerts");
@@ -362,6 +368,9 @@ function getRegistrationDeadlineAt(event) {
 }
 
 function getRegistrationBlockReason(event, now = getNow(), eventEndMs = event.endMs) {
+  if (!systemAccessSettings.eventRegistrationEnabled) {
+    return EVENT_REGISTRATION_CLOSED_MESSAGE;
+  }
   const status = String(event.status || event.publicationStatus || "")
     .trim()
     .toLowerCase();
@@ -1072,10 +1081,7 @@ function renderRecommended() {
       .filter(Boolean),
   );
   const upcoming = Array.from(rawEventsMap.values())
-    .filter((ev) =>
-      getEventClassification(ev, now) === "upcoming" &&
-      matchesEventSearch(ev),
-    )
+    .filter((ev) => getEventClassification(ev, now) === "upcoming")
     .sort((a, b) => a.startMs - b.startMs);
   const matched = upcoming
     .filter((ev) =>
@@ -1088,7 +1094,7 @@ function renderRecommended() {
   if (matched.length === 0) {
     container.innerHTML = `
       <div class="empty-state" style="width: 100%;">
-        <div class="empty-state-title">${state.query ? `No events match “${escapeHtml(state.query)}”.` : "No upcoming events at this time."}</div>
+        <div class="empty-state-title">No upcoming events at this time.</div>
         <div class="empty-state-sub">Update your <a href="StudentProfile.html#preferencesPanel" style="color: var(--maroon-700); text-decoration: underline;">preferences</a> to get personalized recommendations.</div>
       </div>
     `;
@@ -1113,7 +1119,7 @@ function renderRecommended() {
               <span class="rec-source-pill">${escapeHtml(sourceLabel)}</span>
             </div>
           </div>
-          <h3>${highlightMatch(ev.name, state.query)}</h3>
+          <h3>${escapeHtml(ev.name)}</h3>
           <div class="rec-when">${formatDate(ev.startMs)} · ${formatTime(ev.startMs)}</div>
           <div class="rec-venue">${escapeHtml(ev.venue)}</div>
           <div class="rec-match">Matches your preferences</div>
@@ -1668,13 +1674,24 @@ async function handleRegister(eventId) {
   if (!eventId || pendingRegistrationIds.has(eventId)) return;
 
   try {
-    const sys = JSON.parse(localStorage.getItem("recovibeSystemSettings") || "{}");
-    if (sys && sys.registrationEnabled === false) {
-      showToast("Event registration is temporarily disabled by system administration.");
-      announce("Event registration is disabled.");
-      return;
-    }
-  } catch (_) {}
+    systemAccessSettings = await readSystemAccessSettings(db);
+  } catch (error) {
+    console.error("[StudentDashboard] Could not verify event registration availability:", {
+      code: error?.code || "unknown",
+      message: error?.message || String(error),
+    });
+    showToast("Could not verify event registration availability. Check your connection and try again.");
+    return false;
+  }
+  if (!systemAccessSettings.eventRegistrationEnabled) {
+    showToast(EVENT_REGISTRATION_CLOSED_MESSAGE);
+    announce(EVENT_REGISTRATION_CLOSED_MESSAGE);
+    renderHappeningNow();
+    renderUpcoming();
+    renderRecommended();
+    renderCalendar();
+    return false;
+  }
 
   const ev = rawEventsMap.get(eventId);
   if (!ev) {
@@ -1717,11 +1734,22 @@ async function handleRegister(eventId) {
     if (db) {
       const eventRef = doc(db, "events", eventId);
       const registrationRef = doc(db, "events", eventId, "registrations", uid);
+      const accessSettingsRef = doc(db, "systemSettings", "default");
       registeredCount = await runTransaction(db, async (transaction) => {
-        const [eventSnapshot, registrationSnapshot] = await Promise.all([
+        const [eventSnapshot, registrationSnapshot, accessSettingsSnapshot] = await Promise.all([
           transaction.get(eventRef),
           transaction.get(registrationRef),
+          transaction.get(accessSettingsRef),
         ]);
+        const accessData = accessSettingsSnapshot.exists()
+          ? accessSettingsSnapshot.data()
+          : {};
+        const registrationEnabled = typeof accessData.eventRegistrationEnabled === "boolean"
+          ? accessData.eventRegistrationEnabled
+          : accessData.registrationEnabled !== false;
+        if (!registrationEnabled) {
+          throw new Error(EVENT_REGISTRATION_CLOSED_MESSAGE);
+        }
         if (!eventSnapshot.exists()) {
           throw new Error("This event is no longer available.");
         }
@@ -1805,7 +1833,9 @@ async function handleRegister(eventId) {
     const errorCode = String(err?.code || "").toLowerCase();
     const errorText = String(err?.message || "").toLowerCase();
     const message =
-      errorText.includes("registration closed") ||
+      errorText.includes("currently closed by the administrator")
+        ? EVENT_REGISTRATION_CLOSED_MESSAGE
+        : errorText.includes("registration closed") ||
       errorText.includes("registration is closed") ||
       errorText.includes("deadline")
         ? "Registration Closed"
@@ -2206,7 +2236,6 @@ function wireEvents() {
       state.query = e.target.value.trim();
       renderHappeningNow();
       renderUpcoming();
-      renderRecommended();
     });
   }
 
@@ -2380,6 +2409,22 @@ function initOfflineSupport() {
    LIFECYCLE & CLEANUP
 --------------------------------------------------------- */
 function setupCleanup() {
+  const handleAccessSettingsChanged = (event) => {
+    if (event.detail?.error) return;
+    systemAccessSettings = {
+      ...systemAccessSettings,
+      ...event.detail,
+    };
+    renderHappeningNow();
+    renderUpcoming();
+    renderRecommended();
+    renderCalendar();
+  };
+  window.addEventListener(
+    "system-access-settings-changed",
+    handleAccessSettingsChanged,
+  );
+
   const cleanupAll = () => {
     if (tickInterval) clearInterval(tickInterval);
     attendanceListeners.forEach((unsub) => unsub());
@@ -2391,6 +2436,10 @@ function setupCleanup() {
         cleanup();
       } catch (e) {}
     });
+    window.removeEventListener(
+      "system-access-settings-changed",
+      handleAccessSettingsChanged,
+    );
   };
 
   window.addEventListener("beforeunload", cleanupAll);
@@ -2446,7 +2495,11 @@ function init() {
       try {
         const profile = await loadStudentProfile(user);
         if (auth.currentUser?.uid !== user.uid) return;
-        mountHelpBot({ role: "student", ai: { firebaseConfig: app.options } });
+        mountHelpBot({
+          role: "student",
+          ai: { firebaseConfig: app.options },
+          getEvents: () => Array.from(rawEventsMap.values()),
+        });
 
         Object.keys(studentProfile).forEach((key) => delete studentProfile[key]);
         Object.assign(studentProfile, profile);
