@@ -233,8 +233,9 @@ import {
     if (normalizedSources.some((source) => source.includes("holiday"))) return "Holiday";
     if (normalizedSources.some((source) =>
       /(^|[^a-z])csc([^a-z]|$)/.test(source) ||
+      source.includes("campus student council") ||
       source.includes("central student council"),
-    )) return "CSC";
+    )) return "Organizational";
     if (normalizedSources.some((source) => source.includes("binan"))) {
       return "PUP Biñan Campus";
     }
@@ -262,6 +263,20 @@ import {
     return "Others/External";
   }
 
+  function eventSourceGroups(event) {
+    const source = eventSource(event);
+    if (source !== "Organizational") return [source];
+    const rawSources = [
+      event.category, event.categories, event.eventSource, event.source,
+      event.organization, event.organizer, event.organizerName, event.tag,
+      event.calendarSource, event.calendarName, event.feedSource, event.origin,
+      event.campus, event.title, event.eventName, event.name,
+    ].flatMap((value) => Array.isArray(value) ? value : [value])
+      .map((value) => String(value || "").normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "").toLowerCase());
+    return ["Organizational", "Others/External"];
+  }
+
   function isHolidayEvent(event) {
     if (!event) return false;
     const id = String(event.id || event.eventId || "");
@@ -282,7 +297,6 @@ import {
       {
         "PUP Official": "official",
         "PUP Biñan Campus": "binan",
-        CSC: "csc",
         Organizational: "organizational",
         "Others/External": "external",
         Holiday: "holiday",
@@ -305,8 +319,7 @@ import {
       if (!holiday && !isEventVisibleToStudent(event, studentProfile)) {
         return false;
       }
-      const category = eventSource(event);
-      if (!checked.includes(category)) {
+      if (!eventSourceGroups(event).some((category) => checked.includes(category))) {
         return false;
       }
       if (!eventDateRange(event)) {

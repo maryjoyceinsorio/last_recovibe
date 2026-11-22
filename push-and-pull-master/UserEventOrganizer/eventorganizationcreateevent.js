@@ -234,6 +234,7 @@ loadCachedApprovalStages();
 
 const PARTNER_ORGS_POOL = [
   { id: "aces", name: "ACES", subtitle: "Association of Computer Engineering Students" },
+  { id: "csc", name: "CSC", subtitle: "Central Student Council" },
   { id: "hrss", name: "HRSS", subtitle: "Human Resource Students Society" },
   { id: "ibits", name: "IBITS", subtitle: "Institute of Bachelors in Information Technology Studies" },
   { id: "piie", name: "PIIE", subtitle: "Philippine Institute of Industrial Engineers – PUP Biñan Student Chapter" },
@@ -877,10 +878,11 @@ loadCachedOrganizations();
 
   // 4. State Management
   const state = {
-    mode: "new", // "new" (default) | "existing" — start on the Create New Event form
+    mode: "existing",
     searchQuery: "",
     isCopied: false,
     copiedFrom: null,
+    isReusingEvent: false,
     editingEventId: null,
     draftId: null,
     clientRequestId: null,
@@ -1602,7 +1604,9 @@ loadCachedOrganizations();
       if (!ev) return;
       const id = String(ev.id || ev.eventId);
       const mark = reuseLibrary[id] || {};
-      const isFav = mark.favorite === true;
+      const isFav = typeof mark.favorite === "boolean"
+        ? mark.favorite
+        : ev.favorite === true;
       const isHidden = mark.hidden === true;
 
       if (isFav) {
@@ -1977,7 +1981,7 @@ loadCachedOrganizations();
     if (confirmAction === "do-reuse") {
       closeActiveConfirmation();
       if (eventObj) {
-        prefillFormFromEvent(eventObj);
+        prefillFormFromEvent(eventObj, false, true);
       }
       return;
     }
@@ -2407,7 +2411,8 @@ loadCachedOrganizations();
                   <p class="ce-error" id="error-category" hidden></p>
                 </div>
 
-                <input type="hidden" id="targetYear" name="targetYear" value="All Levels">
+                <input type="hidden" id="targetYear" name="targetYear" value="${state.isReusingEvent ? "" : "All Levels"}">
+                <input type="hidden" id="addAsFavoriteState" name="favorite" value="${String(state.addAsFavorite)}">
               </div>
             </section>
 
@@ -3185,6 +3190,8 @@ loadCachedOrganizations();
           state.copiedFrom = null;
           state.editingEventId = null;
           state.activeConfirm = null;
+          state.isReusingEvent = false;
+          state.addAsFavorite = false;
           if (newMode === "existing") {
             state.reuseLoading = false;
           }
@@ -3194,6 +3201,8 @@ loadCachedOrganizations();
       });
       return;
     }
+    state.isReusingEvent = false;
+    state.addAsFavorite = false;
     if (newMode === "existing") {
       state.isCopied = false;
       state.copiedFrom = null;
@@ -3206,9 +3215,11 @@ loadCachedOrganizations();
   }
 
   // 14. Prefill Form from Copied/Existing Event
-  function prefillFormFromEvent(ev, preserveDates = false) {
+  function prefillFormFromEvent(ev, preserveDates = false, isReuse = false) {
     state.isCopied = true;
     state.copiedFrom = ev;
+    state.isReusingEvent = isReuse;
+    state.addAsFavorite = isReuse ? false : ev.favorite === true;
     state.mode = "new";
     state.dirty = true;
     state.deadlineManuallyEdited = true;
@@ -3267,7 +3278,14 @@ loadCachedOrganizations();
       })),
     ];
 
-    state.targetAudience = normalizeTargetAudience(ev.targetAudience);
+    const hasSavedTargetAudience = typeof ev.targetAudience === "string" &&
+      ev.targetAudience.trim().length > 0;
+    const hasSavedTargetYear = Object.prototype.hasOwnProperty.call(ev, "targetYear") ||
+      Object.prototype.hasOwnProperty.call(ev, "targetYearLevels");
+    const hasSavedTargetSections = Object.prototype.hasOwnProperty.call(ev, "targetSections");
+    state.targetAudience = isReuse && !hasSavedTargetAudience
+      ? ""
+      : normalizeTargetAudience(ev.targetAudience);
     state.targetDepartments = Array.isArray(ev.targetDepartments) ? [...ev.targetDepartments] : [];
     state.targetOrganizations = Array.isArray(ev.targetOrganizations)
       ? [...ev.targetOrganizations]
@@ -3291,22 +3309,55 @@ loadCachedOrganizations();
     const form = document.getElementById("createEventMainForm");
     if (form) {
       if (form.eventName) form.eventName.value = ev.title || ev.eventName || "";
-      if (form.eventSource) form.eventSource.value = defaultEventSource;
-      if (form.targetYear) form.targetYear.value = state.targetYearLevels.join(", ") || "All Levels";
-      if (form.targetAudience) form.targetAudience.value = state.targetAudience;
+      if (form.eventSource) {
+        const savedEventSource = ev.eventSource || ev.source || "";
+        form.eventSource.value = isReuse
+          ? (savedEventSource ? normalizeEventSource(savedEventSource) : "")
+          : defaultEventSource;
+      }
+      if (form.targetYear) {
+        const savedTargetYear = typeof ev.targetYear === "string" ? ev.targetYear.trim() : "";
+        const targetYearValue = state.targetYearLevels.join(", ") || savedTargetYear;
+        form.targetYear.value = isReuse
+          ? (hasSavedTargetYear ? targetYearValue : "")
+          : (targetYearValue || "All Levels");
+      }
+      if (form.targetAudience) {
+        if (isReuse && !hasSavedTargetAudience) {
+          state.targetAudience = "";
+          form.targetAudience.selectedIndex = -1;
+        } else {
+          form.targetAudience.value = state.targetAudience;
+        }
+      }
       syncTargetSectionControlFromState();
+      if (isReuse && !hasSavedTargetSections) {
+        const targetSectionsMode = form.querySelector("#targetSectionsMode");
+        if (targetSectionsMode) targetSectionsMode.selectedIndex = -1;
+      }
+      if (isReuse && !hasSavedTargetYear) {
+        const targetAllYears = form.querySelector("#targetAllYears");
+        if (targetAllYears) targetAllYears.checked = false;
+      }
       if (form.isCollaboration) form.isCollaboration.checked = state.isCollaboration;
       if (form.collaborationNotes) form.collaborationNotes.value = state.collaborationNotes;
       const savedDate = ev.date || ev.dateISO || ev.eventDate || "";
-      const nextDate = preserveDates ? savedDate : calculateNextLogicalDate(savedDate);
+      const nextDate = preserveDates || isReuse
+        ? savedDate
+        : calculateNextLogicalDate(savedDate);
       if (form.eventDate) form.eventDate.value = nextDate;
       if (form.eventDateEnd) {
-        const nextEndDate = ev.dateEnd || ev.endDate || ev.endDateISO || nextDate;
-        form.eventDateEnd.value = nextEndDate >= nextDate ? nextEndDate : nextDate;
-        form.eventDateEnd.min = nextDate;
+        const savedEndDate = ev.dateEnd || ev.endDate || ev.endDateISO || "";
+        const nextEndDate = isReuse
+          ? savedEndDate
+          : savedEndDate || nextDate;
+        form.eventDateEnd.value = isReuse
+          ? nextEndDate
+          : (nextEndDate >= nextDate ? nextEndDate : nextDate);
+        form.eventDateEnd.min = nextDate || "";
       }
       if (form.dailySchedule) {
-        form.dailySchedule.value = ev.dailySchedule || "Same time each day";
+        form.dailySchedule.value = ev.dailySchedule || (isReuse ? "" : "Same time each day");
       }
       handleDailyScheduleToggle();
       if (form.dailySchedule && form.dailySchedule.value === "Different time by day" && Array.isArray(ev.dailySchedules)) {
@@ -3323,13 +3374,16 @@ loadCachedOrganizations();
       }
       const manilaInfo = getManilaDateInfo();
       if (form.registrationStart) {
-        form.registrationStart.value = ev.registrationStart || getManilaDateTimeString(Date.now() + 15 * 60 * 1000);
+        form.registrationStart.value = ev.registrationStart ||
+          (isReuse ? "" : getManilaDateTimeString(Date.now() + 15 * 60 * 1000));
         form.registrationStart.min = getManilaDateTimeString();
       }
       if (form.registrationEnd) {
-        form.registrationEnd.value = preserveDates
+        form.registrationEnd.value = isReuse
           ? (ev.registrationEnd || ev.registrationDeadline || "")
-          : calculateAutoRegistrationEnd(nextDate);
+          : preserveDates
+            ? (ev.registrationEnd || ev.registrationDeadline || "")
+            : calculateAutoRegistrationEnd(nextDate);
         form.registrationEnd.min = form.registrationStart?.value || getManilaDateTimeString();
         form.registrationEnd.max = calculateMaxRegistrationEnd(nextDate);
       }
@@ -3337,11 +3391,13 @@ loadCachedOrganizations();
         form.registrationDeadline.value = form.registrationEnd ? form.registrationEnd.value : "";
       }
       if (form.attendanceRequired) {
-        form.attendanceRequired.checked = ev.attendanceRequired !== false;
+        form.attendanceRequired.checked = isReuse
+          ? ev.attendanceRequired === true
+          : ev.attendanceRequired !== false;
       }
-      if (form.timeStart && ev.timeStart) form.timeStart.value = ev.timeStart;
-      if (form.timeEnd && ev.timeEnd) form.timeEnd.value = ev.timeEnd;
-      if (form.venue && ev.venue) form.venue.value = ev.venue;
+      if (form.timeStart) form.timeStart.value = ev.timeStart || (isReuse ? "" : form.timeStart.value);
+      if (form.timeEnd) form.timeEnd.value = ev.timeEnd || (isReuse ? "" : form.timeEnd.value);
+      if (form.venue) form.venue.value = ev.venue || (isReuse ? "" : form.venue.value);
       if (form.customVenueName) form.customVenueName.value = ev.customVenueName || ev.venueName || ev.building || "";
       if (form.customVenueAddress) form.customVenueAddress.value = ev.customVenueAddress || ev.venueAddress || ev.roomNumber || "";
       if (form.onlineMeetingLink) form.onlineMeetingLink.value = ev.onlineMeetingLink || ev.meetingLink || "";
@@ -3355,7 +3411,7 @@ loadCachedOrganizations();
         } else if (typeof ev.keyDetails === "string" && ev.keyDetails) {
           form.keyDetails.value = ev.keyDetails;
         } else {
-          form.keyDetails.value = "• ";
+          form.keyDetails.value = isReuse ? "" : "• ";
         }
       }
 
@@ -3380,6 +3436,7 @@ loadCachedOrganizations();
 
       function serializeFormForServer(status) {
         const payload = serializeEvent(status);
+        payload.favorite = Boolean(state.addAsFavorite);
         ["id", "eventId", "organizer", "organizerName", "organizerId", "organizerUid",
           "createdBy", "createdByRole", "creatorRole", "source"].forEach((key) => delete payload[key]);
         payload.status = status.toLowerCase();
@@ -3394,7 +3451,7 @@ loadCachedOrganizations();
         } else if (typeof ev.requirements === "string" && ev.requirements) {
           form.requirements.value = ev.requirements;
         } else {
-          form.requirements.value = "• ";
+          form.requirements.value = isReuse ? "" : "• ";
         }
       }
 
@@ -3406,15 +3463,19 @@ loadCachedOrganizations();
       }
       if (form.contactPhone) {
         const ph = String(ev.contactPerson?.phone || ev.contactPhone || "");
-        const digits = ph.replace(/\D/g, "");
-        let suffix = digits;
-        if (digits.startsWith("09")) suffix = digits.slice(2);
-        else if (digits.startsWith("63")) {
-          suffix = digits.slice(2);
-          if (suffix.startsWith("9")) suffix = suffix.slice(1);
-        } else if (digits.startsWith("0")) suffix = digits.slice(1);
-        else if (digits.startsWith("9") && digits.length >= 10) suffix = digits.slice(1);
-        form.contactPhone.value = `09${suffix.slice(0, 9)}`;
+        if (isReuse && !ph.trim()) {
+          form.contactPhone.value = "";
+        } else {
+          const digits = ph.replace(/\D/g, "");
+          let suffix = digits;
+          if (digits.startsWith("09")) suffix = digits.slice(2);
+          else if (digits.startsWith("63")) {
+            suffix = digits.slice(2);
+            if (suffix.startsWith("9")) suffix = suffix.slice(1);
+          } else if (digits.startsWith("0")) suffix = digits.slice(1);
+          else if (digits.startsWith("9") && digits.length >= 10) suffix = digits.slice(1);
+          form.contactPhone.value = `09${suffix.slice(0, 9)}`;
+        }
       }
 
       checkVenueCapacityHint();
@@ -3431,7 +3492,88 @@ loadCachedOrganizations();
   }
 
   // 15. Setup Event Listeners & Interactive Handlers
+  let saveDraftHandlerBound = false;
+  let draftConfirmationOpen = false;
+
   function setupEventHandlers() {
+    if (!saveDraftHandlerBound) {
+      root.addEventListener("click", async (event) => {
+        if (!(event.target instanceof Element)) return;
+        const saveDraftButton = event.target.closest("#btnSaveDraft");
+        if (!saveDraftButton ||
+            !root.contains(saveDraftButton) ||
+            saveDraftButton.dataset.draftSaveHandlerBound === "true") return;
+
+        event.preventDefault();
+        if (saveDraftButton.disabled || draftConfirmationOpen) return;
+        if (state.isActionBusy) {
+          showToast("Another event action is in progress. Please wait.");
+          return;
+        }
+
+        const form = root.querySelector("#createEventMainForm");
+        const nameInput = form?.querySelector("#eventName");
+        const nameVal = nameInput?.value.trim() || "";
+        if (!nameVal) {
+          showToast("Please enter an event name before saving draft.");
+          nameInput?.focus();
+          return;
+        }
+
+        const modal = document.getElementById("ceConfirmModal");
+        if (!modal) {
+          showToast("Draft confirmation is unavailable. Please reload and try again.");
+          return;
+        }
+        if (!modal.hidden) return;
+
+        draftConfirmationOpen = true;
+        try {
+          showConfirmModal({
+            title: "Save as Draft?",
+            text: "Save this event as a draft? You can return and continue editing it at any time.",
+            confirmText: "Save Draft",
+            cancelText: "Cancel",
+            onCancel: () => {
+              draftConfirmationOpen = false;
+            },
+            onConfirm: async () => {
+              if (state.isActionBusy) return;
+              state.isActionBusy = true;
+              setRequestBusy(saveDraftButton, true, "Save Draft");
+              try {
+                const saveDraftFn = httpsCallable(functions, "saveEventDraft");
+                const result = await saveDraftFn(serializeFormForServer("draft"));
+                const savedDraftId = result?.data?.draftId;
+                if (!savedDraftId) throw new Error("The draft could not be saved.");
+                state.draftId = savedDraftId;
+                state.dirty = false;
+                draftConfirmationOpen = false;
+                try {
+                  sessionStorage.setItem("recovibeEventNotice", "Draft saved.");
+                } catch (storageError) {
+                  console.warn("Could not save the draft success notice:", storageError);
+                }
+                location.href = `${redirectListUrl}?draft=${encodeURIComponent(savedDraftId)}`;
+              } catch (error) {
+                console.error("Could not save event draft:", error);
+                showServerFieldErrors(error);
+                showToast(getFriendlyFunctionError(error, "Couldn't save your draft. Please try again."));
+              } finally {
+                state.isActionBusy = false;
+                setRequestBusy(saveDraftButton, false, "Save Draft");
+              }
+            },
+          });
+        } catch (error) {
+          draftConfirmationOpen = false;
+          console.error("Could not open draft confirmation:", error);
+          showToast("Couldn't start saving your draft. Please try again.");
+        }
+      });
+      saveDraftHandlerBound = true;
+    }
+
     // Bind submission before the other form helpers so their setup cannot leave
     // the primary action without a click handler.
     const btnSubmit = document.getElementById("btnSubmitApproval");
@@ -3592,9 +3734,6 @@ loadCachedOrganizations();
                 state.dirty = false;
                 const successNotice = "Event saved to Firestore as pending. The reviewer approval chain was not created. Admins will receive a proposal notification.";
                 submissionStage = "redirecting after successful Firestore write";
-                window.setTimeout(() => {
-                  window.location.href = `${redirectListUrl}?new=${encodeURIComponent(eventId)}`;
-                }, 1000);
                 closeModal();
                 try {
                   sessionStorage.setItem("recovibeEventNotice", successNotice);
@@ -3602,6 +3741,12 @@ loadCachedOrganizations();
                   console.warn("Could not save the event submission notice:", storageError);
                 }
                 showToast(successNotice);
+                if (state.addAsFavorite) {
+                  await handlePostSaveFavorite(localEvent);
+                }
+                window.setTimeout(() => {
+                  window.location.href = `${redirectListUrl}?new=${encodeURIComponent(eventId)}`;
+                }, 1000);
               } catch (error) {
                 console.error(error);
                 console.error("Full error details:", error);
@@ -3677,6 +3822,9 @@ loadCachedOrganizations();
     if (btnAddFav) {
       btnAddFav.addEventListener("click", () => {
         state.addAsFavorite = !state.addAsFavorite;
+        state.dirty = true;
+        const favoriteInput = document.getElementById("addAsFavoriteState");
+        if (favoriteInput) favoriteInput.value = String(state.addAsFavorite);
         btnAddFav.classList.toggle("is-active", state.addAsFavorite);
         btnAddFav.setAttribute("aria-pressed", String(state.addAsFavorite));
         btnAddFav.innerHTML = state.addAsFavorite ? "★ Added as Favorite" : "☆ Add as Favorite";
@@ -3870,27 +4018,38 @@ loadCachedOrganizations();
     // Save Draft Button with Confirmation Modal
     const btnSaveDraft = document.getElementById("btnSaveDraft");
     if (btnSaveDraft) {
-      btnSaveDraft.addEventListener("click", () => {
+      btnSaveDraft.dataset.draftSaveHandlerBound = "true";
+      btnSaveDraft.addEventListener("click", (event) => {
+        event.preventDefault();
+        if (draftConfirmationOpen) return;
+        if (state.isActionBusy) {
+          showToast("Another event action is in progress. Please wait.");
+          return;
+        }
         const form = document.getElementById("createEventMainForm");
         const nameVal = form?.eventName?.value.trim() || "";
-        form?.timeStart?.dispatchEvent(new Event("blur"));
-        form?.timeEnd?.dispatchEvent(new Event("blur"));
-        document.querySelectorAll("#dailyScheduleList .ce-daily-start-input, #dailyScheduleList .ce-daily-end-input").forEach((input) => {
-          input.dispatchEvent(new Event("blur"));
-        });
-        form?.contactPhone?.dispatchEvent(new Event("blur"));
-        updateAllReadinessChecks();
         if (!nameVal) {
           showToast("Please enter an event name before saving draft.");
           form?.eventName?.focus();
           return;
         }
 
+        const modal = document.getElementById("ceConfirmModal");
+        if (!modal) {
+          showToast("Draft confirmation is unavailable. Please reload and try again.");
+          return;
+        }
+        if (!modal.hidden) return;
+
+        draftConfirmationOpen = true;
         showConfirmModal({
           title: "Save as Draft?",
           text: "Save this event as a draft? You can return and continue editing it at any time.",
           confirmText: "Save Draft",
           cancelText: "Cancel",
+          onCancel: () => {
+            draftConfirmationOpen = false;
+          },
           onConfirm: async () => {
             if (state.isActionBusy) return;
             state.isActionBusy = true;
@@ -3902,7 +4061,12 @@ loadCachedOrganizations();
               if (!savedDraftId) throw new Error("The draft could not be saved.");
               state.draftId = savedDraftId;
               state.dirty = false;
-              sessionStorage.setItem("recovibeEventNotice", "Draft saved.");
+              draftConfirmationOpen = false;
+              try {
+                sessionStorage.setItem("recovibeEventNotice", "Draft saved.");
+              } catch (storageError) {
+                console.warn("Could not save the draft success notice:", storageError);
+              }
               location.href = `${redirectListUrl}?draft=${encodeURIComponent(savedDraftId)}`;
             } catch (error) {
               console.error("Could not save event draft:", error);
@@ -4481,7 +4645,7 @@ loadCachedOrganizations();
     const isMultiDay = Boolean(startDate && endDate && endDate > startDate);
     select.disabled = !isMultiDay;
     select.classList.toggle("ce-input--auto-linked", !isMultiDay);
-    if (!isMultiDay) select.value = "Same time each day";
+    if (!isMultiDay && !state.isReusingEvent) select.value = "Same time each day";
   }
 
   function collectDailySchedules() {
@@ -7804,8 +7968,9 @@ loadCachedOrganizations();
 
     const title = form?.eventName?.value.trim() || "Untitled Event";
     const date = form?.eventDate?.value || "";
-    const dateEnd = form?.eventDateEnd?.value || date;
-    const dailyScheduleType = form?.dailySchedule?.value || "Same time each day";
+    const dateEnd = form?.eventDateEnd?.value || (state.isReusingEvent ? "" : date);
+    const dailyScheduleType = form?.dailySchedule?.value ||
+      (state.isReusingEvent ? "" : "Same time each day");
     const dailySchedules = dailyScheduleType === "Different time by day" ? collectDailySchedules() : [];
 
     let effectiveTimeStart = form?.timeStart?.value || "";
@@ -7833,9 +7998,10 @@ loadCachedOrganizations();
       .split("\n")
       .map((s) => s.trim().replace(/^[•\-\*]\s*/, ""))
       .filter(Boolean) || [];
-    const targetAudience = normalizeTargetAudience(
-      form?.targetAudience?.value || state.targetAudience,
-    );
+    const targetAudienceValue = form?.targetAudience?.value || state.targetAudience;
+    const targetAudience = state.isReusingEvent && !targetAudienceValue
+      ? ""
+      : normalizeTargetAudience(targetAudienceValue);
     const targetDepartments = targetAudience === "Open to All"
       ? []
       : getSelectedTargetDepartments();
@@ -7854,14 +8020,14 @@ loadCachedOrganizations();
       organizerId: userIdentifier,
       createdBy: userIdentifier,
       creatorRole: currentRole,
-      source: form?.eventSource?.value || defaultEventSource,
-      eventSource: form?.eventSource?.value || defaultEventSource,
+      source: form?.eventSource?.value || (state.isReusingEvent ? "" : defaultEventSource),
+      eventSource: form?.eventSource?.value || (state.isReusingEvent ? "" : defaultEventSource),
       categories: [...state.selectedCategories],
       category: state.selectedCategories.join(", "),
       targetAudience,
       targetOrgs: targetOrganizations,
       targetOrganizations,
-      targetYear: form?.targetYear?.value || "All Levels",
+      targetYear: form?.targetYear?.value || (state.isReusingEvent ? "" : "All Levels"),
       targetYearLevels: [...state.targetYearLevels],
       targetDepartments,
       targetSections: [...state.targetSections],

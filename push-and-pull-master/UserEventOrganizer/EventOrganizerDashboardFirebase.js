@@ -10,12 +10,62 @@ import { app, auth, db, isFirebaseConfigured } from "../UserStudent/firebaseConf
 import { mountHelpBot } from "../recoVibeHelpBot.js";
 
 const { toMillis, formatCreatedDate } = window.RecovibeOrganizerDashboardDates;
-const CREATION_DATE_FIELDS = [
-  "createdAt",
-  "submittedAt",
-  "dateCreated",
-  "createdAtMs",
-  "updatedAt",
+const CREATION_DATE_PATHS = [
+  ["createdAt"],
+  ["created_at"],
+  ["dateCreated"],
+  ["date_created"],
+  ["createdDate"],
+  ["created_date"],
+  ["createdAtMs"],
+  ["created_at_ms"],
+  ["createdTimestamp"],
+  ["created_timestamp"],
+  ["creationTimestamp"],
+  ["timestampCreated"],
+  ["timeCreated"],
+  ["creationDate"],
+  ["dateCreatedAt"],
+  ["createdOn"],
+  ["created_on"],
+  ["submittedAt"],
+  ["submitted_at"],
+  ["submittedTimestamp"],
+  ["submittedDate"],
+  ["submittedOn"],
+  ["submitted_on"],
+  ["dateSubmitted"],
+  ["date_submitted"],
+  ["metadata", "createdAt"],
+  ["metadata", "created_at"],
+  ["metadata", "dateCreated"],
+  ["metadata", "createdDate"],
+  ["metadata", "createdTimestamp"],
+  ["meta", "createdAt"],
+  ["meta", "created_at"],
+  ["timestamps", "createdAt"],
+  ["timestamps", "created_at"],
+  ["audit", "createdAt"],
+  ["audit", "created_at"],
+  ["audit", "createdDate"],
+  ["audit", "timestamp"],
+];
+const GENERIC_TIMESTAMP_PATHS = [
+  ["timestamp"],
+  ["metadata", "timestamp"],
+  ["meta", "timestamp"],
+  ["timestamps", "timestamp"],
+];
+const UPDATED_DATE_PATHS = [
+  ["updatedAt"],
+  ["updated_at"],
+  ["lastUpdatedAt"],
+  ["modifiedAt"],
+  ["dateModified"],
+  ["metadata", "updatedAt"],
+  ["metadata", "updated_at"],
+  ["timestamps", "updatedAt"],
+  ["audit", "updatedAt"],
 ];
 const loginPath = "EventOrganizerLogin.html";
 const actionRows = document.getElementById("organizerActionRows");
@@ -29,6 +79,8 @@ let unsubscribeEvents = null;
 let unsubscribeNotifications = null;
 let unsubscribeAuth = null;
 let organizerEvents = [];
+let organizerIdentity = null;
+let eventSnapshotsBySource = new Map();
 let academicNotificationItems = [];
 let unsubscribeAcademicNotifications = null;
 let signingOut = false;
@@ -85,16 +137,265 @@ const escapeHtml = (value) =>
       })[character],
   );
 
+function normalizedIdentityValue(value) {
+  if (value && typeof value === "object") {
+    value = value.organizationCode || value.orgCode || value.code ||
+      value.organizationName || value.orgName || value.name || value.label || "";
+  }
+  return String(value || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
+function readOrganizerIdentity(user) {
+  let profile = {};
+  try {
+    const storedProfile = localStorage.getItem("recovibeOrganizerProfile");
+    profile = storedProfile ? JSON.parse(storedProfile) || {} : {};
+  } catch (error) {
+    console.error("Unable to read organizer identity:", error);
+  }
+  const rawOrganizations = [
+    profile.organizationCode,
+    profile.orgCode,
+    profile.organizationName,
+    profile.organization,
+    profile.orgName,
+    profile.councilName,
+  ].flatMap((value) =>
+    value && typeof value === "object"
+      ? [
+          value.organizationCode,
+          value.orgCode,
+          value.code,
+          value.organizationName,
+          value.orgName,
+          value.name,
+          value.label,
+        ]
+      : [value],
+  ).filter(Boolean);
+  const cscAliases = ["CSC", "Campus Student Council", "CSC Representative"];
+  const normalizedOrganizations = new Set(
+    rawOrganizations.map(normalizedIdentityValue).filter(Boolean),
+  );
+  if (cscAliases.some((alias) => normalizedOrganizations.has(normalizedIdentityValue(alias)))) {
+    cscAliases.forEach((alias) => normalizedOrganizations.add(normalizedIdentityValue(alias)));
+  }
+  const titleCase = (value) =>
+    value.replace(/\b\w/g, (letter) => letter.toUpperCase());
+  const organizationQueryValues = new Set();
+  rawOrganizations.concat(
+    cscAliases.filter((alias) => normalizedOrganizations.has(normalizedIdentityValue(alias))),
+  ).forEach((value) => {
+    const text = String(value).trim();
+    if (!text) return;
+    organizationQueryValues.add(text);
+    organizationQueryValues.add(text.toUpperCase());
+    organizationQueryValues.add(text.toLowerCase());
+    organizationQueryValues.add(titleCase(text.toLowerCase()));
+  });
+  const rawEmails = [user.email, profile.email, profile.organizerEmail]
+    .map((email) => String(email || "").trim())
+    .filter(Boolean);
+  return {
+    uid: String(user.uid || ""),
+    emails: new Set(
+      rawEmails.map((email) => email.toLowerCase()),
+    ),
+    emailQueryValues: [...new Set(rawEmails.flatMap((email) => [
+      email,
+      email.toLowerCase(),
+      email.toUpperCase(),
+    ]))].slice(0, 30),
+    organizations: normalizedOrganizations,
+    organizationQueryValues: [...organizationQueryValues].slice(0, 30),
+  };
+}
+
+function eventBelongsToOrganizer(event, identity = organizerIdentity) {
+  if (!identity) return false;
+  const ownerIds = [
+    event.organizerUid,
+    event.organizerId,
+    event.createdBy,
+    event.createdByUid,
+    event.submittedBy,
+    event.submittedByUid,
+    event.creatorUid,
+    event.creatorId,
+    event.createdByUserId,
+    event.userUid,
+    event.uid,
+    event.userId,
+    event.ownerId,
+    event.ownerUid,
+  ].flatMap(ownershipIdentityValues).map((value) => String(value || ""));
+  if (identity.uid && ownerIds.includes(identity.uid)) return true;
+  const ownerEmails = [
+    event.organizerEmail,
+    event.createdByEmail,
+    event.creatorEmail,
+    event.submittedByEmail,
+    event.ownerEmail,
+    event.email,
+    ...ownerIds,
+  ].map((email) => String(email || "").trim().toLowerCase());
+  if (ownerEmails.some((email) => identity.emails.has(email))) return true;
+  const eventOrganizations = [
+    event.organizationCode,
+    event.orgCode,
+    event.organizationName,
+    event.organization,
+    event.orgName,
+    event.councilName,
+    event.council,
+    event.organizerName,
+  ].map(normalizedIdentityValue).filter(Boolean);
+  return eventOrganizations.some((organization) =>
+    identity.organizations.has(organization),
+  );
+}
+
+function ownershipIdentityValues(value) {
+  if (!value || typeof value !== "object") return [value];
+  return [value.uid, value.userId, value.id, value.email].filter(Boolean);
+}
+
+function eventBelongsToCurrentAccount(event) {
+  const user = auth?.currentUser;
+  const uid = String(user?.uid || "").trim();
+  const ownerIdentifiers = [
+    event.organizerId,
+    event.organizerUid,
+    event.createdByUid,
+    event.createdBy,
+    event.submittedBy,
+    event.submittedByUid,
+    event.creatorUid,
+    event.creatorId,
+    event.createdByUserId,
+    event.userUid,
+    event.uid,
+    event.userId,
+    event.ownerId,
+    event.ownerUid,
+  ].flatMap(ownershipIdentityValues)
+    .map((value) => String(value || "").trim())
+    .filter(Boolean);
+  if (uid && ownerIdentifiers.includes(uid)) return true;
+  const uidValues = ownerIdentifiers.filter((value) => !value.includes("@"));
+  if (uidValues.length) return false;
+
+  const email = String(user?.email || "").trim().toLowerCase();
+  if (!email) return false;
+  return [
+    event.organizerEmail,
+    event.createdByEmail,
+    event.submittedByEmail,
+    event.creatorEmail,
+    event.ownerEmail,
+    event.email,
+    ...ownerIdentifiers,
+  ]
+    .map((value) => String(value || "").trim().toLowerCase())
+    .includes(email);
+}
+
+function valueAtPath(record, path) {
+  return path.reduce(
+    (value, key) => value && typeof value === "object" ? value[key] : undefined,
+    record,
+  );
+}
+
+function findNestedTimestampValues(record, keyPattern, maxDepth = 5) {
+  const values = [];
+  const visited = new WeakSet();
+  const visit = (value, depth) => {
+    if (!value || typeof value !== "object" || depth > maxDepth || visited.has(value)) return;
+    visited.add(value);
+    if (Array.isArray(value)) {
+      value.forEach((item) => visit(item, depth + 1));
+      return;
+    }
+    Object.entries(value).forEach(([key, nestedValue]) => {
+      if (keyPattern.test(key)) values.push(nestedValue);
+      if (nestedValue && typeof nestedValue === "object") visit(nestedValue, depth + 1);
+    });
+  };
+  visit(record, 0);
+  return values;
+}
+
+function eventTimestampMillis(value) {
+  if (value && typeof value.toDate === "function") {
+    try {
+      const date = value.toDate();
+      const millis = date instanceof Date ? date.getTime() : NaN;
+      if (Number.isFinite(millis)) return millis;
+    } catch (error) {
+      console.warn("Could not read event creation timestamp:", error);
+    }
+  }
+  const millis = toMillis(value);
+  if (millis !== null) return millis;
+  if (value && typeof value === "object") {
+    const seconds = Number(value.seconds ?? value._seconds);
+    const nanoseconds = Number(value.nanoseconds ?? value._nanoseconds ?? 0);
+    if (Number.isFinite(seconds) && Number.isFinite(nanoseconds)) {
+      return seconds * 1000 + nanoseconds / 1000000;
+    }
+  }
+  if (typeof value === "string") {
+    const text = value.trim();
+    if (/^\d{10,13}$/.test(text)) return toMillis(Number(text));
+    if (/^\d{1,2}[/-]\d{1,2}[/-]\d{4}(?:\s|$)/.test(text)) {
+      const parsed = Date.parse(text);
+      return Number.isFinite(parsed) ? parsed : null;
+    }
+    if (/\b\d{4}\b/.test(text) && /[A-Za-z/-]/.test(text)) {
+      const parsed = Date.parse(text);
+      return Number.isFinite(parsed) ? parsed : null;
+    }
+  }
+  return null;
+}
+
+function resolveEventCreatedAt(data, documentSnapshot) {
+  const nestedCreationValues = findNestedTimestampValues(
+    data,
+    /(?:created|creation|submitted|submission|timestamp|timeCreated|dateCreated)/i,
+  );
+  const nestedUpdateValues = findNestedTimestampValues(
+    data,
+    /(?:updated|modified|lastChanged)/i,
+  );
+  const candidateValues = [
+    ...CREATION_DATE_PATHS.map((path) => valueAtPath(data, path)),
+    ...nestedCreationValues,
+    ...GENERIC_TIMESTAMP_PATHS.map((path) => valueAtPath(data, path)),
+    documentSnapshot.createTime,
+    ...UPDATED_DATE_PATHS.map((path) => valueAtPath(data, path)),
+    ...nestedUpdateValues,
+    documentSnapshot.updateTime,
+  ];
+  const resolvedMillis = candidateValues
+    .map(eventTimestampMillis)
+    .find((millis) => millis !== null) ?? null;
+  if (resolvedMillis !== null) return resolvedMillis;
+  return documentSnapshot.metadata?.hasPendingWrites === true
+    ? Date.now()
+    : null;
+}
+
 function normalizeEvent(documentSnapshot) {
   const data = documentSnapshot.data();
-  const createdAt = CREATION_DATE_FIELDS
-    .map((field) => ({ field, millis: toMillis(data[field]) }))
-    .find((candidate) => candidate.millis !== null);
-  const hasUnresolvedCreatedAt = !createdAt &&
-    documentSnapshot.metadata?.hasPendingWrites === true &&
-    CREATION_DATE_FIELDS.some((field) =>
-      Object.prototype.hasOwnProperty.call(data, field) && data[field] == null,
-    );
+  const createdAt = resolveEventCreatedAt(data, documentSnapshot);
   const dateISO = data.eventDate || data.dateISO || data.dateStart || data.date || "";
   const endDateISO = data.endDateISO || data.dateEnd || data.endDate || dateISO;
   const startTime = data.timeStart || data.startTime || "";
@@ -118,8 +419,7 @@ function normalizeEvent(documentSnapshot) {
     venue: data.venue || data.location || "Location TBA",
     description: data.eventDescription || data.description || "",
     status: displayStatus(data.status),
-    createdAt: createdAt?.millis ?? null,
-    creationTimestampPending: hasUnresolvedCreatedAt,
+    createdAt,
   };
 }
 
@@ -189,17 +489,14 @@ function statusClass(status) {
 }
 
   function displayStatus(status) {
-    const normalized = String(status || "Pending")
-      .trim()
-      .toLowerCase()
-      .replace(/[\s_-]+/g, " ");
-    if (normalized.includes("reject")) return "Rejected";
-    if (normalized.includes("revision")) return "Needs Revision";
-    if (normalized.includes("cancel")) return "Cancelled";
-    if (normalized.includes("complet")) return "Completed";
-    if (normalized.includes("publish")) return "Published";
-    if (normalized.includes("pending")) return "Pending";
-    if (normalized.includes("approv")) return "Approved";
+    const normalized = normalizeStatus(status || "Pending");
+    if (normalized === "rejected") return "Rejected";
+    if (normalized === "revision") return "Needs Revision";
+    if (normalized === "cancelled") return "Cancelled";
+    if (normalized === "completed") return "Completed";
+    if (normalized === "published") return "Published";
+    if (normalized === "pending") return "Pending";
+    if (normalized === "approved") return "Approved";
     if (normalized === "draft") return "Draft";
     if (normalized === "unknown") return "Unknown";
     return status || "Pending";
@@ -222,10 +519,26 @@ function setCount(id, count) {
 
 function normalizeStatus(status) {
   const raw = String(status ?? "").trim().toLowerCase().replace(/[\s_-]+/g, " ");
-  if (["pending approval", "under review", "in review", "reviewing", "submitted"].includes(raw)) return "pending";
-  if (["needs revision", "revision requested", "changes requested", "revision", "rev"].includes(raw)) return "revision";
-  if (["rejected", "reject", "rej"].includes(raw)) return "rejected";
-  if (["approve", "fully approved", "ready to publish", "ok"].includes(raw)) return "approved";
+  if (
+    ["pending approval", "pending review", "awaiting approval", "awaiting review", "under review", "in review", "reviewing", "submitted"].includes(raw) ||
+    raw.startsWith("pending ")
+  ) return "pending";
+  if ([
+    "needs revision", "revision requested", "changes requested", "returned",
+    "returned for revision", "returned for changes", "returned for correction",
+    "needs changes", "needs correction", "revision", "rev",
+  ].includes(raw)) return "revision";
+  if (
+    ["rejected", "reject", "rej", "disapproved", "disapprove", "denied"].includes(raw) ||
+    raw.startsWith("rejected ") ||
+    raw.startsWith("disapproved ")
+  ) return "rejected";
+  if ([
+    "approve", "fully approved", "ready to publish", "ready for publication",
+    "awaiting publication", "approved pending publish",
+    "approved pending publication", "approved but unpublished",
+    "approved and unpublished", "ok",
+  ].includes(raw)) return "approved";
   if (["live", "published live"].includes(raw)) return "published";
   if (raw === "canceled") return "cancelled";
   return raw;
@@ -239,11 +552,15 @@ function getEventStatusValues(event) {
   return [
     event.status, event.approvalStatus, event.approval_status, event.adminStatus,
     event.admin_status, event.adminApprovalStatus, event.approvalState,
-    event.approval_state, event.reviewStatus, event.publicationStatus,
-    event.moderationStatus, event.eventStatus, event.isApproved, event.approved,
-    event.published, event.approval?.approvalStatus, event.approval?.status,
-    event.approval?.state, event.admin?.status, event.review?.status,
-    event.moderation?.status, event.approvalData?.status,
+    event.approval_state, event.reviewStatus, event.reviewDecision,
+    event.submissionStatus, event.workflowStatus, event.publicationStatus,
+    event.moderationStatus, event.eventStatus, event.decision,
+    event.isApproved, event.approved, event.published,
+    event.approval?.approvalStatus, event.approval?.status,
+    event.approval?.state, event.approval?.decision,
+    event.admin?.status, event.review?.status, event.review?.decision,
+    event.workflow?.status, event.moderation?.status,
+    event.approvalData?.status, event.approvalData?.approvalStatus,
   ].filter((status) => status !== null && status !== undefined && status !== "").map(normalizeStatus);
 }
 
@@ -251,6 +568,13 @@ function getEffectiveStatus(event) {
   const firestoreStatuses = getEventStatusValues(event);
   const eventStatus = firestoreStatuses[0] || "";
   if (eventStatus === "draft") return "draft";
+  if (firestoreStatuses.includes("cancelled")) return "cancelled";
+  if (firestoreStatuses.includes("rejected") || [event.isRejected, event.rejected].some(hasTrueFlag)) {
+    return "rejected";
+  }
+  if (firestoreStatuses.includes("revision") || [event.revisionRequested, event.needsRevision].some(hasTrueFlag)) {
+    return "revision";
+  }
   const isPublished = ["published", "cancelled"].find((value) => firestoreStatuses.includes(value));
   if (isPublished) return isPublished;
   if ([event.published, event.isPublished, event.isLive].some(hasTrueFlag)) return "published";
@@ -260,8 +584,6 @@ function getEffectiveStatus(event) {
   const requiredStageStatuses = stageEntries
     .filter((stage) => !stage || typeof stage !== "object" || (stage.required !== false && stage.enabled !== false))
     .map((stage) => normalizeStatus(typeof stage === "string" ? stage : stage?.status || stage?.approvalStatus || stage?.state || stage?.decision));
-  if (firestoreStatuses.includes("rejected")) return "rejected";
-  if (firestoreStatuses.includes("revision")) return "revision";
   if (firestoreStatuses.includes("approved")) return "approved";
   if ([event.isApproved, event.approved].some(hasTrueFlag)) return "approved";
   const members = Object.values(approval?.members || {});
@@ -283,6 +605,43 @@ function hasEventEnded(event, now = Date.now()) {
 function getDashboardStatus(event) {
   const status = getEffectiveStatus(event);
   return status === "published" && hasEventEnded(event) ? "completed" : status;
+}
+
+function isTerminalActionEvent(event) {
+  const statuses = getEventStatusValues(event);
+  const terminalStatuses = ["completed", "complete", "ended", "finished", "cancelled"];
+  return (
+    [event.completed, event.isCompleted, event.ended, event.isEnded, event.cancelled, event.canceled]
+      .some(hasTrueFlag) ||
+    statuses.some((status) => terminalStatuses.includes(status)) ||
+    hasEventEnded(event)
+  );
+}
+
+function getSummaryEventStatus(event) {
+  const statuses = getEventStatusValues(event);
+  const effectiveStatus = getEffectiveStatus(event);
+  const excludedStatuses = ["rejected", "revision", "draft", "cancelled"];
+  if (
+    excludedStatuses.includes(effectiveStatus) ||
+    statuses.some((status) => excludedStatuses.includes(status))
+  ) return effectiveStatus;
+
+  const explicitlyApproved = ["approved", "published"].includes(effectiveStatus) ||
+    statuses.some((status) => ["approved", "published"].includes(status)) ||
+    [event.isApproved, event.approved, event.published, event.isPublished, event.isLive]
+      .some(hasTrueFlag);
+  const explicitlyCompleted = statuses.some((status) =>
+    ["completed", "complete", "ended", "finished"].includes(status),
+  );
+  const endedByDate = hasEventEnded(event);
+  const pendingOnly = statuses.includes("pending") &&
+    !explicitlyApproved &&
+    !explicitlyCompleted;
+  if (pendingOnly) return "pending";
+  if (explicitlyCompleted || endedByDate) return "completed";
+  if (explicitlyApproved) return "approved";
+  return effectiveStatus;
 }
 
 function renderStatistics() {
@@ -310,25 +669,37 @@ function renderStatistics() {
       !["approved", "published"].includes(getEffectiveStatus(event)),
     ).length,
   );
-  setCount("approvedEventsCount", organizerEvents.filter((event) => getEffectiveStatus(event) === "approved").length);
+  setCount(
+    "approvedEventsCount",
+    organizerEvents.filter((event) =>
+      ["approved", "published", "completed"].includes(getSummaryEventStatus(event)),
+    ).length,
+  );
   setCount(
     "completedEventsCount",
-    organizerEvents.filter((event) => getDashboardStatus(event) === "completed").length,
+    organizerEvents.filter((event) =>
+      getSummaryEventStatus(event) === "completed",
+    ).length,
   );
 }
 
 function renderActionRows() {
   if (!actionRows) return;
-  const actionableStatuses = ["pending", "revision", "rejected", "approved", "draft"];
-  const actionableEvents = organizerEvents.filter((event) =>
-    actionableStatuses.includes(getDashboardStatus(event)),
-  ).sort((first, second) => {
+  const actionableEvents = organizerEvents.filter((event) => {
+    if (!eventBelongsToCurrentAccount(event)) return false;
+    if (isTerminalActionEvent(event)) return false;
+    const workflowStatus = getEffectiveStatus(event);
+    const summaryStatus = getSummaryEventStatus(event);
+    return workflowStatus === "pending" ||
+      ["revision", "rejected", "draft"].includes(workflowStatus) ||
+      (workflowStatus === "approved" && summaryStatus === "approved");
+  }).sort((first, second) => {
     const firstCreated = toMillis(first.createdAt);
     const secondCreated = toMillis(second.createdAt);
     if (firstCreated === null) return secondCreated === null ? 0 : 1;
     if (secondCreated === null) return -1;
     return secondCreated - firstCreated;
-  });
+  }).slice(0, 5);
   if (!actionableEvents.length) {
     actionRows.innerHTML = `<tr><td colspan="3"><div class="dashboard-empty-state"><strong>Nothing needs your action right now.</strong></div></td></tr>`;
     return;
@@ -339,9 +710,7 @@ function renderActionRows() {
       (event) => {
         const status = displayStatus(getDashboardStatus(event));
         const createdAt = toMillis(event.createdAt);
-        const createdAtText = createdAt === null
-          ? event.creationTimestampPending ? "" : "—"
-          : formatCreatedDate(createdAt);
+        const createdAtText = formatCreatedDate(createdAt);
         return `<tr data-firestore-event-id="${escapeHtml(event.eventId)}" style="cursor: pointer;">
         <td><strong>${escapeHtml(event.title)}</strong><small>${escapeHtml(event.category || event.eventType || "General")}</small></td>
         <td>${escapeHtml(createdAtText)}</td>
@@ -470,8 +839,9 @@ actionRows?.addEventListener("click", (event) => {
 });
 
 function stopDashboardListeners() {
-  unsubscribeEvents?.();
+  unsubscribeEvents?.forEach((unsubscribe) => unsubscribe());
   unsubscribeEvents = null;
+  eventSnapshotsBySource.clear();
   unsubscribeNotifications?.();
   unsubscribeNotifications = null;
   unsubscribeAcademicNotifications?.();
@@ -482,32 +852,124 @@ function stopDashboardListeners() {
 
 function startDashboardListeners(user) {
   try {
-    const eventsQuery = query(
-      collection(db, "events"),
-      or(
-        where("organizerUid", "==", user.uid),
-        where("organizerId", "==", user.uid),
-        where("createdBy", "==", user.uid),
+    organizerIdentity = readOrganizerIdentity(user);
+    eventSnapshotsBySource = new Map();
+    const eventsRef = collection(db, "events");
+    const eventQueries = [
+      [
+        "owner-uid",
+        query(
+          eventsRef,
+          or(
+            where("organizerUid", "==", user.uid),
+            where("organizerId", "==", user.uid),
+            where("createdBy", "==", user.uid),
+          ),
+        ),
+      ],
+    ];
+    [
+      "createdByUid",
+      "submittedBy",
+      "submittedByUid",
+      "creatorUid",
+      "creatorId",
+      "createdByUserId",
+      "userUid",
+      "uid",
+      "userId",
+      "ownerId",
+      "ownerUid",
+    ].forEach((field) => {
+      eventQueries.push([
+        `owner-uid-${field}`,
+        query(eventsRef, where(field, "==", user.uid)),
+      ]);
+    });
+    if (organizerIdentity.emails.size) {
+      [
+        "organizerEmail",
+        "createdByEmail",
+        "submittedByEmail",
+        "creatorEmail",
+        "ownerEmail",
+        "email",
+        "createdBy",
+        "submittedBy",
+      ].forEach((field) => {
+        eventQueries.push([
+          `owner-email-${field}`,
+          query(eventsRef, where(field, "in", organizerIdentity.emailQueryValues)),
+        ]);
+      });
+    }
+    if (organizerIdentity.organizationQueryValues.length) {
+      [
+        "organizationCode",
+        "organizationName",
+        "organization",
+        "orgCode",
+        "orgName",
+        "councilName",
+        "council",
+        "organizerName",
+      ].forEach((field) => {
+        eventQueries.push([
+          `organization-${field}`,
+          query(eventsRef, where(field, "in", organizerIdentity.organizationQueryValues)),
+        ]);
+      });
+    }
+
+    const pendingEventSources = new Set(eventQueries.map(([source]) => source));
+    const failedEventSources = new Set();
+    const refreshEvents = () => {
+      const documentsById = new Map();
+      eventSnapshotsBySource.forEach((documents) => {
+        documents.forEach((documentSnapshot, id) => {
+          const current = documentsById.get(id);
+          const currentUpdatedAt = current?.updateTime?.toMillis?.() || 0;
+          const nextUpdatedAt = documentSnapshot.updateTime?.toMillis?.() || 0;
+          if (!current || nextUpdatedAt >= currentUpdatedAt) {
+            documentsById.set(id, documentSnapshot);
+          }
+        });
+      });
+      organizerEvents = [...documentsById.values()]
+        .map(normalizeEvent)
+        .filter((event) => eventBelongsToOrganizer(event));
+      renderDashboard();
+      if (pendingEventSources.size === 0) {
+        if (failedEventSources.size === eventQueries.length) {
+          setDashboardMessage(
+            "events",
+            "Could not load your events. Check your connection and try again.",
+          );
+        } else {
+          setDashboardMessage("events", "");
+        }
+        settleInitialDashboardSource("events");
+      }
+    };
+
+    unsubscribeEvents = eventQueries.map(([source, eventsQuery]) =>
+      onSnapshot(
+        eventsQuery,
+        (snapshot) => {
+          eventSnapshotsBySource.set(source, new Map(
+            snapshot.docs.map((documentSnapshot) => [documentSnapshot.id, documentSnapshot]),
+          ));
+          pendingEventSources.delete(source);
+          failedEventSources.delete(source);
+          refreshEvents();
+        },
+        (error) => {
+          console.error(`Unable to load organizer dashboard events (${source}):`, error.code, error.message);
+          pendingEventSources.delete(source);
+          failedEventSources.add(source);
+          refreshEvents();
+        },
       ),
-    );
-    unsubscribeEvents = onSnapshot(
-      eventsQuery,
-      (snapshot) => {
-        organizerEvents = snapshot.docs.map(normalizeEvent);
-        setDashboardMessage("events", "");
-        renderDashboard();
-        settleInitialDashboardSource("events");
-      },
-      (error) => {
-        console.error("Unable to load organizer dashboard events:", error.code, error.message);
-        setDashboardMessage(
-          "events",
-          error.code === "permission-denied"
-            ? "You don't have permission to view your organizer events."
-            : "Could not load your events. Check your connection and try again.",
-        );
-        settleInitialDashboardSource("events");
-      },
     );
   } catch (error) {
     console.error("Unable to start organizer event listener:", error.code, error.message);

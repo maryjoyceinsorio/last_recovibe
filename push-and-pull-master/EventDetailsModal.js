@@ -78,11 +78,113 @@
         "name", "fullName", "full_name", "displayName", "display_name",
         "facultyName", "adviserName", "advisorName", "title", "label", "text",
         "content", "description", "objective", "objectives", "rule", "rules",
-        "reminder", "reminders", "instruction", "items", "values", "value",
+        "message", "remark", "remarks", "note", "notes", "reminder",
+        "reminders", "instruction", "items", "values", "value",
         "fileName", "filename", "id",
       ]));
     }
     return "";
+  };
+
+  const approvalReasonDetails = (event) => {
+    const specificReasonFields = [
+      "rejectionReason", "rejection_reason", "disapprovalReason",
+      "disapproval_reason", "rejectReason", "reject_reason",
+      "disapproveReason", "disapprove_reason", "statusReason",
+      "status_reason", "reviewReason", "review_reason", "decisionReason",
+      "decision_reason", "rejectionComments", "rejection_comments",
+      "disapprovalNotes", "disapproval_notes", "reviewerNote",
+      "reviewer_note", "reviewerRemarks", "reviewer_remarks",
+      "reviewRemarks", "review_remarks", "reviewNote", "review_note",
+      "approvalNote", "approval_note", "adminNote", "admin_note",
+      "adminRemarks", "admin_remarks", "adminFeedback", "admin_feedback",
+    ];
+    const noteFields = [
+      "note", "notes", "comment", "comments", "remarks", "feedback", "reason",
+    ];
+    const statusFields = [
+      "status", "eventStatus", "event_status", "approvalStatus",
+      "approval_status", "adminApprovalStatus", "reviewStatus",
+      "review_status", "registrationStatus", "decision",
+      "approvalDecision", "approval_decision", "reviewDecision",
+      "review_decision",
+    ];
+    const reviewObjects = [event];
+    const visited = new Set();
+    const candidates = [];
+    let rejected = false;
+    while (reviewObjects.length) {
+      const current = reviewObjects.pop();
+      if (!current || typeof current !== "object" || visited.has(current)) continue;
+      visited.add(current);
+      const status = statusFields
+        .map((field) => String(current[field] || ""))
+        .map((value) => value.trim().toLowerCase().replace(/[\s_-]+/g, ""));
+      const rejectedRecord = status.some((value) => /(reject|disapprov)/.test(value));
+      if (rejectedRecord) rejected = true;
+      const reason = eventText(firstValue(current, specificReasonFields));
+      const note = eventText(firstValue(current, noteFields));
+      const text = reason || note;
+      if (text) {
+        const stage = eventText(firstValue(current, [
+          "stageLabel", "stageName", "stage", "stageKey", "approvalStage",
+        ]));
+        const reviewer = eventText(firstValue(current, [
+          "reviewerName", "reviewedByName", "decidedByName", "actorName",
+          "byName", "reviewer", "reviewedBy", "decidedBy", "actor",
+        ]));
+        const dateValue = firstValue(current, [
+          "timestamp", "decidedAt", "reviewedAt", "updatedAt", "createdAt", "at",
+        ]);
+        let timestamp = 0;
+        if (typeof dateValue?.toMillis === "function") timestamp = dateValue.toMillis();
+        else if (typeof dateValue?.toDate === "function") timestamp = dateValue.toDate().getTime();
+        else if (dateValue instanceof Date) timestamp = dateValue.getTime();
+        else if (typeof dateValue === "number") timestamp = dateValue;
+        else if (dateValue) timestamp = Date.parse(String(dateValue)) || 0;
+        candidates.push({
+          text,
+          rejectedRecord,
+          specific: Boolean(reason),
+          isRoot: current === event,
+          stage,
+          reviewer,
+          timestamp,
+        });
+      }
+      Object.entries(current).forEach(([key, value]) => {
+        if (!/approval|review|decision|moderation|stage|history/i.test(key)) return;
+        if (Array.isArray(value)) {
+          value.forEach((entry) => {
+            if (entry && typeof entry === "object") reviewObjects.push(entry);
+          });
+        } else if (value && typeof value === "object") {
+          reviewObjects.push(value);
+        }
+      });
+    }
+    const rejectedCandidates = candidates
+      .filter((candidate) => candidate.rejectedRecord)
+      .sort((left, right) =>
+        Number(left.isRoot) - Number(right.isRoot) ||
+        Number(right.specific) - Number(left.specific) ||
+        right.timestamp - left.timestamp,
+      );
+    const reasonCandidate = rejectedCandidates[0] ||
+      candidates.find((candidate) => candidate.isRoot && candidate.specific) ||
+      candidates.find((candidate) => candidate.specific) ||
+      candidates.sort((left, right) => right.timestamp - left.timestamp)[0];
+    return {
+      rejected,
+      reason: reasonCandidate?.text || "",
+      context: reasonCandidate
+        ? [reasonCandidate.stage && `Stage: ${reasonCandidate.stage}`,
+          reasonCandidate.reviewer && `Reviewer: ${reasonCandidate.reviewer}`]
+          .filter(Boolean)
+          .join(" · ")
+        : "",
+      show: rejected || Boolean(reasonCandidate),
+    };
   };
 
   const formatEventTime = (value, event) => {
@@ -447,6 +549,10 @@
       ])),
       ...requirements,
     ];
+    const approvalReason = approvalReasonDetails(event);
+    const approvalReasonMarkup = approvalReason.show
+      ? `<aside class="student-event-rejection-reason" role="note"><strong>Disapproval / rejection reason</strong>${approvalReason.context ? `<span>${escapeHTML(approvalReason.context)}</span>` : ""}<p>${escapeHTML(approvalReason.reason || "No disapproval reason was provided.")}</p></aside>`
+      : "";
     const objectives = firstValue(event, [
       "objectives", "objective", "eventObjectives", "event_objectives",
       "objectivesList", "learningObjectives", "learning_objectives",
@@ -504,6 +610,12 @@
       "facultyAdviser", "faculty_adviser", "facultyAdvisorName",
       "faculty_advisor_name", "teacherInCharge", "teacher_in_charge",
       "assignedFaculty", "assigned_faculty",
+    ]) || firstValue(contactInfo, [
+      "facultyInCharge", "faculty_in_charge", "facultyAdviser",
+      "facultyAdvisor", "adviserName", "advisorName", "facultyName",
+    ]) || firstValue(event.approval, [
+      "facultyInCharge", "faculty_in_charge", "facultyAdviser",
+      "facultyAdvisor", "adviserName", "advisorName", "facultyName",
     ]);
     const facultyInChargeName = eventText(facultyInChargeValue) ||
       eventText(firstValue(event, [
@@ -567,9 +679,10 @@
       ])) || "N/A")}</p></section>`,
       `<section class="student-event-section"><h3>Objectives</h3>${listMarkup(asList(objectives).length ? asList(objectives) : ["N/A"])}</section>`,
       `<section class="student-event-section"><h3>Rules &amp; Reminders</h3>${listMarkup(rules.length ? rules : ["N/A"])}</section>`,
+      approvalReasonMarkup,
       `<div class="student-event-bottom-grid">
         <section class="student-event-section student-event-contact"><h3>Contact Person</h3><p><strong>Name:</strong> ${escapeHTML(contactName || "N/A")}</p><p><strong>Email:</strong> ${contactEmail ? `<a href="mailto:${escapeHTML(contactEmail)}">${escapeHTML(contactEmail)}</a>` : "N/A"}</p><p><strong>Number:</strong> ${escapeHTML(contactPhone || "N/A")}</p><p><strong>Faculty In Charge:</strong> ${escapeHTML(facultyInChargeName || "N/A")}</p></section>
-        <section class="student-event-section student-event-documents"><h3>Participant Documents</h3><p>Open the participant document links in a new tab.</p><div class="student-event-attachments">${participantDocuments.length ? documentMarkup(participantDocuments) : '<p class="student-event-no-documents">No files attached.</p>'}</div><small>(Make sure to download and fill up these files. Its needed for participation)</small>${approvalDocuments.length ? `<div class="student-event-approval-documents"><p><strong>Approval Documents</strong></p><div class="student-event-attachments">${documentMarkup(approvalDocuments, false)}</div></div>` : ""}</section>
+        <section class="student-event-section student-event-documents"><h3>Participant Documents</h3><p>Open the participant document links in a new tab.</p><div class="student-event-attachments">${participantDocuments.length ? documentMarkup(participantDocuments) : '<p class="student-event-no-documents">No files attached.</p>'}</div><small>(Make sure to download and fill up these files. Its needed for participation)</small>${approvalDocuments.length ? `<div class="student-event-approval-documents"><p><strong>Approval Documents</strong></p><div class="student-event-attachments">${documentMarkup(approvalDocuments)}</div></div>` : ""}</section>
       </div>`,
     ].join("");
     modal.querySelector('[data-field="content"]').innerHTML = detailContent;
@@ -1125,6 +1238,12 @@
         "facultyAdviser", "faculty_adviser", "facultyAdvisorName",
         "faculty_advisor_name", "teacherInCharge", "teacher_in_charge",
         "assignedFaculty", "assigned_faculty",
+      ]) || firstValue(contactInfo, [
+        "facultyInCharge", "faculty_in_charge", "facultyAdviser",
+        "facultyAdvisor", "adviserName", "advisorName", "facultyName",
+      ]) || firstValue(event.approval, [
+        "facultyInCharge", "faculty_in_charge", "facultyAdviser",
+        "facultyAdvisor", "adviserName", "advisorName", "facultyName",
       ]);
       const facultyInChargeName = displayText(facultyInChargeValue, "", event) ||
         displayText(firstValue(event, [
@@ -1157,6 +1276,10 @@
             ]
           : entries(event.requirements)),
       ];
+      const approvalReason = approvalReasonDetails(event);
+      const approvalReasonMarkup = approvalReason.show
+        ? `<aside class="student-event-rejection-reason" role="note"><strong>Disapproval / rejection reason</strong>${approvalReason.context ? `<span>${escapeHTML(approvalReason.context)}</span>` : ""}<p>${escapeHTML(approvalReason.reason || "No disapproval reason was provided.")}</p></aside>`
+        : "";
       const infoCard = (label, value, className = "") =>
         `<div class="student-event-info-card${className ? ` ${className}` : ""}"><strong>${escapeHTML(label)}</strong><span>${escapeHTML(displayText(value, "N/A", event))}</span></div>`;
       const scheduleRows = dailySchedules
@@ -1213,6 +1336,7 @@
         ]), "N/A", event))}</p></section>
         <section class="student-event-section"><h3>Objectives</h3>${bullets(objectives)}</section>
         <section class="student-event-section"><h3>Rules &amp; Reminders</h3>${bullets(rules)}</section>
+        ${approvalReasonMarkup}
         <div class="student-event-bottom-grid">
           <section class="student-event-section student-event-contact"><h3>Contact Person</h3><p><strong>Name:</strong> ${escapeHTML(displayText(person || "N/A", "N/A", event))}</p><p><strong>Email:</strong> ${email ? `<a href="mailto:${escapeHTML(displayText(email, "N/A", event))}">${escapeHTML(displayText(email, "N/A", event))}</a>` : "N/A"}</p><p><strong>Number:</strong> ${escapeHTML(displayText(phone || "N/A", "N/A", event))}</p><p><strong>Faculty In Charge:</strong> ${escapeHTML(displayText(facultyInChargeName || "N/A", "N/A", event))}</p></section>
           <section class="student-event-section student-event-documents"><h3>Participant Documents</h3><p>Open the participant document links in a new tab.</p><div class="student-event-attachments">${attachmentsMarkup(event)}</div><small>(Make sure to download and fill up these files. Its needed for participation)</small></section>

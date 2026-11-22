@@ -487,9 +487,7 @@ function renderNotifications() {
     .value.trim()
     .toLowerCase();
   const visible = notifications.filter((item) => {
-    const filterMatch =
-      activeFilter === "all" ||
-      (activeFilter === "read" ? item.read : !item.read);
+    const filterMatch = activeFilter === "all" || !item.read;
     const textMatch =
       !query || `${item.title} ${item.message}`.toLowerCase().includes(query);
     return belongsToVisibleOrganizer(item) && filterMatch && textMatch;
@@ -521,8 +519,7 @@ function renderNotifications() {
   const unreadLabel = document.getElementById("notificationUnreadCount");
   if (unreadLabel) unreadLabel.textContent = String(unreadCount);
   document.querySelectorAll("[data-notification-filter]").forEach((button) => {
-    const selected = button.dataset.notificationFilter === activeFilter ||
-      (button.dataset.notificationFilter === "all" && activeFilter === "read");
+    const selected = button.dataset.notificationFilter === activeFilter;
     button.classList.toggle("is-active", selected);
     button.setAttribute("aria-pressed", String(selected));
   });
@@ -642,19 +639,39 @@ function closeDeleteConfirmation() {
 }
 
 function deletePendingNotification() {
-  if (!pendingDeleteId) return;
-  const target = notifications.find((item) => item.id === pendingDeleteId);
-  if (!target) return;
+  const targetId = pendingDeleteId;
+  if (!targetId || pendingNotificationActions.has(targetId)) return;
+  const target = notifications.find((item) => item.id === targetId);
+  if (!target) {
+    closeDeleteConfirmation();
+    return;
+  }
 
+  const previousNotifications = notifications;
+  const previousDeletedNotifications = deletedNotifications;
   const moved = {
     ...target,
     deletedAt: Date.now(),
     expiresAt: Date.now() + deletedNotificationLifetime,
   };
-  notifications = notifications.filter((item) => item.id !== pendingDeleteId);
+  pendingNotificationActions.add(targetId);
+  notifications = notifications.filter((item) => item.id !== targetId);
   deletedNotifications.unshift(moved);
   undoDeletedItem = moved;
-  saveNotifications();
+  try {
+    saveNotifications();
+  } catch (error) {
+    notifications = previousNotifications;
+    deletedNotifications = previousDeletedNotifications;
+    undoDeletedItem = null;
+    console.error("[OrganizerNotifications] Could not delete notification:", error);
+    window.alert("This notification could not be deleted. Please try again.");
+    closeDeleteConfirmation();
+    renderNotifications();
+    return;
+  } finally {
+    pendingNotificationActions.delete(targetId);
+  }
   closeDeleteConfirmation();
   renderNotifications();
   const toast = document.getElementById("organizerNotificationToast");
@@ -730,8 +747,6 @@ function closeNotificationDetails() {
 
 document.addEventListener("DOMContentLoaded", () => {
   const searchInput = document.getElementById("notificationSearch");
-  const filterSelect = document.getElementById("notificationFilter");
-  window.enhanceDropdownSelects?.("#notificationFilter");
   const list = document.getElementById("notificationList");
   const deletedList = document.getElementById("deletedNotificationList");
   const toggle = document.getElementById("showDeletedNotifications");
@@ -754,15 +769,12 @@ document.addEventListener("DOMContentLoaded", () => {
   });
 
   if (searchInput) searchInput.addEventListener("input", renderNotifications);
-  if (filterSelect)
-    filterSelect.addEventListener("change", (event) => {
-      activeFilter = event.target.value;
-      renderNotifications();
-    });
   document.querySelectorAll("[data-notification-filter]").forEach((button) => {
     button.addEventListener("click", () => {
-      filterSelect.value = button.dataset.notificationFilter;
-      filterSelect.dispatchEvent(new Event("change", { bubbles: true }));
+      const selectedFilter = button.dataset.notificationFilter;
+      if (!["all", "unread"].includes(selectedFilter)) return;
+      activeFilter = selectedFilter;
+      renderNotifications();
     });
   });
 
@@ -816,6 +828,7 @@ document.addEventListener("DOMContentLoaded", () => {
       }
 
       if (menuAction) {
+        event.preventDefault();
         event.stopPropagation();
         if (!item) return;
         if (menuAction.dataset.notificationAction === "delete") {

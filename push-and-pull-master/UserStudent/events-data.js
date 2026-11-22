@@ -235,7 +235,6 @@ function getStudentPreferences() {
     const accountPreferenceKey = `recovibePreferences:${user.uid || user.email || "student"}`;
     const defaultSources = [
       "PUP Official",
-      "CSC",
       "Teacher / Faculty",
       "Organizational",
       "Others / External",
@@ -261,7 +260,14 @@ function getStudentPreferences() {
         .map((c) => String(c).trim().toLowerCase())
         .filter(Boolean),
       sources: preferences.sources
-        .map((s) => String(s).trim().toLowerCase())
+        .map((source) => {
+          const value = String(source).trim().toLowerCase();
+          return /\bcsc\b/.test(value) ||
+            value.includes("campus student council") ||
+            value.includes("central student council")
+            ? "organizational"
+            : value;
+        })
         .filter(Boolean),
     };
   } catch {
@@ -269,7 +275,6 @@ function getStudentPreferences() {
       categories: ["academic & learning", "tech & innovation"],
       sources: [
         "pup official",
-        "csc",
         "teacher / faculty",
         "organizational",
         "others / external",
@@ -313,11 +318,12 @@ function normalizeSource(source) {
   const norm = String(source || "").trim().toLowerCase();
   if (norm.includes("holiday")) return "Holiday";
   if (
-    norm === "csc" ||
+    /\bcsc\b/.test(norm) ||
+    norm.includes("campus student council") ||
     norm.includes("central student council") ||
     norm.includes("council")
   )
-    return "CSC";
+    return "Organizational";
   if (norm.includes("teacher") || norm.includes("faculty"))
     return "Teacher / Faculty";
   if (
@@ -362,20 +368,26 @@ function matchesStudentPreferences(event, preferences) {
         c.includes(eventCat),
     );
 
-  const eventSrc = String(
-    event.source || event.eventSource || "Organizational",
-  )
-    .trim()
-    .toLowerCase();
+  const eventSrc = [
+    event.source,
+    event.eventSource,
+    event.organization,
+    event.organizationName,
+    event.organizerName,
+  ]
+    .map((source) => String(source || "").trim().toLowerCase())
+    .filter(Boolean)
+    .join(" ") || "Organizational";
   const normalizedSrc = normalizeSource(eventSrc).toLowerCase();
+  const sourceGroups = new Set([eventSrc, normalizedSrc]);
+  if (normalizedSrc === "organizational") {
+    sourceGroups.add("others / external");
+  }
   const srcMatches =
     preferences.sources.length === 0 ||
-    preferences.sources.some(
-      (s) =>
-        s === eventSrc ||
-        s === normalizedSrc ||
-        eventSrc.includes(s) ||
-        s.includes(eventSrc),
+    preferences.sources.some((source) =>
+      sourceGroups.has(source) ||
+      [...sourceGroups].some((group) => group.includes(source) || source.includes(group)),
     );
 
   return catMatches && srcMatches;

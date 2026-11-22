@@ -187,6 +187,169 @@
       <span class="page-preloader-spinner" aria-hidden="true"></span>
       <span>Loading...</span>
     </div>
+        <section class="activity-summary-dashboard" id="activitySummaryDashboard" aria-label="Activity summary">
+          <div class="activity-summary-toolbar">
+            <div class="activity-summary-filters" aria-label="Activity filters">
+              <label class="visually-hidden" for="activityPeriodFilter">Date period</label>
+              <select id="activityPeriodFilter" aria-label="Date period">
+                <option value="year" selected>This year</option>
+                <option value="month">This month</option>
+                <option value="week">This week</option>
+                <option value="today">Today</option>
+                <option value="all">All dates</option>
+              </select>
+              <label class="visually-hidden" for="activityVenueFilter">Venue</label>
+              <select id="activityVenueFilter" aria-label="Venue">
+                <option value="all" selected>All venues</option>
+              </select>
+              <label class="visually-hidden" for="activitySourceFilter">Event source</label>
+              <select id="activitySourceFilter" aria-label="Event source">
+                <option value="all" selected>All</option>
+                <option value="PUP Official">PUP Official</option>
+                <option value="Organizational">Organizational</option>
+                <option value="Others / External">Others / External</option>
+              </select>
+              <label class="visually-hidden" for="activityCategoryFilter">Category</label>
+              <select id="activityCategoryFilter" aria-label="Category">
+                <option value="all" selected>All</option>
+                <option value="Academic &amp; Learning">Academic &amp; Learning</option>
+                <option value="Tech &amp; Innovation">Tech &amp; Innovation</option>
+                <option value="Leadership &amp; Career">Leadership &amp; Career</option>
+                <option value="Sports &amp; Fitness">Sports &amp; Fitness</option>
+                <option value="Music &amp; Entertainment">Music &amp; Entertainment</option>
+                <option value="Orgs &amp; Student Acts">Orgs &amp; Student Acts</option>
+                <option value="Social Events">Social Events</option>
+                <option value="Community &amp; Outreach">Community &amp; Outreach</option>
+                <option value="Competitions">Competitions</option>
+                <option value="Seminars &amp; Workshops">Seminars &amp; Workshops</option>
+                <option value="Arts &amp; Culture">Arts &amp; Culture</option>
+                <option value="University &amp; Campuses">University &amp; Campuses</option>
+              </select>
+              <label class="visually-hidden" for="activityStatusFilter">Event status</label>
+              <select id="activityStatusFilter" aria-label="Event status">
+                <option value="all" selected>All</option>
+                <option value="upcoming">Upcoming</option>
+                <option value="ongoing">Ongoing</option>
+                <option value="completed">Completed</option>
+                <option value="cancelled">Cancelled</option>
+                <option value="pending_approval">Pending approval</option>
+              </select>
+            </div>
+            <div class="activity-summary-actions">
+              <button type="button" class="activity-export-button" id="activityExportButton">
+                <span aria-hidden="true">↓</span> Export <span aria-hidden="true">⌄</span>
+              </button>
+              <button type="button" class="activity-refresh-button" id="activityRefreshButton" aria-label="Refresh activity summary" title="Refresh">
+                <span aria-hidden="true">↻</span>
+              </button>
+              <span class="activity-last-updated" id="activityLastUpdated">Last updated —</span>
+            </div>
+          </div>
+
+          <p class="activity-summary-error" id="activitySummaryError" role="alert" hidden></p>
+
+          <section class="activity-metrics-grid" aria-label="Event metrics">
+            <article class="activity-metric-card">
+              <h2>Total events</h2><strong id="activityMetricEvents">0</strong><p>All matching events</p>
+            </article>
+            <article class="activity-metric-card">
+              <h2>Total registrations</h2><strong id="activityMetricRegistrations">0</strong><p>Registered attendees</p>
+            </article>
+            <article class="activity-metric-card">
+              <h2>Attendance rate</h2><strong id="activityMetricAttendance">—</strong><p>Attendance data appears after check-in</p>
+            </article>
+            <article class="activity-metric-card">
+              <h2>Venues used</h2><strong id="activityMetricVenues">0</strong><p>Distinct venues</p>
+            </article>
+            <article class="activity-metric-card">
+              <h2>Average fill rate</h2><strong id="activityMetricFillRate">—</strong><p>Registered / capacity</p>
+            </article>
+            <article class="activity-metric-card">
+              <h2>No-shows</h2><strong id="activityMetricNoShows">0</strong><p>Ended events only</p>
+            </article>
+          </section>
+
+          <section class="activity-analytics-grid" aria-label="Event analytics">
+            <article class="activity-analytics-card">
+              <div class="activity-card-heading"><h2>Registrations over time</h2><span>Registrations</span></div>
+              <div class="activity-chart-container" id="registrationsChart" role="img" aria-label="Registrations over time">
+                <p>No event data yet.</p>
+              </div>
+            </article>
+            <article class="activity-analytics-card">
+              <div class="activity-card-heading"><h2>Venue usage</h2><span>Events</span></div>
+              <div class="activity-chart-container" id="venueUsageChart" role="img" aria-label="Venue usage">
+                <p>No venues used yet.</p>
+              </div>
+            </article>
+          </section>
+
+          <div class="activity-summary-tabs" role="tablist" aria-label="Summary detail views">
+            <button type="button" class="activity-summary-tab is-active" id="activityEventsTab" role="tab" aria-selected="true" aria-controls="activityEventsPanel" data-activity-tab="events">Events</button>
+            <button type="button" class="activity-summary-tab" id="activityVenuesTab" role="tab" aria-selected="false" aria-controls="activityVenuesPanel" data-activity-tab="venues">Venues</button>
+          </div>
+
+          <section class="activity-detail-card" id="activityEventsPanel" role="tabpanel" aria-labelledby="activityEventsTab">
+            <div class="activity-detail-heading">
+              <h2>Per-event summary</h2>
+              <input type="search" id="activityEventSearch" placeholder="Search events" aria-label="Search events">
+              <label class="visually-hidden" for="activityEventDateFilter">Event date</label>
+              <input type="date" id="activityEventDateFilter" aria-label="Event date">
+            </div>
+            <div class="activity-empty-state" id="activityEventsEmpty">
+              <strong>No event data yet.</strong> Create an event to start tracking activity.
+              <a href="EventOrganizerCreateEvent.html" class="activity-create-event-link">Create Event</a>
+            </div>
+            <div class="activity-table-scroll" id="activityEventsTableWrap" hidden>
+              <table class="activity-summary-table">
+                <thead><tr><th>Event</th><th>Event date</th><th>Venue</th><th>Registrations</th><th>Attendance rate</th><th>Status</th></tr></thead>
+                <tbody id="activityEventsTableBody"></tbody>
+              </table>
+            </div>
+          </section>
+
+          <section class="activity-detail-card" id="activityVenuesPanel" role="tabpanel" aria-labelledby="activityVenuesTab" hidden>
+            <h2>Per-venue summary</h2>
+            <div class="activity-empty-state" id="activityVenuesEmpty">No venues used yet.</div>
+            <div class="activity-table-scroll" id="activityVenuesTableWrap" hidden>
+              <table class="activity-summary-table">
+                <thead><tr><th>Venue</th><th>Events</th><th>Registrations</th><th>Capacity</th><th>Fill rate</th></tr></thead>
+                <tbody id="activityVenuesTableBody"></tbody>
+              </table>
+            </div>
+          </section>
+
+          <section class="activity-participation-grid" aria-label="Participation analytics">
+            <article class="activity-detail-card activity-participation-card">
+              <div class="activity-participation-heading">
+                <h2>Participation Summary</h2>
+                <input type="search" id="participationEventSearch" placeholder="Search events" aria-label="Search participation events">
+              </div>
+              <label class="visually-hidden" for="participationEventSelect">Select event</label>
+              <select id="participationEventSelect" class="activity-participation-select" aria-label="Select event">
+                <option value="">No events available</option>
+              </select>
+              <div class="activity-participation-empty" id="participationEventEmpty" hidden>No event selected. Participation totals are 0.</div>
+              <div class="activity-participation-details" id="participationEventDetails" aria-live="polite">
+                <h3 id="participationSelectedEventName">No event selected</h3>
+                <p id="participationSelectedEventMeta">Select an event to view participation.</p>
+                <dl class="activity-participation-metrics">
+                  <div><dt>Registered</dt><dd id="participationRegistered">0</dd></div>
+                  <div><dt>Attended</dt><dd id="participationAttended">0</dd></div>
+                  <div><dt>Cancelled</dt><dd id="participationCancelled">0</dd></div>
+                  <div><dt>No-shows</dt><dd id="participationNoShows">0</dd></div>
+                  <div><dt>Attendance rate</dt><dd id="participationAttendanceRate">—</dd></div>
+                </dl>
+              </div>
+            </article>
+            <article class="activity-detail-card activity-most-participated-card">
+              <h2>Most Participated Events</h2>
+              <ol class="activity-most-participated-list" id="activityMostParticipatedList"></ol>
+              <p class="activity-participation-empty" id="activityMostParticipatedEmpty">No participation data available yet.</p>
+            </article>
+          </section>
+        </section>
+        <div class="act-sum-legacy-report" aria-hidden="true">
         <header class="act-sum-top-header">
           <div class="act-sum-title-group">
             <h1 class="act-sum-page-title">Summary Period</h1>
@@ -356,6 +519,7 @@
 
         <div class="act-sum-bottom-bar">
           <button type="button" class="download-copy-btn" id="downloadCopyBtn">Download a Copy</button>
+        </div>
         </div>
       </main>
     </div>

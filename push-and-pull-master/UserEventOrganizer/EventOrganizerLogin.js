@@ -4,7 +4,14 @@ import {
   setPersistence,
   signOut,
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
-import { doc, getDoc } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+import {
+  collection,
+  doc,
+  getDoc,
+  getDocs,
+  query,
+  where,
+} from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 import { auth, authReady, db, isFirebaseConfigured } from "../UserStudent/firebaseConfig.js";
 import {
   profileCollectionsForRole,
@@ -98,46 +105,181 @@ import {
       .replace(/[^a-z0-9]/g, "");
   }
 
-  async function findOrganizerProfile(uid) {
-    const reads = await Promise.allSettled([
-      getDoc(doc(db, "adminUser", uid)),
-      getDoc(doc(db, "users", uid)),
-      getDoc(doc(db, "eventOrganizations", uid)),
-    ]);
-    const errors = reads
+  function getOrganizerProfileData(data) {
+    if (!data || typeof data !== "object" || Array.isArray(data)) return {};
+    const nestedProfile = [data.profile, data.userProfile, data.organizerProfile]
+      .find((value) => value && typeof value === "object" && !Array.isArray(value));
+    return nestedProfile ? { ...data, ...nestedProfile } : data;
+  }
+
+  function getOrganizerProfileNestedField(data) {
+    return ["profile", "userProfile", "organizerProfile"].find((field) =>
+      data?.[field] && typeof data[field] === "object" && !Array.isArray(data[field]),
+    ) || "";
+  }
+
+  function getOrganizerProfileSource(record, documentId) {
+    return {
+      collectionName: record.collectionName,
+      documentId: documentId || record.profileRef?.id || "",
+      nestedField: getOrganizerProfileNestedField(record.data),
+    };
+  }
+
+  function getOrganizerProfileRole(profile) {
+    const roleValue = [
+      profile.role,
+      profile.userRole,
+      profile.accountType,
+      profile.userType,
+      profile.profile?.role,
+      profile.userProfile?.role,
+      profile.organizerProfile?.role,
+    ].find((value) => String(value || "").trim());
+    if (roleValue && typeof roleValue === "object") {
+      return normalizeRole(roleValue.name || roleValue.value || roleValue.key || roleValue.code);
+    }
+    return normalizeRole(roleValue);
+  }
+
+  function hasOrganizerRole(profile) {
+    return ["eventorganizer", "organizer", "eo"].includes(getOrganizerProfileRole(profile));
+  }
+
+  function getProfileOrganizationCode(profile) {
+    const organization = profile.organization;
+    return String(
+      profile.organizationCode ||
+      profile.orgCode ||
+      organization?.organizationCode ||
+      organization?.orgCode ||
+      organization?.code ||
+      "",
+    ).trim();
+  }
+
+  async function findOrganizerProfile(uid, email) {
+    const collectionNames = profileCollectionsForRole("eventorganizer");
+    const directReads = await Promise.allSettled(collectionNames.map(async (collectionName) => {
+      const profileRef = doc(db, collectionName, uid);
+      const snapshot = await getDoc(profileRef);
+      return snapshot.exists()
+        ? { collectionName, data: snapshot.data(), profileRef }
+        : null;
+    }));
+    const directErrors = directReads
       .filter((result) => result.status === "rejected")
       .map((result) => result.reason);
-    const profiles = reads
-      .slice(0, 2)
-      .filter((result) => result.status === "fulfilled" && result.value.exists())
-      .map((result) => result.value.data());
-    const organizerProfile = profiles.find((profile) =>
-      ["eventorganizer", "organizer", "eo"].includes(
-        normalizeRole(profile.role || profile.userRole),
-      ),
+    const directRecords = directReads
+      .filter((result) => result.status === "fulfilled" && result.value)
+      .map((result) => result.value);
+    const directOrganizer = directRecords.find((record) =>
+      record.collectionName !== "eventOrganizations" &&
+      hasOrganizerRole(getOrganizerProfileData(record.data)),
     );
-    if (organizerProfile) return organizerProfile;
-
-    const organizationSnapshot = reads[2];
-    const hasOrganizationScope =
-      organizationSnapshot.status === "fulfilled" &&
-      organizationSnapshot.value.exists() &&
-      Boolean(
-        String(organizationSnapshot.value.data()?.organizationCode || "").trim(),
-      );
-    const hasConflictingRole = profiles.some((profile) =>
-      normalizeRole(profile.role || profile.userRole),
-    );
-    if (hasOrganizationScope && !hasConflictingRole) {
+    if (directOrganizer) {
       return {
-        ...(profiles[0] || {}),
-        ...organizationSnapshot.value.data(),
-        role: "Event Organizer",
+        profile: getOrganizerProfileData(directOrganizer.data),
+        profileSource: getOrganizerProfileSource(directOrganizer, uid),
+        emailLookup: false,
       };
     }
 
+    const directOrganization = directRecords.find((record) =>
+      record.collectionName === "eventOrganizations",
+    );
+    const hasConflictingRole = directRecords.some((record) =>
+      getOrganizerProfileRole(getOrganizerProfileData(record.data)),
+    );
+    if (
+      directOrganization &&
+      getProfileOrganizationCode(getOrganizerProfileData(directOrganization.data)) &&
+      !hasConflictingRole
+    ) {
+      return {
+        profile: {
+          ...getOrganizerProfileData(directOrganization.data),
+          role: "Event Organizer",
+        },
+        profileSource: getOrganizerProfileSource(directOrganization, uid),
+        emailLookup: false,
+      };
+    }
+
+    const normalizedEmail = String(email || "").trim().toLowerCase();
+    const emailDocumentReads = normalizedEmail
+      ? await Promise.allSettled(collectionNames.map(async (collectionName) => {
+          const snapshot = await getDoc(doc(db, collectionName, normalizedEmail));
+          return snapshot.exists()
+            ? [{ collectionName, documentId: snapshot.id, data: snapshot.data() }]
+            : [];
+        }))
+      : [];
+    const emailQueryReads = normalizedEmail
+      ? await Promise.allSettled(collectionNames.map(async (collectionName) => {
+          const snapshot = await getDocs(query(
+            collection(db, collectionName),
+            where("email", "==", normalizedEmail),
+          ));
+          return snapshot.docs.map((profileSnapshot) => ({
+            collectionName,
+            documentId: profileSnapshot.id,
+            data: profileSnapshot.data(),
+          }));
+        }))
+      : [];
+    const emailReads = [...emailDocumentReads, ...emailQueryReads];
+    const emailErrors = emailReads
+      .filter((result) => result.status === "rejected")
+      .map((result) => result.reason);
+    const emailRecords = emailReads
+      .filter((result) => result.status === "fulfilled")
+      .flatMap((result) => result.value);
+    const hasConflictingDirectRole = directRecords.some((record) => {
+      if (record.collectionName === "eventOrganizations") return false;
+      const profile = getOrganizerProfileData(record.data);
+      return getOrganizerProfileRole(profile) && !hasOrganizerRole(profile);
+    });
+    const emailOrganizer = emailRecords.find((record) =>
+      record.collectionName !== "eventOrganizations" &&
+      hasOrganizerRole(getOrganizerProfileData(record.data)),
+    );
+    if (emailOrganizer && !hasConflictingDirectRole) {
+      return {
+        profile: getOrganizerProfileData(emailOrganizer.data),
+        profileSource: getOrganizerProfileSource(emailOrganizer, emailOrganizer.documentId),
+        emailLookup: true,
+      };
+    }
+
+    const emailOrganization = emailRecords.find((record) =>
+      record.collectionName === "eventOrganizations",
+    );
+    const hasEmailRole = emailRecords.some((record) =>
+      getOrganizerProfileRole(getOrganizerProfileData(record.data)),
+    );
+    if (
+      emailOrganization &&
+      getProfileOrganizationCode(getOrganizerProfileData(emailOrganization.data)) &&
+      !hasEmailRole &&
+      !hasConflictingDirectRole
+    ) {
+      return {
+        profile: {
+          ...getOrganizerProfileData(emailOrganization.data),
+          role: "Event Organizer",
+        },
+        profileSource: getOrganizerProfileSource(emailOrganization, emailOrganization.documentId),
+        emailLookup: true,
+      };
+    }
+
+    const profiles = directRecords
+      .filter((record) => record.collectionName !== "eventOrganizations")
+      .map((record) => getOrganizerProfileData(record.data));
+    const errors = [...directErrors, ...emailErrors];
     if (errors.length) throw errors[0];
-    if (profiles.length) {
+    if (profiles.length || emailRecords.length) {
       throw Object.assign(new Error("Account is not an organizer account."), {
         code: "profile/role-mismatch",
       });
@@ -216,17 +358,19 @@ import {
       clearPortalProfileCaches();
       banner.textContent = "Verifying organizer account...";
       banner.classList.add("show");
-      const profile = await withTimeout(
-        findOrganizerProfile(credential.user.uid),
+      const profileResult = await withTimeout(
+        findOrganizerProfile(credential.user.uid, credential.user.email || email),
         PROFILE_VERIFICATION_TIMEOUT_MS,
       );
-      await syncVerifiedProfileEmail(
-        auth,
-        db,
-        credential.user,
-        "eventorganizer",
-        profileCollectionsForRole("eventorganizer"),
-      );
+      if (!profileResult.emailLookup) {
+        await syncVerifiedProfileEmail(
+          auth,
+          db,
+          credential.user,
+          "eventorganizer",
+          [profileResult.profileSource.collectionName],
+        );
+      }
       accessSettings = await readSystemAccessSettings(db);
       if (!accessSettings.userLoginEnabled) {
         await signOut(auth);
@@ -237,9 +381,10 @@ import {
       }
 
       const organizerProfile = {
-        ...profile,
+        ...profileResult.profile,
         uid: credential.user.uid,
         email: credential.user.email || email,
+        profileSource: profileResult.profileSource,
       };
       localStorage.setItem("recovibeOrganizerId", credential.user.uid);
       localStorage.setItem(

@@ -19,14 +19,12 @@
     student: [
       ["official", "PUP Official"],
       ["binan", "PUP Biñan"],
-      ["csc", "CSC"],
       ["organizational", "Organizational"],
       ["external", "Others/External"],
       ["holiday", "Holiday"],
     ],
     teacher: [
       ["pup", "PUP Official"],
-      ["csc", "CSC"],
       ["faculty", "Teachers/Faculty"],
       ["org", "Organizational"],
       ["other", "Others/External"],
@@ -34,8 +32,6 @@
     ],
     organizer: [
       ["pup", "PUP Official"],
-      ["csc", "CSC"],
-      ["faculty", "Teachers/Faculty"],
       ["org", "Organizational"],
       ["other", "Others/External"],
       ["holiday", "Holiday"],
@@ -92,6 +88,42 @@
   function academicCategory(entry) {
     const category = String(entry?.category || "").trim().toLowerCase();
     return academicCategories[category] ? category : "other";
+  }
+
+  function isOrganizerCalendar() {
+    return Boolean(
+      document.querySelector('#calendarLegend[data-calendar-legend="organizer"]'),
+    );
+  }
+
+  function academicPresentation(entry) {
+    const category = academicCategory(entry);
+    if (isStudentCalendar()) {
+      return {
+        label: "PUP Official",
+        color: "var(--pup-official-calendar-color, var(--cat-official, #8f2536))",
+        tint: "#f7e9eb",
+      };
+    }
+    if (category === "holiday") {
+      return {
+        label: "Holiday",
+        color: academicCategories.holiday.color,
+        tint: academicCategories.holiday.tint,
+      };
+    }
+    if (isOrganizerCalendar()) {
+      return {
+        label: "PUP Official",
+        color: "#7A1F2E",
+        tint: "rgba(122, 31, 46, 0.1)",
+      };
+    }
+    return {
+      label: academicCategories[category].label,
+      color: academicUpcomingColors[category],
+      tint: academicCategories[category].tint,
+    };
   }
 
   function isStudentCalendar() {
@@ -212,6 +244,11 @@
         color: #fff !important;
         font-weight: 700;
       }
+      .cal-day-bar.academic-calendar-entry.bar-pup {
+        background: #7A1F2E !important;
+        color: #fff !important;
+        --bar-c: #7A1F2E;
+      }
       ${Object.keys(academicCategories).map((category) => `
         .academic-calendar-entry.academic-category-${category} {
           background: var(--cal-${category}) !important;
@@ -304,6 +341,7 @@
   }
 
   function academicLegendCategories() {
+    if (isOrganizerCalendar()) return [];
     const present = new Set(academicEntries.map(academicCategory));
     return academicLegendOrder.filter((category) => present.has(category));
   }
@@ -334,6 +372,10 @@
     const legend = document.getElementById("calendarLegend");
     if (!legend) return;
     if (isStudentCalendar()) return;
+    if (isOrganizerCalendar()) {
+      legend.querySelectorAll(".academic-date-legend").forEach((item) => item.remove());
+      return;
+    }
 
     const categories = academicLegendCategories();
     const existing = [
@@ -474,6 +516,10 @@
       '[data-source="Official Date"], [data-category-key="official-date"], [data-category-key="academic"], [data-calendar-category="Official Date"]',
     );
     const isHoliday = academicCategory(entry) === "holiday";
+    if (isOrganizerCalendar() && !isHoliday) {
+      const pupFilter = document.querySelector('[data-category-key="pup"]');
+      return !pupFilter || pupFilter.checked;
+    }
     return isHoliday
       ? !holidayFilter || holidayFilter.checked
       : !officialFilter || officialFilter.checked;
@@ -600,6 +646,8 @@
     const category = academicCategory(entry);
     const holiday = category === "holiday";
     const studentCalendar = isStudentCalendar();
+    const organizerCalendar = isOrganizerCalendar();
+    const isPupOfficial = organizerCalendar && !holiday;
     const title = displayTitle(entry.title);
     let bar;
     if (kind === "student") {
@@ -610,7 +658,10 @@
       bar.className = `admin-event-bar ${holiday ? "category-holiday" : "academic-official-date"}`;
     } else {
       bar = document.createElement("div");
-      bar.className = `cal-day-bar ${holiday ? "bar-holiday is-holiday-bar" : "academic-official-date"}`;
+      bar.className = `cal-day-bar ${
+        holiday ? "bar-holiday is-holiday-bar" :
+          isPupOfficial ? "bar-pup academic-official-date" : "academic-official-date"
+      }`;
       const barTitle = document.createElement("span");
       barTitle.className = "bar-title";
       barTitle.textContent = title;
@@ -620,12 +671,12 @@
       "academic-calendar-entry",
       holiday ? "academic-holiday" : "academic-official-date",
     );
-    if (!studentCalendar) bar.classList.add(`academic-category-${category}`);
+    if (!studentCalendar && !isPupOfficial) bar.classList.add(`academic-category-${category}`);
     if (kind !== "shared") bar.textContent = title;
     bar.title = title;
     bar.dataset.academicDate = date;
-    bar.dataset.academicCategory = category;
-    if (studentCalendar) bar.dataset.source = "PUP Official";
+    bar.dataset.academicCategory = isPupOfficial ? "pup" : category;
+    if (studentCalendar || isPupOfficial) bar.dataset.source = "PUP Official";
     if (studentCalendar) {
       bar.style.setProperty(
         "background-color",
@@ -637,7 +688,7 @@
     bar.setAttribute("role", "button");
     bar.setAttribute(
       "aria-label",
-      `${studentCalendar ? "PUP Official" : holiday ? "Holiday" : "Official Date"}: ${title}`,
+      `${studentCalendar || isPupOfficial ? "PUP Official" : holiday ? "Holiday" : "Official Date"}: ${title}`,
     );
     bar.style.pointerEvents = "auto";
     return bar;
@@ -884,25 +935,24 @@
       const date = entry.startDate < todayManilaString()
         ? todayManilaString()
         : entry.startDate;
-      const category = academicCategories[academicCategory(entry)];
+      const presentation = academicPresentation(entry);
       const studentCalendar = isStudentCalendar();
+      const organizerCalendar = isOrganizerCalendar();
       const card = document.createElement("article");
       card.className = "academic-upcoming-item";
       card.dataset.academicDate = date;
-      if (studentCalendar) card.dataset.source = "PUP Official";
+      if (studentCalendar || organizerCalendar && academicCategory(entry) !== "holiday") {
+        card.dataset.source = "PUP Official";
+      }
       card.tabIndex = 0;
       card.setAttribute("role", "button");
       card.style.setProperty(
         "--academic-color",
-        studentCalendar
-          ? "var(--pup-official-calendar-color, var(--cat-official, #8f2536))"
-          : academicUpcomingColors[academicCategory(entry)],
+        presentation.color,
       );
       card.style.setProperty(
         "--academic-tint",
-        studentCalendar
-          ? "#f7e9eb"
-          : category.tint,
+        presentation.tint,
       );
       const datePart = document.createElement("span");
       datePart.className = "academic-upcoming-date";
@@ -919,10 +969,7 @@
       const title = document.createElement("strong");
       title.textContent = displayTitle(entry.title);
       const label = document.createElement("small");
-      label.textContent =
-        studentCalendar
-          ? "PUP Official"
-          : category.label;
+      label.textContent = presentation.label;
       copy.append(title, label);
       card.append(datePart, copy);
       list.appendChild(card);
@@ -945,16 +992,12 @@
   }
 
   function popupLegendCategory(entry) {
-    const category = academicCategory(entry);
-    if (isStudentCalendar()) {
-      return {
-        label: "PUP Official",
-        color: "var(--pup-official-calendar-color, var(--cat-official, #8f2536))",
-      };
-    }
+    const presentation = academicPresentation(entry);
     return {
-      label: category === "holiday" ? "Holiday" : "Official Date",
-      color: academicCategories[category].color,
+      label: presentation.label,
+      color: presentation.color,
+      tint: presentation.tint,
+      category: academicCategory(entry),
     };
   }
 
@@ -968,14 +1011,13 @@
     const list = document.createElement("div");
     list.className = "academic-calendar-popup-list";
     entries.forEach((entry) => {
-      const category = academicCategories[academicCategory(entry)];
       const legendCategory = popupLegendCategory(entry);
       const item = document.createElement("article");
       item.className = "academic-calendar-popup-item";
       item.style.setProperty("--academic-color", legendCategory.color);
       item.style.setProperty(
         "--academic-tint",
-        isStudentCalendar() ? "#f7e9eb" : category.tint,
+        legendCategory.tint,
       );
       const indicator = document.createElement("span");
       indicator.className = "academic-calendar-popup-indicator";
@@ -984,6 +1026,7 @@
       copy.className = "academic-calendar-popup-copy";
       const title = document.createElement("strong");
       title.textContent = displayTitle(entry.title);
+      const category = academicCategories[legendCategory.category];
       const details = document.createElement("small");
       const dayCount =
         Math.floor(
@@ -992,11 +1035,11 @@
             86400000,
         ) + 1;
       const range = document.createElement("span");
-        const rawCategory = String(entry?.category || entry?.type || "").trim().toLowerCase();
-        const showSubtype =
-          (category.label !== "Other" && category.label !== legendCategory.label) ||
-          (legendCategory.label === "Official Date" && rawCategory === "other");
-        const subtype = showSubtype ? ` · ${category.label}` : "";
+      const rawCategory = String(entry?.category || entry?.type || "").trim().toLowerCase();
+      const showSubtype = !isOrganizerCalendar() &&
+        ((category.label !== "Other" && category.label !== legendCategory.label) ||
+          (legendCategory.label === "Official Date" && rawCategory === "other"));
+      const subtype = showSubtype ? ` · ${category.label}` : "";
       range.textContent = `${legendCategory.label}${subtype} · ${academicDateRange(entry)}`;
       details.appendChild(range);
       if (dayCount > 1) {

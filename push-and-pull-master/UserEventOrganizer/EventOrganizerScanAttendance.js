@@ -172,7 +172,19 @@ function eventIsOwnedByOrganizer(data) {
 
 function eventIsScanReady(data) {
   const status = String(data.status || "").trim().toLowerCase().replace(/[ _-]+/g, " ");
-  if (["cancelled", "canceled", "rejected", "completed"].includes(status)) {
+  if (
+    ["cancelled", "canceled", "rejected", "disapproved", "completed", "ended", "archived", "expired"]
+      .includes(status) ||
+    data.cancelled === true ||
+    data.canceled === true ||
+    data.rejected === true ||
+    data.disapproved === true ||
+    data.completed === true ||
+    data.isCompleted === true ||
+    data.ended === true ||
+    data.archived === true ||
+    data.isArchived === true
+  ) {
     return false;
   }
   return ["approved", "published", "rescheduled"].includes(status) || data.published === true;
@@ -1794,7 +1806,7 @@ async function processAttendance({ eventId, token, allowWalkIn }) {
 }
 
 // Firestore is used for student lookup; attendance is written directly to RTDB.
-async function handleLocalAttendanceProcessing(eventId, token, allowWalkIn) {
+async function handleLocalAttendanceProcessing(eventId, token, allowWalkIn, registeredStudent = null) {
   if (!db || !rtdb || !auth?.currentUser) {
     throw new Error("Sign in and connect to Firebase before recording attendance.");
   }
@@ -1802,48 +1814,57 @@ async function handleLocalAttendanceProcessing(eventId, token, allowWalkIn) {
   const rawToken = String(token || "").trim();
   const normalizedStudentNo = formatStudentNo(rawToken);
   const hasStudentNumber = STUDENT_NO_REGEX.test(normalizedStudentNo);
-  if (!hasStudentNumber && !rawToken) {
+  if (!hasStudentNumber && !rawToken && !registeredStudent?.uid) {
     return { status: "invalid_format", student: { studentNo: "" } };
   }
 
-  let studentDocument = null;
+  let uid = "";
   let studentData = null;
-
-  if (hasStudentNumber) {
-    let studentSnapshot = await getDocs(query(
-      collection(db, "users"),
-      where("studentNumber", "==", normalizedStudentNo),
-    ));
-    if (studentSnapshot.empty) {
-      studentSnapshot = await getDocs(query(
-        collection(db, "users"),
-        where("studentId", "==", normalizedStudentNo),
-      ));
-    }
-    studentDocument = studentSnapshot.docs[0] || null;
+  if (registeredStudent?.uid) {
+    uid = String(registeredStudent.uid);
+    studentData = {
+      name: registeredStudent.name || "Student",
+      studentNo: formatStudentNo(registeredStudent.studentNo || normalizedStudentNo),
+      organization: registeredStudent.organization || registeredStudent.course || "PUP Biñan",
+    };
   } else {
-    const studentSnapshot = await getDoc(doc(db, "users", rawToken));
-    studentDocument = studentSnapshot.exists() ? studentSnapshot : null;
-  }
+    let studentDocument = null;
+    if (hasStudentNumber) {
+      let studentSnapshot = await getDocs(query(
+        collection(db, "users"),
+        where("studentNumber", "==", normalizedStudentNo),
+      ));
+      if (studentSnapshot.empty) {
+        studentSnapshot = await getDocs(query(
+          collection(db, "users"),
+          where("studentId", "==", normalizedStudentNo),
+        ));
+      }
+      studentDocument = studentSnapshot.docs[0] || null;
+    } else {
+      const studentSnapshot = await getDoc(doc(db, "users", rawToken));
+      studentDocument = studentSnapshot.exists() ? studentSnapshot : null;
+    }
 
-  if (!studentDocument) {
-    return { status: "not_found", student: { studentNo: normalizedStudentNo } };
+    if (!studentDocument) {
+      return { status: "not_found", student: { studentNo: normalizedStudentNo } };
+    }
+    uid = studentDocument.id;
+    const studentProfile = studentDocument.data() || {};
+    studentData = {
+      name: studentProfile.fullName ||
+        `${studentProfile.firstName || ""} ${studentProfile.lastName || ""}`.trim() ||
+        studentProfile.name ||
+        "Student",
+      studentNo: formatStudentNo(
+        studentProfile.studentNumber || studentProfile.studentId || normalizedStudentNo,
+      ),
+      organization: studentProfile.organization ||
+        studentProfile.courseOrganization ||
+        studentProfile.department ||
+        "PUP Biñan",
+    };
   }
-  const uid = studentDocument.id;
-  const studentProfile = studentDocument.data() || {};
-  studentData = {
-    name: studentProfile.fullName ||
-      `${studentProfile.firstName || ""} ${studentProfile.lastName || ""}`.trim() ||
-      studentProfile.name ||
-      "Student",
-    studentNo: formatStudentNo(
-      studentProfile.studentNumber || studentProfile.studentId || normalizedStudentNo,
-    ),
-    organization: studentProfile.organization ||
-      studentProfile.courseOrganization ||
-      studentProfile.department ||
-      "PUP Biñan",
-  };
 
   const knownAttendance = currentAttendanceRows.find((r) =>
     String(r.uid || "") === uid || stripStudentNo(r.studentNo) === stripStudentNo(normalizedStudentNo)
@@ -1867,7 +1888,7 @@ async function handleLocalAttendanceProcessing(eventId, token, allowWalkIn) {
   const cleanUid = stripStudentNo(uid);
   const cleanStudentNo = stripStudentNo(studentData.studentNo);
 
-  let isRegistered = false;
+  let isRegistered = Boolean(registeredStudent?.uid);
 
   // 1. Check currentAbsentRows (loaded from registrations for this event)
   if (currentAbsentRows.some((r) => {
@@ -2084,7 +2105,7 @@ function renderManualSearchResults(matches, term, eventId) {
   manualSearchResult.className = "manual-search-result";
 
   if (matches.length === 0) {
-    showManualSearchMessage("No registered student found for this Student Number.");
+    showManualSearchMessage("No registered student found. Search by student number or name.");
   } else {
     matches.forEach((student) => {
       const row = document.createElement("div");
@@ -2169,7 +2190,17 @@ async function searchManualStudents(term, eventId, requestId) {
           student.studentNumber ||
           "",
         );
-        if (!studentNo || !studentNo.includes(term)) return;
+        const name = registration.name ||
+          registration.studentName ||
+          registration.fullName ||
+          student.fullName ||
+          student.name ||
+          `${registration.firstName || student.firstName || ""} ${registration.lastName || student.lastName || ""}`.trim() ||
+          "Student";
+        const normalizedTerm = term.toLocaleLowerCase();
+        const matchesStudentNo = studentNo.includes(term);
+        const matchesName = name.toLocaleLowerCase().includes(normalizedTerm);
+        if (!matchesStudentNo && !matchesName) return;
         const alreadyCheckedIn = Boolean(attendanceData[uid]) ||
           currentAttendanceRows.some((row) =>
             String(row.uid || "") === String(uid) ||
@@ -2178,13 +2209,7 @@ async function searchManualStudents(term, eventId, requestId) {
         matches.push({
           uid,
           studentNo,
-          name: registration.name ||
-            registration.studentName ||
-            registration.fullName ||
-            student.fullName ||
-            student.name ||
-            `${registration.firstName || student.firstName || ""} ${registration.lastName || student.lastName || ""}`.trim() ||
-            "Student",
+          name,
           course: registration.courseOrganization ||
             registration.course ||
             registration.department ||
@@ -2273,8 +2298,9 @@ async function checkInManualSearchResult() {
   }
 
   try {
-    const result = await handleLocalAttendanceProcessing(eventId, student.studentNo, false);
-    handleAttendanceResult(result, student.studentNo);
+    const lookupToken = student.studentNo || student.uid;
+    const result = await handleLocalAttendanceProcessing(eventId, lookupToken, false, student);
+    handleAttendanceResult(result, lookupToken);
     if (result.status === "ok") {
       clearManualSearch(true);
     } else if (result.status === "already") {
@@ -2287,7 +2313,7 @@ async function checkInManualSearchResult() {
       );
     } else if (result.status === "not_registered") {
       manualSearchMatches = [];
-      showManualSearchMessage("No registered student found for this Student Number.");
+      showManualSearchMessage("No registered student found. Search by student number or name.");
     }
   } catch (error) {
     console.error("Manual check-in error:", error);

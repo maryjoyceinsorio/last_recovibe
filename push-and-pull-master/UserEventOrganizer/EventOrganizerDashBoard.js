@@ -248,7 +248,10 @@
     if (norm === "draft") return "Draft";
     if (["published", "live", "published live"].includes(norm)) return "Published";
     if (norm === "upcoming") return "Upcoming";
-    if (["pending", "pending approval", "under review", "in review", "reviewing", "submitted"].includes(norm)) return "Pending";
+    if (
+      ["pending", "pending approval", "pending review", "awaiting approval", "awaiting review", "under review", "in review", "reviewing", "submitted"].includes(norm) ||
+      norm.startsWith("pending ")
+    ) return "Pending";
     if (norm === "completed") return "Unknown";
     if (["approved", "approve", "fully approved", "ready to publish", "ok"].includes(norm)) return "Approved";
 
@@ -379,6 +382,13 @@
   function renderActionRequired() {
     const actionableEvents = organizerEvents
       .filter((event) =>
+        !(
+          [event.completed, event.isCompleted, event.ended, event.isEnded, event.cancelled, event.canceled]
+            .some((value) => value === true || value === 1 || ["true", "yes", "1"].includes(String(value ?? "").trim().toLowerCase())) ||
+          ["completed", "complete", "ended", "finished", "cancelled", "canceled"]
+            .includes(String(event.status || event.approvalStatus || event.eventStatus || "").trim().toLowerCase().replace(/[\s_-]+/g, " ")) ||
+          hasEventEnded(event)
+        ) &&
         ["Draft", "Pending", "Needs Revision", "Rejected", "Approved"].includes(getStatus(event)),
       )
       .sort((first, second) => {
@@ -387,7 +397,8 @@
         if (firstCreated === null) return secondCreated === null ? 0 : 1;
         if (secondCreated === null) return -1;
         return secondCreated - firstCreated;
-      });
+      })
+      .slice(0, 5);
 
     if (!actionableEvents.length) {
       actionRows.innerHTML = `

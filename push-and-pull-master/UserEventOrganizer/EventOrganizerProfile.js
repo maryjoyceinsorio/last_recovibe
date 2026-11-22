@@ -1,5 +1,9 @@
 import {
+  EmailAuthProvider,
+  fetchSignInMethodsForEmail,
   onAuthStateChanged,
+  reauthenticateWithCredential,
+  updatePassword,
   verifyBeforeUpdateEmail,
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
 import {
@@ -9,13 +13,15 @@ import {
   isFirebaseConfigured,
 } from "../UserStudent/firebaseConfig.js";
 import {
+  deleteField,
+  doc,
+  getDoc,
+  setDoc,
+} from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+import {
   formatPhilippineMobile,
   isValidPhilippineMobile,
   mobileDigits,
-  profileCollectionsForRole,
-  savePendingProfileEmail,
-  saveProfileFields,
-  syncVerifiedProfileEmail,
 } from "../portalProfileAccount.js";
 import {
   CORRECTION_FIELDS_BY_ROLE,
@@ -38,6 +44,13 @@ import {
     return formatPhilippineMobile(raw);
   }
 
+  const invalidNameCharacters = /[^\p{L}\p{M} .'-]/gu;
+  const validNamePattern = /^(?=.*\p{L})[\p{L}\p{M} .'-]+$/u;
+
+  function isValidNamePart(value) {
+    return validNamePattern.test(String(value || "").trim());
+  }
+
   const DEFAULT_ORGANIZER = {
     firstName: "",
     middleName: "",
@@ -48,7 +61,6 @@ import {
     organizerId: "",
     organization: "",
     role: "Event Organizer",
-    campus: "",
   };
 
   let profile = { ...DEFAULT_ORGANIZER };
@@ -100,7 +112,15 @@ import {
     profile.name = fullName;
 
     const initials = Array.from(firstName || fullName)[0]?.toUpperCase() || "";
-    const org = profile.organization || "";
+    const org = typeof profile.organization === "object"
+      ? profile.organization?.name || profile.organization?.label || profile.organization?.code || ""
+      : profile.organization || "";
+    const departmentValue = profile.department;
+    const department = (
+      typeof departmentValue === "object"
+        ? departmentValue?.name || departmentValue?.label || departmentValue?.code
+        : departmentValue
+    ) || profile.departmentName || profile.departmentCode || profile.schoolDepartment || "";
     const storedOrganizerId = [
       profile.accountNumber,
       profile.accountNo,
@@ -111,7 +131,7 @@ import {
       localStorage.getItem(organizerIdKey),
     ].map((value) => String(value || "").trim()).find(Boolean) || "";
     const organizationCode = String(
-      profile.organizationCode || profile.orgCode || profile.organization || profile.organizationName || "",
+      profile.organizationCode || profile.orgCode || org || profile.organizationName || "",
     ).trim().replace(/\s+/g, "-").toUpperCase();
     const organizerId = /^EO-\d{3}-.+/i.test(storedOrganizerId)
       ? storedOrganizerId.toUpperCase()
@@ -166,20 +186,75 @@ import {
     if (viewOrganizerId) viewOrganizerId.textContent = organizerId || "Not set";
     const viewOrganization = document.getElementById("viewOrganization");
     if (viewOrganization) viewOrganization.textContent = org || "Not set";
+    const viewDepartment = document.getElementById("viewDepartment");
+    if (viewDepartment) viewDepartment.textContent = department || "Not set";
     const viewRole = document.getElementById("viewRole");
     if (viewRole) viewRole.textContent = profile.role || "Event Organizer";
-    const viewCampus = document.getElementById("viewCampus");
-    if (viewCampus) viewCampus.textContent = profile.campus || "Not set";
+  }
+
+  const profileSourceCollections = new Set(["adminUser", "users", "eventOrganizations"]);
+  const nestedProfileFields = new Set(["profile", "userProfile", "organizerProfile"]);
+
+  function getOrganizerProfileTarget(uid) {
+    const source = profile.profileSource;
+    const collectionName = profileSourceCollections.has(source?.collectionName)
+      ? source.collectionName
+      : "adminUser";
+    const documentId = typeof source?.documentId === "string" && source.documentId
+      ? source.documentId
+      : uid;
+    const nestedField = nestedProfileFields.has(source?.nestedField)
+      ? source.nestedField
+      : "";
+    return {
+      profileRef: doc(db, collectionName, documentId),
+      nestedField,
+    };
+  }
+
+  function profileWritePayload(fields, nestedField) {
+    return nestedField ? { [nestedField]: fields } : fields;
+  }
+
+  function readProfileFields(data, nestedField) {
+    const profileData = nestedField ? data?.[nestedField] : data;
+    return profileData && typeof profileData === "object" ? profileData : {};
+  }
+
+  async function persistOrganizerProfileFields(uid, fields) {
+    if (!db || !isFirebaseConfigured) throw new Error("Profile storage is unavailable.");
+    const target = getOrganizerProfileTarget(uid);
+    await setDoc(
+      target.profileRef,
+      profileWritePayload(fields, target.nestedField),
+      { merge: true },
+    );
+    const snapshot = await getDoc(target.profileRef);
+    if (!snapshot.exists()) {
+      throw new Error("The updated organizer profile could not be verified.");
+    }
+    return {
+      ...target,
+      data: readProfileFields(snapshot.data(), target.nestedField),
+    };
+  }
+
+  async function saveOrganizerProfileFields(uid, fields) {
+    const persisted = await persistOrganizerProfileFields(uid, fields);
+    for (const [field, expectedValue] of Object.entries(fields)) {
+      if (persisted.data[field] !== expectedValue) {
+        throw new Error("The organizer profile update could not be verified. Please try again.");
+      }
+    }
+    return fields;
   }
 
   function syncProfileEmail(authUser) {
-    void syncVerifiedProfileEmail(
-      auth,
-      db,
-      authUser,
-      "eventorganizer",
-      profileCollectionsForRole("eventorganizer"),
-    ).then((result) => {
+    profile.uid = authUser.uid;
+    if (authUser.email) profile.email = authUser.email;
+    localStorage.setItem(profileStorageKey, JSON.stringify(profile));
+    updateDisplay();
+    void syncVerifiedOrganizerEmail(authUser).then((result) => {
       if (!result || auth?.currentUser?.uid !== authUser.uid) return;
       profile.uid = authUser.uid;
       profile.email = result.email;
@@ -191,6 +266,65 @@ import {
     }).catch((error) => {
       console.warn("[EventOrganizerProfile] Could not sync verified email:", error);
     });
+  }
+
+  async function syncVerifiedOrganizerEmail(authUser) {
+    if (!db || !isFirebaseConfigured || !authUser?.uid) return null;
+    await authUser.reload();
+    const currentUser = auth?.currentUser;
+    const email = String(currentUser?.email || "").trim();
+    if (!currentUser || currentUser.uid !== authUser.uid || !currentUser.emailVerified || !email) {
+      return null;
+    }
+
+    const target = getOrganizerProfileTarget(authUser.uid);
+    const profileSnapshot = await getDoc(target.profileRef);
+    const data = profileSnapshot.exists()
+      ? readProfileFields(profileSnapshot.data(), target.nestedField)
+      : {};
+    const normalizedEmail = email.toLowerCase();
+    const updates = {};
+    if (String(data.email || "").trim().toLowerCase() !== normalizedEmail) {
+      updates.email = email;
+    }
+    if (String(data.pendingEmail || "").trim().toLowerCase() === normalizedEmail) {
+      updates.pendingEmail = deleteField();
+    }
+    if (Object.keys(updates).length) {
+      const persisted = await persistOrganizerProfileFields(authUser.uid, updates);
+      if (String(persisted.data.email || "").trim().toLowerCase() !== normalizedEmail) {
+        throw new Error("The verified email could not be confirmed in the organizer profile.");
+      }
+      if (
+        updates.pendingEmail &&
+        String(persisted.data.pendingEmail || "").trim().toLowerCase() === normalizedEmail
+      ) {
+        throw new Error("The verified email is still marked as pending in the organizer profile.");
+      }
+    }
+
+    const localPendingKey = `recovibe_pending_email_${authUser.uid}`;
+    let localPendingEmail = "";
+    try {
+      localPendingEmail = String(
+        JSON.parse(localStorage.getItem(localPendingKey) || "null")?.pendingEmail || "",
+      ).trim().toLowerCase();
+    } catch (error) {
+      console.warn("[EventOrganizerProfile] Could not read pending email change:", error);
+    }
+    const localPendingConfirmed = localPendingEmail === normalizedEmail;
+    if (localPendingConfirmed) {
+      localStorage.removeItem(localPendingKey);
+      sessionStorage.removeItem(localPendingKey);
+    }
+
+    const pendingEmail = String(data.pendingEmail || "").trim();
+    const stillPendingEmail = pendingEmail && pendingEmail.toLowerCase() !== normalizedEmail
+      ? pendingEmail
+      : "";
+    return Object.keys(updates).length || localPendingConfirmed
+      ? { email, changed: true, pendingEmail: stillPendingEmail }
+      : null;
   }
 
   /* -------------------------------------------------------------
@@ -215,8 +349,11 @@ import {
       inputMiddleName.value = profile.middleName || "";
       inputLastName.value = profile.lastName || "";
       inputFirstName.classList.remove("is-invalid");
+      inputMiddleName.classList.remove("is-invalid");
       inputLastName.classList.remove("is-invalid");
       if (errFirstName) errFirstName.classList.remove("is-visible");
+      const errMiddleName = document.getElementById("errMiddleName");
+      if (errMiddleName) errMiddleName.classList.remove("is-visible");
       if (errLastName) errLastName.classList.remove("is-visible");
       checkNameDirty();
       nameCardView.hidden = true;
@@ -241,7 +378,10 @@ import {
     if (curMid !== origMid) changes++;
     if (curLast !== origLast) changes++;
 
-    const isValid = Boolean(curFirst && curLast);
+    const isValid =
+      isValidNamePart(curFirst) &&
+      (!curMid || isValidNamePart(curMid)) &&
+      isValidNamePart(curLast);
     const isDirty = changes > 0;
 
     nameSaveBtn.disabled = !isDirty || !isValid;
@@ -259,30 +399,78 @@ import {
   if (nameCancelBtn) {
     nameCancelBtn.addEventListener("click", () => setNameEditMode(false));
   }
-  if (inputFirstName) inputFirstName.addEventListener("input", checkNameDirty);
-  if (inputMiddleName) inputMiddleName.addEventListener("input", checkNameDirty);
-  if (inputLastName) inputLastName.addEventListener("input", checkNameDirty);
+  [inputFirstName, inputMiddleName, inputLastName].forEach((input) => {
+    if (!input) return;
+    input.addEventListener("input", () => {
+      input.value = input.value.replace(invalidNameCharacters, "");
+      const errorId = input === inputFirstName
+        ? "errFirstName"
+        : input === inputMiddleName
+          ? "errMiddleName"
+          : "errLastName";
+      const valid = input === inputMiddleName
+        ? !input.value.trim() || isValidNamePart(input.value)
+        : isValidNamePart(input.value);
+      const errorElement = document.getElementById(errorId);
+      if (valid) {
+        input.classList.remove("is-invalid");
+        errorElement?.classList.remove("is-visible");
+      } else {
+        input.classList.add("is-invalid");
+        if (errorElement) {
+          errorElement.textContent = input.value.trim()
+            ? "Use letters, spaces, hyphens, periods, and apostrophes only."
+            : `${input === inputFirstName ? "First" : "Last"} name is required.`;
+          errorElement.classList.add("is-visible");
+        }
+      }
+      checkNameDirty();
+    });
+  });
 
   if (nameCardEdit) {
-    nameCardEdit.addEventListener("submit", (e) => {
+    nameCardEdit.addEventListener("submit", async (e) => {
       e.preventDefault();
       const first = inputFirstName.value.trim();
       const mid = inputMiddleName.value.trim();
       const last = inputLastName.value.trim();
+      const firstValid = isValidNamePart(first);
+      const middleValid = !mid || isValidNamePart(mid);
+      const lastValid = isValidNamePart(last);
 
       let hasError = false;
-      if (!first) {
+      if (!firstValid) {
         inputFirstName.classList.add("is-invalid");
-        if (errFirstName) errFirstName.classList.add("is-visible");
+        if (errFirstName) {
+          errFirstName.textContent = first ? "Use letters, spaces, hyphens, periods, and apostrophes only." : "First name is required.";
+          errFirstName.classList.add("is-visible");
+        }
         hasError = true;
       } else {
         inputFirstName.classList.remove("is-invalid");
         if (errFirstName) errFirstName.classList.remove("is-visible");
       }
 
-      if (!last) {
+      if (!middleValid) {
+        inputMiddleName.classList.add("is-invalid");
+        const errMiddleName = document.getElementById("errMiddleName");
+        if (errMiddleName) {
+          errMiddleName.textContent = "Use letters, spaces, hyphens, periods, and apostrophes only.";
+          errMiddleName.classList.add("is-visible");
+        }
+        hasError = true;
+      } else {
+        inputMiddleName.classList.remove("is-invalid");
+        const errMiddleName = document.getElementById("errMiddleName");
+        if (errMiddleName) errMiddleName.classList.remove("is-visible");
+      }
+
+      if (!lastValid) {
         inputLastName.classList.add("is-invalid");
-        if (errLastName) errLastName.classList.add("is-visible");
+        if (errLastName) {
+          errLastName.textContent = last ? "Use letters, spaces, hyphens, periods, and apostrophes only." : "Last name is required.";
+          errLastName.classList.add("is-visible");
+        }
         hasError = true;
       } else {
         inputLastName.classList.remove("is-invalid");
@@ -291,15 +479,37 @@ import {
 
       if (hasError) return;
 
-      profile.firstName = first;
-      profile.middleName = mid;
-      profile.lastName = last;
-      profile.name = [first, mid, last].filter(Boolean).join(" ");
+      const authUser = auth?.currentUser;
+      if (!authUser?.uid || authUser.uid !== profile.uid || !db) {
+        showFeedback("Sign in again before updating your profile name.", true);
+        return;
+      }
 
-      localStorage.setItem(profileStorageKey, JSON.stringify(profile));
-      updateDisplay();
-      setNameEditMode(false);
-      showFeedback("Profile name updated successfully.");
+      const updatedNameFields = {
+        firstName: first,
+        middleName: mid,
+        lastName: last,
+        fullName: [first, mid, last].filter(Boolean).join(" "),
+      };
+      nameSaveBtn.disabled = true;
+      nameSaveBtn.textContent = "Saving...";
+      try {
+        const savedNameFields = await saveOrganizerProfileFields(authUser.uid, updatedNameFields);
+        profile = { ...profile, ...savedNameFields };
+        localStorage.setItem(profileStorageKey, JSON.stringify(profile));
+        updateDisplay();
+        setNameEditMode(false);
+        showFeedback("Profile name updated successfully.");
+      } catch (error) {
+        console.error("[EventOrganizerProfile] Could not update organizer name:", error);
+        const message = error?.code === "permission-denied"
+          ? "Your name could not be saved because profile access was denied. Contact an administrator."
+          : error?.message || "Could not save your name. Please try again.";
+        showFeedback(message, true);
+      } finally {
+        nameSaveBtn.textContent = "Save";
+        checkNameDirty();
+      }
     });
   }
 
@@ -348,8 +558,28 @@ import {
 
     const isEmailValid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(curEmail);
     const isPhoneValid = isValidPhilippineMobile(curPhone);
-    const isValid = isEmailValid && (curPhone.length === 0 || isPhoneValid);
+    const isValid = isEmailValid && isPhoneValid;
     const isDirty = changes > 0;
+
+    if (!isEmailValid) {
+      inputContactEmail.classList.add("is-invalid");
+      if (errContactEmail) {
+        errContactEmail.textContent = "Enter a valid email address.";
+        errContactEmail.classList.add("is-visible");
+      }
+    }
+    if (!isPhoneValid) {
+      inputContactPhone.classList.add("is-invalid");
+      if (errContactPhone) {
+        errContactPhone.textContent = curPhone
+          ? "Enter a valid 11-digit mobile number starting with 09."
+          : "Contact number is required.";
+        errContactPhone.classList.add("is-visible");
+      }
+    } else {
+      inputContactPhone.classList.remove("is-invalid");
+      if (errContactPhone) errContactPhone.classList.remove("is-visible");
+    }
 
     contactSaveBtn.disabled = !isDirty || !isValid;
     contactUnsavedCount.classList.toggle("is-dirty", isDirty);
@@ -366,7 +596,16 @@ import {
   if (contactCancelBtn) {
     contactCancelBtn.addEventListener("click", () => setContactEditMode(false));
   }
-  if (inputContactEmail) inputContactEmail.addEventListener("input", checkContactDirty);
+  if (inputContactEmail) {
+    inputContactEmail.addEventListener("input", () => {
+      inputContactEmail.classList.remove("is-invalid");
+      if (errContactEmail) {
+        errContactEmail.textContent = "Enter a valid email address.";
+        errContactEmail.classList.remove("is-visible");
+      }
+      checkContactDirty();
+    });
+  }
   if (inputContactPhone) {
     inputContactPhone.addEventListener("input", (e) => {
       const formatted = formatPhilippinePhone(e.target.value);
@@ -380,13 +619,18 @@ import {
       e.preventDefault();
       const emailVal = inputContactEmail.value.trim().toLowerCase();
       const rawPhone = mobileDigits(inputContactPhone.value);
-      const emailChanged = emailVal !== String(profile.email || "").trim().toLowerCase();
+      const authUser = auth?.currentUser;
+      const currentEmail = String(authUser?.email || profile.email || "").trim().toLowerCase();
+      const emailChanged = emailVal !== currentEmail;
       const phoneChanged = rawPhone !== mobileDigits(profile.contactNumber);
 
       let hasError = false;
       if (!emailVal || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(emailVal)) {
         inputContactEmail.classList.add("is-invalid");
-        if (errContactEmail) errContactEmail.classList.add("is-visible");
+        if (errContactEmail) {
+          errContactEmail.textContent = "Enter a valid email address.";
+          errContactEmail.classList.add("is-visible");
+        }
         hasError = true;
       } else {
         inputContactEmail.classList.remove("is-invalid");
@@ -407,7 +651,6 @@ import {
 
       if (hasError) return;
 
-      const authUser = auth?.currentUser;
       if (!authUser?.uid || authUser.uid !== profile.uid || !db) {
         showFeedback("Sign in again before updating your contact details.", true);
         return;
@@ -415,41 +658,70 @@ import {
 
       contactSaveBtn.disabled = true;
       contactSaveBtn.textContent = "Saving...";
+      let phoneSaved = false;
+      let verificationSent = false;
       try {
+        if (emailChanged) {
+          const signInMethods = await fetchSignInMethodsForEmail(auth, emailVal);
+          if (signInMethods.length) {
+            const duplicateError = Object.assign(
+              new Error("That email address is already registered. Use a different email."),
+              { code: "auth/email-already-in-use" },
+            );
+            throw duplicateError;
+          }
+        }
         if (phoneChanged) {
-          await saveProfileFields(
-            db,
+          const savedContactFields = await saveOrganizerProfileFields(
             authUser.uid,
-            "eventorganizer",
             { contactNumber: rawPhone },
-            profileCollectionsForRole("eventorganizer"),
           );
-          profile.contactNumber = rawPhone;
+          profile = { ...profile, ...savedContactFields };
+          phoneSaved = true;
         }
         if (emailChanged) {
           await verifyBeforeUpdateEmail(authUser, emailVal);
+          verificationSent = true;
           profile.pendingEmail = emailVal;
           localStorage.setItem(
             `recovibe_pending_email_${authUser.uid}`,
             JSON.stringify({ pendingEmail: emailVal, oldEmail: profile.email, timestamp: Date.now() }),
           );
-          await savePendingProfileEmail(
-            db,
+          const savedEmailFields = await saveOrganizerProfileFields(
             authUser.uid,
-            "eventorganizer",
-            emailVal,
-            profileCollectionsForRole("eventorganizer"),
+            { pendingEmail: emailVal },
           );
+          profile = { ...profile, ...savedEmailFields };
         }
         localStorage.setItem(profileStorageKey, JSON.stringify(profile));
         updateDisplay();
         setContactEditMode(false);
         showFeedback(emailChanged
-          ? "Verification was sent. Keep using your current email until you confirm the new address."
+          ? `Verification was sent to ${emailVal}. Keep using ${currentEmail} to sign in until you confirm the new address.`
           : "Contact details updated successfully.");
       } catch (error) {
         console.error("[EventOrganizerProfile] Could not update contact details:", error);
-        showFeedback(error?.message || "Could not update contact details.", true);
+        if (phoneSaved) {
+          localStorage.setItem(profileStorageKey, JSON.stringify(profile));
+          updateDisplay();
+        }
+        let message = error?.message || "Could not update contact details.";
+        if (["auth/email-already-in-use", "auth/credential-already-in-use"].includes(error?.code)) {
+          message = "That email address is already registered. Use a different email.";
+          inputContactEmail.classList.add("is-invalid");
+          if (errContactEmail) {
+            errContactEmail.textContent = message;
+            errContactEmail.classList.add("is-visible");
+          }
+        } else if (error?.code === "auth/invalid-email") {
+          message = "Enter a valid email address.";
+        } else if (error?.code === "auth/requires-recent-login") {
+          message = "Sign in again before changing your email address.";
+        } else if (verificationSent) {
+          message = `A verification email was sent to ${emailVal}, but the pending change could not be saved. Your sign-in email is still ${currentEmail}.`;
+        }
+        if (phoneSaved) message = `Contact number saved. ${message}`;
+        showFeedback(message, true);
       } finally {
         contactSaveBtn.disabled = false;
         contactSaveBtn.textContent = "Save";
@@ -470,11 +742,30 @@ import {
   const newPasswordInput = document.getElementById("newPassword");
   const confirmPasswordInput = document.getElementById("confirmPassword");
   const passwordStatus = document.getElementById("passwordFormStatus");
+  const passwordSubmitButton = passwordForm?.querySelector('button[type="submit"]');
+
+  function resetPasswordFields() {
+    passwordForm?.reset();
+    document.querySelectorAll("[data-password-toggle]").forEach((button) => {
+      const input = document.getElementById(button.dataset.passwordToggle);
+      if (input) input.type = "password";
+      button.setAttribute("aria-pressed", "false");
+      const passwordName = button.dataset.passwordToggle === "currentPassword"
+        ? "current password"
+        : button.dataset.passwordToggle === "newPassword"
+          ? "new password"
+          : "confirmed password";
+      button.setAttribute("aria-label", `Show ${passwordName}`);
+      button.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M2.5 12s3.4-6 9.5-6 9.5 6 9.5 6-3.4 6-9.5 6-9.5-6-9.5-6Z"/><circle cx="12" cy="12" r="2.6"/></svg>';
+    });
+    if (passwordStatus) {
+      passwordStatus.textContent = "";
+    }
+  }
 
   function openPasswordModal() {
     if (!passwordModal) return;
-    if (passwordForm) passwordForm.reset();
-    if (passwordStatus) passwordStatus.textContent = "";
+    resetPasswordFields();
     passwordModal.hidden = false;
     if (currentPasswordInput) currentPasswordInput.focus();
   }
@@ -482,11 +773,30 @@ import {
   function closePasswordModalHandler() {
     if (!passwordModal) return;
     passwordModal.hidden = true;
+    resetPasswordFields();
   }
 
   if (changePasswordBtn) changePasswordBtn.addEventListener("click", openPasswordModal);
   if (closePasswordModal) closePasswordModal.addEventListener("click", closePasswordModalHandler);
   if (cancelPasswordChange) cancelPasswordChange.addEventListener("click", closePasswordModalHandler);
+  document.querySelectorAll("[data-password-toggle]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const input = document.getElementById(button.dataset.passwordToggle);
+      if (!input) return;
+      const showPassword = input.type === "password";
+      input.type = showPassword ? "text" : "password";
+      button.setAttribute("aria-pressed", String(showPassword));
+      const passwordName = button.dataset.passwordToggle === "currentPassword"
+        ? "current password"
+        : button.dataset.passwordToggle === "newPassword"
+          ? "new password"
+          : "confirmed password";
+      button.setAttribute("aria-label", `${showPassword ? "Hide" : "Show"} ${passwordName}`);
+      button.innerHTML = showPassword
+        ? '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M3 3l18 18M10.6 10.6a2 2 0 0 0 2.8 2.8"/><path d="M9.9 5.2A10.8 10.8 0 0 1 12 5c6.1 0 9.5 7 9.5 7a15.7 15.7 0 0 1-3.1 3.8M6.2 6.2C3.9 7.7 2.5 12 2.5 12s3.4 7 9.5 7c1 0 1.9-.2 2.7-.5"/></svg>'
+        : '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M2.5 12s3.4-6 9.5-6 9.5 6 9.5 6-3.4 6-9.5 6-9.5-6-9.5-6Z"/><circle cx="12" cy="12" r="2.6"/></svg>';
+    });
+  });
   if (passwordModal) {
     passwordModal.addEventListener("click", (e) => {
       if (e.target === passwordModal || e.target.classList.contains("modal-backdrop")) {
@@ -496,32 +806,73 @@ import {
   }
 
   if (passwordForm) {
-    passwordForm.addEventListener("submit", (e) => {
+    passwordForm.addEventListener("submit", async (e) => {
       e.preventDefault();
-      const cur = currentPasswordInput.value;
-      const nw = newPasswordInput.value;
-      const conf = confirmPasswordInput.value;
+      const cur = currentPasswordInput?.value || "";
+      const nw = newPasswordInput?.value || "";
+      const conf = confirmPasswordInput?.value || "";
+      if (passwordStatus) {
+        passwordStatus.textContent = "";
+      }
 
       if (!cur) {
-        passwordStatus.textContent = "Please enter your current password.";
+        if (passwordStatus) passwordStatus.textContent = "Please enter your current password.";
         currentPasswordInput.focus();
         return;
       }
       if (nw.length < 6) {
-        passwordStatus.textContent = "New password must be at least 6 characters.";
+        if (passwordStatus) passwordStatus.textContent = "New password must be at least 6 characters.";
         newPasswordInput.focus();
         return;
       }
       if (nw !== conf) {
-        passwordStatus.textContent = "New passwords do not match.";
+        if (passwordStatus) passwordStatus.textContent = "New passwords do not match.";
         confirmPasswordInput.focus();
         return;
       }
+      if (nw === cur) {
+        if (passwordStatus) passwordStatus.textContent = "Choose a new password different from your current password.";
+        newPasswordInput.focus();
+        return;
+      }
 
-      localStorage.setItem("recovibeOrganizerPassword", nw);
-      closePasswordModalHandler();
-      showToast("Password updated successfully.");
-      showFeedback("Password changed successfully.");
+      const authUser = auth?.currentUser;
+      if (!authUser?.email) {
+        if (passwordStatus) passwordStatus.textContent = "Sign in again before changing your password.";
+        return;
+      }
+      if (passwordSubmitButton) {
+        passwordSubmitButton.disabled = true;
+        passwordSubmitButton.textContent = "Updating...";
+      }
+      try {
+        const credential = EmailAuthProvider.credential(authUser.email, cur);
+        await reauthenticateWithCredential(authUser, credential);
+        await updatePassword(authUser, nw);
+        localStorage.removeItem("recovibeOrganizerPassword");
+        closePasswordModalHandler();
+        showToast("Password updated successfully.");
+        showFeedback("Password changed successfully.");
+      } catch (error) {
+        console.error("[EventOrganizerProfile] Could not change password:", error);
+        const message = ["auth/wrong-password", "auth/invalid-credential"].includes(error?.code)
+          ? "Current password is incorrect."
+          : error?.code === "auth/weak-password"
+            ? "New password must be at least 6 characters."
+            : error?.code === "auth/requires-recent-login"
+              ? "Please sign in again before changing your password."
+              : error?.code === "auth/too-many-requests"
+                ? "Too many attempts. Please wait and try again."
+                : error?.code === "auth/network-request-failed"
+                  ? "Network error. Check your connection and try again."
+                  : error?.message || "Could not change your password. Please try again.";
+        if (passwordStatus) passwordStatus.textContent = message;
+      } finally {
+        if (passwordSubmitButton) {
+          passwordSubmitButton.disabled = false;
+          passwordSubmitButton.textContent = "Update Password";
+        }
+      }
     });
   }
 

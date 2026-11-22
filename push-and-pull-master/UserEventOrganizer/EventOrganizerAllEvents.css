@@ -1461,6 +1461,38 @@ select:focus-visible {
 .published-event-status {
   display: none !important;
 }
+.published-event-phase {
+  flex: none;
+  padding: 4px 9px;
+  border: 1px solid #e6e0d3;
+  border-radius: 999px;
+  background: #f5f2ec;
+  color: #5e514a;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.4;
+  text-transform: capitalize;
+}
+.published-event-phase--ongoing {
+  border-color: #b7dfc3;
+  background: #eaf6ed;
+  color: #226537;
+}
+.published-event-phase--upcoming {
+  border-color: #c9d9f3;
+  background: #edf3fd;
+  color: #315a91;
+}
+.published-event-phase--completed {
+  border-color: #ded8ce;
+  background: #f1eee8;
+  color: #655b50;
+}
+.published-event-phase--cancelled {
+  border-color: #edc3c3;
+  background: #fff0f0;
+  color: #9c3434;
+}
 .published-event-meta {
   display: flex;
   flex-wrap: wrap;

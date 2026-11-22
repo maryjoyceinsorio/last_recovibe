@@ -249,10 +249,25 @@ function hydrateUserProfile() {
   ];
   const sources = [
     "PUP Official",
-    "CSC",
     "Organizational",
     "Others / External",
   ];
+  function normalizePreferredSources(values) {
+    return [...new Set(values.map((source) => {
+      const value = String(source || "").trim();
+      const normalized = value.toLowerCase().replace(/\s+/g, " ");
+      if (
+        /\bcsc\b/.test(normalized) ||
+        /campus student council|central student council/.test(normalized)
+      ) {
+        return "Organizational";
+      }
+      if (/^(others?\s*\/\s*external|other|external)$/.test(normalized)) {
+        return "Others / External";
+      }
+      return sources.find((label) => label.toLowerCase() === normalized) || value;
+    }).filter(Boolean))];
+  }
   const defaults = {
     categories: ["Academic & Learning", "Tech & Innovation"],
     sources,
@@ -264,6 +279,10 @@ function hydrateUserProfile() {
   if (!Array.isArray(preferences.categories) || !Array.isArray(preferences.sources)) {
     preferences = defaults;
   }
+  preferences = {
+    ...preferences,
+    sources: normalizePreferredSources(preferences.sources),
+  };
 
   function showToast(message, isError = false) {
     const toast = document.getElementById("toast");
@@ -1651,8 +1670,11 @@ function hydrateUserProfile() {
         }
         if (val.preferences && Array.isArray(val.preferences.categories) && Array.isArray(val.preferences.sources)) {
           if (!isPreferencesEditing()) {
-            preferences = val.preferences;
-            user.preferences = val.preferences;
+            preferences = {
+              ...val.preferences,
+              sources: normalizePreferredSources(val.preferences.sources),
+            };
+            user.preferences = preferences;
             localStorage.setItem(preferenceKey, JSON.stringify(preferences));
             localStorage.setItem(accountPreferenceKey, JSON.stringify(preferences));
             renderSummary("categorySummary", preferences.categories, "None chosen yet");
@@ -1959,9 +1981,8 @@ function hydrateUserProfile() {
 
   const SOURCE_DESCRIPTIONS = {
     "PUP Official": "University offices and campuses",
-    "CSC": "The campus student council",
     "Teacher / Faculty": "Events from your instructors",
-    "Organizational": "Student organizations, including your own",
+    "Organizational": "Student organizations, including student councils",
     "Others / External": "Partners and outside organizers",
   };
 

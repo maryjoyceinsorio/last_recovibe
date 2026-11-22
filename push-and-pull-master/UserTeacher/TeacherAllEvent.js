@@ -216,6 +216,36 @@ import { teacherEventReadFilters, teacherEventsQuery } from "./TeacherEventQuery
     return String(value || "").trim();
   }
 
+  function normalizeSource(source, organization = "") {
+    const rawSource = displayValue(source).toLowerCase();
+    const rawOrganization = displayValue(organization).toLowerCase();
+    const combined = `${rawSource} ${rawOrganization}`;
+    if (
+      /\bcsc\b/.test(combined) ||
+      combined.includes("campus student council") ||
+      combined.includes("central student council") ||
+      combined.includes("council")
+    ) {
+      return "Organizational";
+    }
+    if (/organiz|organizer|event organizer|ibits/.test(rawSource)) {
+      return "Organizational";
+    }
+    if (/external|admin|other/.test(rawSource)) {
+      return "Others / External";
+    }
+    if (/pup|official|campus|cite|teacher|faculty/.test(rawSource)) {
+      return "PUP Official";
+    }
+    return rawOrganization ? "Organizational" : "Others / External";
+  }
+
+  function sourceGroups(event) {
+    return event.source === "Organizational"
+      ? ["Organizational", "Others / External"]
+      : [event.source];
+  }
+
   function categoriesFor(event) {
     const value = event.category ?? event.categories ?? event.tag ?? "";
     const categories = Array.isArray(value) ? value : String(value).split(",");
@@ -278,7 +308,7 @@ import { teacherEventReadFilters, teacherEventsQuery } from "./TeacherEventQuery
     const organization = displayValue(
       data.organization || data.organizationName || data.organizerName || data.organizer || data.orgName,
     );
-    const source = displayValue(data.source || data.eventSource || organization) || "Source not specified";
+    const source = normalizeSource(data.source || data.eventSource, organization);
     const capacityValue = data.capacity ?? data.maxCapacity ?? data.maxSlots ?? "";
     const capacity = String(capacityValue).trim() === "" ? null : Number(capacityValue);
     const registeredValue = data.registeredCount;
@@ -352,12 +382,15 @@ import { teacherEventReadFilters, teacherEventsQuery } from "./TeacherEventQuery
 
   function updateDynamicOptions() {
     const sources = [...new Set(events.flatMap((event) => [event.source, event.organization]).filter(Boolean))]
+      .map((source) => normalizeSource(source))
+      .filter((source, index, all) => all.indexOf(source) === index)
       .sort((a, b) => a.localeCompare(b));
     const categories = [...new Set(events.flatMap((event) => event.categories))]
       .sort((a, b) => a.localeCompare(b));
     refreshOptions(elements.source, sources, "All Sources");
     refreshOptions(elements.category, categories, "Category");
     let invalidFilter = false;
+    if (state.source === "CSC") state.source = "Organizational";
     if (!sources.includes(state.source)) {
       invalidFilter = state.source !== "all";
       state.source = "all";
@@ -415,7 +448,7 @@ import { teacherEventReadFilters, teacherEventsQuery } from "./TeacherEventQuery
     const steps = [
       ["search", (event) => !query || `${event.title} ${event.venue} ${event.organization} ${event.source}`.toLocaleLowerCase().includes(query)],
       ["scope", (event) => state.scope === "all" || (state.scope === "upcoming" ? event.start >= now : event.start < now)],
-      ["source", (event) => state.source === "all" || event.source === state.source || event.organization === state.source],
+      ["source", (event) => state.source === "all" || sourceGroups(event).includes(state.source)],
       ["category", (event) => state.category === "all" || event.categories.includes(state.category)],
       ["date", (event) => dateMatch(event, nowKey)],
       ["status", (event) => state.status === "all" || eventStatus(event, now).toLowerCase().replace(/\s+/g, "-") === state.status],

@@ -18,9 +18,13 @@ import { syncOrganizerOrganization } from "../organizationScope.js";
   let events = [];
   let isLoading = true;
   let loadError = "";
-  let unsubscribeEvents;
+  const unsubscribeEvents = [];
+  const eventSnapshotsBySource = new Map();
+  const eventSourcesSettled = new Set();
+  const eventSourceFailures = new Set();
   const happeningNowRows = document.getElementById("happeningNowEvents");
   const upcomingRows = document.getElementById("upcomingEvents");
+  const completedRows = document.getElementById("completedEvents");
   const upcomingHeading = document.querySelector("#upcomingEventsSection h2");
   const search = document.getElementById("eventSearch");
   const status = document.getElementById("eventStatusFilter");
@@ -66,7 +70,6 @@ import { syncOrganizerOrganization } from "../organizationScope.js";
     );
   const sourceMatches = {
     "PUP Official": ["pup official", "pup biñan", "pup biñan campus", "pup cite", "pup main"],
-    CSC: ["csc"],
     Organizational: ["organizational", "organization", "event organizer", "ibits", "organizer"],
     "Others / External": ["others / external", "other / external", "others/external", "admin", "external"],
   };
@@ -86,14 +89,110 @@ import { syncOrganizerOrganization } from "../organizationScope.js";
   };
   function normalizeSource(source) {
     const value = String(source || "").trim().toLowerCase();
-    return (
-      Object.keys(sourceMatches).find((label) =>
-        sourceMatches[label].includes(value),
-      ) || "Others / External"
-    );
+    if (
+      /\bcsc\b/.test(value) ||
+      value.includes("campus student council") ||
+      value.includes("central student council")
+    ) return "Organizational";
+    if (sourceMatches.Organizational.some((source) => value.includes(source))) {
+      return "Organizational";
+    }
+    if (sourceMatches["PUP Official"].some((source) => value.includes(source))) {
+      return "PUP Official";
+    }
+    if (sourceMatches["Others / External"].some((source) => value.includes(source))) {
+      return "Others / External";
+    }
+    return "Others / External";
+  }
+  function eventSourceText(event) {
+    return [
+      event.source,
+      event.eventSource,
+      event.organization,
+      event.organizationName,
+      event.organizerName,
+    ].map((value) => String(value || "").trim()).filter(Boolean).join(" ");
+  }
+  function sourceGroups(event) {
+    const value = eventSourceText(event);
+    const normalized = normalizeSource(value);
+    if (normalized !== "Organizational") return [normalized];
+    return ["Organizational", "Others / External"];
   }
   const today = new Date();
   today.setHours(0, 0, 0, 0);
+
+  function eventDateObject(event, isEnd = false) {
+    let rawDate = isEnd
+      ? event.endDateISO || event.dateEnd || event.endDate || event.eventEndDate ||
+        event.dateISO || event.eventDate || event.date
+      : event.dateISO || event.dateStart || event.startDate ||
+        event.eventDate || event.date;
+    if (rawDate && typeof rawDate.toDate === "function") rawDate = rawDate.toDate();
+    const date = rawDate instanceof Date
+      ? new Date(rawDate)
+      : typeof rawDate === "number"
+        ? new Date(rawDate)
+        : new Date(String(rawDate || "").slice(0, 10) + "T00:00:00");
+    return Number.isNaN(date.getTime()) ? null : date;
+  }
+
+  function eventBoundaryMillis(event, isEnd = false) {
+    const date = eventDateObject(event, isEnd);
+    if (!date) return null;
+
+    let timeValue = String(
+      isEnd
+        ? event.endTime || event.timeEnd || ""
+        : event.startTime || event.timeStart || "",
+    ).trim();
+    if (!timeValue && event.time) {
+      const timeParts = String(event.time).split(/\s*[-–—]\s*/);
+      timeValue = String(timeParts[isEnd ? 1 : 0] || "").trim();
+    }
+    const timeMatch = /^(\d{1,2}):(\d{2})(?::(\d{2}))?\s*(AM|PM)?$/i.exec(timeValue);
+    if (timeMatch) {
+      let hours = Number(timeMatch[1]);
+      const minutes = Number(timeMatch[2]);
+      const seconds = Number(timeMatch[3] || 0);
+      const meridiem = String(timeMatch[4] || "").toUpperCase();
+      if (meridiem) {
+        if (hours < 1 || hours > 12) return null;
+        if (hours === 12) hours = 0;
+        if (meridiem === "PM") hours += 12;
+      } else if (hours > 23) {
+        return null;
+      }
+      if (minutes > 59 || seconds > 59) return null;
+      date.setHours(hours, minutes, seconds, 0);
+    } else {
+      date.setHours(isEnd ? 23 : 0, isEnd ? 59 : 0, isEnd ? 59 : 0, isEnd ? 999 : 0);
+    }
+    return date.getTime();
+  }
+
+  function eventPhase(event, now = Date.now()) {
+    const status = String(event.status || event.publicationStatus || "")
+      .trim()
+      .toLowerCase()
+      .replace(/[ _-]+/g, " ");
+    if (event.cancelled === true || event.canceled === true ||
+        ["cancelled", "canceled"].includes(status)) return "cancelled";
+    if (event.completed === true || ["completed", "complete", "ended", "finished"].includes(status)) {
+      return "completed";
+    }
+    if (status === "ongoing" || status === "active") return "ongoing";
+    if (status === "upcoming") return "upcoming";
+    const end = eventBoundaryMillis(event, true);
+    if (end !== null && end < now) return "completed";
+    const start = eventBoundaryMillis(event);
+    if (start !== null && start <= now && (end === null || end >= now)) return "ongoing";
+    if (start !== null && start > now) return "upcoming";
+    if (event.rescheduled === true || status === "rescheduled") return "rescheduled";
+    return "unknown";
+  }
+
   function dateRangeBounds(value) {
     const date = new Date(today);
     if (value === "today") return [date, date];
@@ -133,10 +232,7 @@ import { syncOrganizerOrganization } from "../organizationScope.js";
 
   function matches(event) {
     const query = search.value.trim().toLowerCase();
-    const eventDate = event.dateISO || event.eventDate;
-    const date = eventDate
-      ? new Date(`${String(eventDate).slice(0, 10)}T00:00:00`)
-      : null;
+    const date = eventDateObject(event);
     const categoryValues = categoryMatches[state.category] || [];
     const customRange = /^custom:(\d{4}-\d{2}-\d{2}):(\d{4}-\d{2}-\d{2})$/.exec(state.date);
     const range = dateRangeBounds(state.date);
@@ -158,24 +254,13 @@ import { syncOrganizerOrganization } from "../organizationScope.js";
       ["cancelled", "canceled"].includes(eventStatus);
     const isRescheduled =
       event.rescheduled === true || eventStatus === "rescheduled";
-    const isCompleted = eventStatus === "completed" || event.completed === true;
-    const eventDay = date
-      ? new Date(date.getFullYear(), date.getMonth(), date.getDate())
-      : null;
-    const isHappening =
-      eventDay &&
-      eventDay.getTime() === today.getTime() &&
-      !isCancelled &&
-      !isCompleted &&
-      !isRescheduled;
-    const isUpcoming =
-      eventDay &&
-      eventDay > today &&
-      !isCancelled &&
-      !isCompleted &&
-      !isRescheduled;
+    const phase = eventPhase(event);
+    const isCompleted = phase === "completed";
+    const isHappening = phase === "ongoing" && !isCancelled && !isRescheduled;
+    const isUpcoming = phase === "upcoming" && !isCancelled && !isRescheduled;
     const statusMatches =
       state.status === "all" ||
+      (state.status === "ongoing" && isHappening) ||
       (state.status === "upcoming" && isUpcoming) ||
       (state.status === "canceled" && isCancelled) ||
       (state.status === "completed" && isCompleted) ||
@@ -185,7 +270,7 @@ import { syncOrganizerOrganization } from "../organizationScope.js";
       (state.view === "all" ||
         String(event.organizerId || "") === String(organizerId)) &&
       (state.source === "All Sources" ||
-        normalizeSource(event.source || event.eventSource) === state.source) &&
+        sourceGroups(event).includes(state.source === "CSC" ? "Organizational" : state.source)) &&
       (state.category === "all" ||
         categoryValues.some((value) =>
           String(event.category || event.eventType || "")
@@ -202,10 +287,7 @@ import { syncOrganizerOrganization } from "../organizationScope.js";
   }
 
   function eventCard(event) {
-    const eventDate = event.dateISO || event.eventDate;
-    const date = eventDate
-      ? new Date(`${String(eventDate).slice(0, 10)}T00:00:00`)
-      : null;
+    const date = eventDateObject(event);
     const dateLabel = date
       ? date.toLocaleDateString("en-US", {
           month: "short",
@@ -228,7 +310,11 @@ import { syncOrganizerOrganization } from "../organizationScope.js";
       Math.min(totalSlots, totalSlots - registeredCount),
     );
     const eventId = escape(event.eventId || event.id || "");
-    return `<article class="published-event-card" id="organizer-event-card-${eventId}" data-event-id="${eventId}"><div class="published-event-date" id="published-event-date-${eventId}" aria-label="${escape(dateLabel)}"><span class="published-event-month" id="published-event-month-${eventId}">${date ? date.toLocaleDateString("en-US", { month: "short" }) : "TBA"}</span><strong class="published-event-day" id="published-event-day-${eventId}">${date ? date.getDate() : ""}</strong><span class="published-event-year" id="published-event-year-${eventId}">${date ? date.getFullYear() : ""}</span></div><div class="published-event-content" id="published-event-content-${eventId}"><div class="published-event-heading"><div><h2 class="published-event-title" id="published-event-title-${eventId}">${escape(event.title)}</h2><p class="published-event-source" id="published-event-source-${eventId}">${escape(normalizeSource(event.source || event.eventSource))}</p></div></div><div class="published-event-meta" id="published-event-meta-${eventId}"><span id="published-event-date-label-${eventId}" class="visually-hidden">${escape(dateLabel)}</span><span class="published-event-meta-time" id="published-event-time-${eventId}">${escape(event.time || "Time TBA")}</span><span class="published-event-meta-location" id="published-event-location-${eventId}">${escape(event.location || "Location TBA")}${event.room ? `&nbsp;·&nbsp;${escape(event.room)}` : ""}</span></div><div class="published-event-footer"><div class="published-event-summary" id="published-event-summary-${eventId}"><div class="published-event-tags" id="published-event-category-group-${eventId}"><span id="published-event-category-${eventId}">${escape(event.category || "General")}</span></div><span class="published-event-capacity" id="published-event-capacity-${eventId}">${openSlots} of ${totalSlots} Slots Open</span></div><div class="published-event-actions"><button type="button" id="published-event-details-${eventId}" data-preview-id="${eventId}">View Details</button></div></div></div></article>`;
+    const phase = eventPhase(event);
+    const phaseLabel = phase === "unknown"
+      ? String(event.status || "Schedule TBA")
+      : phase.charAt(0).toUpperCase() + phase.slice(1);
+    return `<article class="published-event-card" id="organizer-event-card-${eventId}" data-event-id="${eventId}"><div class="published-event-date" id="published-event-date-${eventId}" aria-label="${escape(dateLabel)}"><span class="published-event-month" id="published-event-month-${eventId}">${date ? date.toLocaleDateString("en-US", { month: "short" }) : "TBA"}</span><strong class="published-event-day" id="published-event-day-${eventId}">${date ? date.getDate() : ""}</strong><span class="published-event-year" id="published-event-year-${eventId}">${date ? date.getFullYear() : ""}</span></div><div class="published-event-content" id="published-event-content-${eventId}"><div class="published-event-heading"><div><h2 class="published-event-title" id="published-event-title-${eventId}">${escape(event.title)}</h2><p class="published-event-source" id="published-event-source-${eventId}">${escape(normalizeSource(eventSourceText(event)))}</p></div><span class="published-event-phase published-event-phase--${escape(phase)}">${escape(phaseLabel)}</span></div><div class="published-event-meta" id="published-event-meta-${eventId}"><span id="published-event-date-label-${eventId}" class="visually-hidden">${escape(dateLabel)}</span><span class="published-event-meta-time" id="published-event-time-${eventId}">${escape(event.time || "Time TBA")}</span><span class="published-event-meta-location" id="published-event-location-${eventId}">${escape(event.location || "Location TBA")}${event.room ? `&nbsp;·&nbsp;${escape(event.room)}` : ""}</span></div><div class="published-event-footer"><div class="published-event-summary" id="published-event-summary-${eventId}"><div class="published-event-tags" id="published-event-category-group-${eventId}"><span id="published-event-category-${eventId}">${escape(event.category || "General")}</span></div><span class="published-event-capacity" id="published-event-capacity-${eventId}">${openSlots} of ${totalSlots} Slots Open</span></div><div class="published-event-actions"><button type="button" id="published-event-details-${eventId}" data-preview-id="${eventId}">View Details</button></div></div></div></article>`;
   }
 
   function renderList(element, list, emptyText = "No events match your filters.") {
@@ -262,29 +348,20 @@ import { syncOrganizerOrganization } from "../organizationScope.js";
           new Date(second.createdAt || 0).getTime() -
           new Date(first.createdAt || 0).getTime(),
       );
-    const happeningNow = visible.filter((event) => {
-      const eventDate = event.dateISO || event.eventDate;
-      const date = eventDate
-        ? new Date(`${String(eventDate).slice(0, 10)}T00:00:00`)
-        : null;
-      const eventStatus = String(event.status || "")
-        .trim()
-        .toLowerCase()
-        .replace(/[ _-]+/g, " ");
-      return date &&
-        date.getTime() === today.getTime() &&
-        eventStatus !== "completed" &&
-        event.completed !== true;
-    });
-    const upcoming = visible.filter((event) => !happeningNow.includes(event));
+    const happeningNow = visible.filter((event) => eventPhase(event) === "ongoing");
+    const completed = visible.filter((event) => eventPhase(event) === "completed");
+    const upcoming = visible.filter((event) =>
+      !happeningNow.includes(event) && !completed.includes(event),
+    );
     if (upcomingHeading) {
       const headingLabel = state.status === "all"
-        ? "All Events"
+        ? "Upcoming & Other Events"
         : state.status.charAt(0).toUpperCase() + state.status.slice(1);
       upcomingHeading.textContent = headingLabel;
     }
     renderList(happeningNowRows, happeningNow, "No ongoing events");
     renderList(upcomingRows, upcoming);
+    renderList(completedRows, completed, "No completed events");
   }
 
   function openDetails(eventId) {
@@ -292,7 +369,7 @@ import { syncOrganizerOrganization } from "../organizationScope.js";
       (item) => String(item.eventId || item.id) === String(eventId),
     );
     if (!event) return;
-    event.source = normalizeSource(event.source || event.eventSource);
+    event.source = normalizeSource(eventSourceText(event));
     const canReview = String(event.organizerId) === String(organizerId);
     window.RecovibeEventDetails?.open(
       event,
@@ -773,7 +850,6 @@ import { syncOrganizerOrganization } from "../organizationScope.js";
       createDropdown("sources", "All Sources", [
         "All Sources",
         "PUP Official",
-        "CSC",
         "Organizational",
         "Others / External",
       ].map((value) => ({ value, label: value }))),
@@ -787,6 +863,7 @@ import { syncOrganizerOrganization } from "../organizationScope.js";
       dateRangeHost,
       createDropdown("status", "Event Status", [
         { value: "all", label: "All Statuses" },
+        { value: "ongoing", label: "Ongoing" },
         { value: "upcoming", label: "Upcoming" },
         { value: "canceled", label: "Canceled" },
         { value: "completed", label: "Completed" },
@@ -887,7 +964,11 @@ import { syncOrganizerOrganization } from "../organizationScope.js";
     signalPageReady();
   } else {
     authReady.then(() => onAuthStateChanged(auth, async (user) => {
-      unsubscribeEvents?.();
+      unsubscribeEvents.forEach((unsubscribe) => unsubscribe());
+      unsubscribeEvents.length = 0;
+      eventSnapshotsBySource.clear();
+      eventSourcesSettled.clear();
+      eventSourceFailures.clear();
       if (!user) {
         window.location.replace("EventOrganizerLogin.html");
         return;
@@ -897,78 +978,143 @@ import { syncOrganizerOrganization } from "../organizationScope.js";
       isLoading = true;
       loadError = "";
       render();
-      let organizationCode;
+      let organizationCode = "";
       try {
         organizationCode = await syncOrganizerOrganization(functions);
       } catch (error) {
-        console.error("Could not verify organizer organization:", error);
-        isLoading = false;
-        loadError = "Could not verify your organization. Please refresh and try again.";
-        render();
-        signalPageReady();
-        return;
+        console.warn("Could not verify organizer organization; loading public schedule events.", {
+          code: error?.code || "unknown",
+        });
       }
-      unsubscribeEvents = onSnapshot(
-        query(
-          collection(db, "events"),
-          where("organizationCode", "==", organizationCode),
-        ),
-        (snapshot) => {
-          events = snapshot.docs
-            .map((eventDocument) => {
-              const data = eventDocument.data();
-              const status = String(data.status || "")
-                .trim()
-                .toLowerCase()
-                .replace(/[ _-]+/g, " ");
-              const isPublished =
-                ["approved", "published", "rescheduled", "completed"].includes(status) ||
-                data.published === true;
-              if (!isPublished) return null;
-              const eventDate = data.eventDate || data.dateISO || data.date || "";
-              const createdAt = data.createdAt?.toDate
-                ? data.createdAt.toDate().toISOString()
-                : data.createdAt || "";
-              const startTime = data.startTime || "";
-              const endTime = data.endTime || "";
-              return {
-                ...data,
-                id: eventDocument.id,
-                eventId: eventDocument.id,
-                title: data.eventName || data.title || "Untitled",
-                dateISO: eventDate,
-                time:
-                  data.time ||
-                  [startTime, endTime].filter(Boolean).join(" - ") ||
-                  "Time TBA",
-                location: data.venue || data.location || data.venueOther || "",
-                category: data.category || data.eventType || "General",
-                source:
-                  data.source ||
-                  data.eventSource ||
-                  (data.organizerId
-                    ? "Organizational"
-                    : data.organization || data.organizerName || "Others / External"),
-                createdAt,
-                organizerId: data.organizerId || "",
-              };
-            })
-            .filter(Boolean);
-          isLoading = false;
-          loadError = "";
-          render();
-          signalPageReady();
-          if (initialEventId) openDetails(initialEventId);
-        },
-        (error) => {
-          console.error("Unable to load All Events:", error);
-          events = [];
-          isLoading = false;
-          loadError = "Could not load events. Please try again later.";
-          render();
-          signalPageReady();
-        },
-      );
+      if (auth.currentUser?.uid !== user.uid) return;
+      const eventsRef = collection(db, "events");
+      const eventQueries = [
+        ["public-status", query(eventsRef, where("status", "in", [
+          "approved", "Approved", "APPROVED",
+          "published", "Published", "PUBLISHED",
+          "completed", "Completed", "COMPLETED",
+          "ended", "Ended", "ENDED",
+          "rescheduled", "Rescheduled", "RESCHEDULED",
+          "ongoing", "Ongoing", "ONGOING",
+          "upcoming", "Upcoming", "UPCOMING",
+          "active", "Active", "ACTIVE",
+        ]))],
+        ["public-publication-status", query(eventsRef, where("publicationStatus", "in", [
+          "published", "Published", "PUBLISHED",
+        ]))],
+        ["public-published", query(eventsRef, where("published", "==", true))],
+        ["public-is-published", query(eventsRef, where("isPublished", "==", true))],
+        ["owner-organizer-uid", query(eventsRef, where("organizerUid", "==", user.uid))],
+        ["owner-organizer-id", query(eventsRef, where("organizerId", "==", user.uid))],
+        ["owner-created-by", query(eventsRef, where("createdBy", "==", user.uid))],
+      ];
+      if (organizationCode) {
+        eventQueries.push([
+          "organization",
+          query(eventsRef, where("organizationCode", "==", organizationCode)),
+        ]);
+      }
+
+      let initialEventOpened = false;
+      const refreshEvents = () => {
+        const mergedDocuments = new Map();
+        eventSnapshotsBySource.forEach((sourceDocuments) => {
+          sourceDocuments.forEach((eventDocument, id) => {
+            const previous = mergedDocuments.get(id);
+            const previousTime = previous?.updateTime?.toMillis?.() || 0;
+            const currentTime = eventDocument.updateTime?.toMillis?.() || 0;
+            if (!previous || currentTime >= previousTime) {
+              mergedDocuments.set(id, eventDocument);
+            }
+          });
+        });
+        events = [...mergedDocuments.values()]
+          .map((eventDocument) => {
+            const data = eventDocument.data();
+            const statuses = [data.status, data.publicationStatus]
+              .map((value) => String(value || "").trim().toLowerCase().replace(/[ _-]+/g, " "));
+            const isDisplayable =
+              statuses.some((value) =>
+                ["approved", "published", "completed", "complete", "ended", "rescheduled", "ongoing", "upcoming", "active"].includes(value),
+              ) ||
+              data.published === true ||
+              data.isPublished === true ||
+              data.isApproved === true;
+            if (!isDisplayable) return null;
+            const eventDate = data.eventDate || data.dateISO || data.dateStart || data.date || "";
+            const createdAt = data.createdAt?.toDate
+              ? data.createdAt.toDate().toISOString()
+              : data.createdAt || "";
+            const startTime = data.startTime || data.timeStart || "";
+            const endTime = data.endTime || data.timeEnd || "";
+            return {
+              ...data,
+              id: eventDocument.id,
+              eventId: eventDocument.id,
+              title: data.eventName || data.title || "Untitled",
+              dateISO: eventDate,
+              endDateISO: data.endDateISO || data.dateEnd || data.endDate ||
+                data.eventEndDate || eventDate,
+              startTime,
+              endTime,
+              time:
+                data.time ||
+                [startTime, endTime].filter(Boolean).join(" - ") ||
+                "Time TBA",
+              location: data.venue || data.location || data.venueOther || "",
+              category: data.category || data.eventType || "General",
+              source:
+                data.source ||
+                data.eventSource ||
+                data.organization ||
+                data.organizationName ||
+                data.organizerOrganization ||
+                data.organizerName ||
+                (data.organizerId
+                  ? "Organizational"
+                  : "Others / External"),
+              createdAt,
+              organizerId: data.organizerId || data.organizerUid || data.createdBy || "",
+            };
+          })
+          .filter(Boolean);
+        isLoading = eventSourcesSettled.size < eventQueries.length;
+        loadError = eventSourcesSettled.size === eventQueries.length &&
+          eventSourceFailures.size === eventQueries.length
+          ? "Could not load events. Please try again later."
+          : "";
+        render();
+        if (!isLoading) signalPageReady();
+        if (!initialEventOpened && initialEventId && events.some(
+          (event) => String(event.eventId || event.id) === String(initialEventId),
+        )) {
+          initialEventOpened = true;
+          openDetails(initialEventId);
+        }
+      };
+
+      eventQueries.forEach(([source, eventsQuery]) => {
+        const unsubscribe = onSnapshot(
+          eventsQuery,
+          (snapshot) => {
+            eventSnapshotsBySource.set(source, new Map(
+              snapshot.docs.map((eventDocument) => [eventDocument.id, eventDocument]),
+            ));
+            eventSourcesSettled.add(source);
+            eventSourceFailures.delete(source);
+            refreshEvents();
+          },
+          (error) => {
+            console.warn(`Unable to load All Events source (${source}):`, {
+              code: error?.code || "unknown",
+            });
+            eventSourcesSettled.add(source);
+            eventSourceFailures.add(source);
+            refreshEvents();
+          },
+        );
+        unsubscribeEvents.push(unsubscribe);
+      });
     })).catch((error) => {
       console.error("Could not restore organizer authentication state:", error);
       isLoading = false;

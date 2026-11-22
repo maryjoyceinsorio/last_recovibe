@@ -636,10 +636,21 @@ function normalizeEvent(id, data) {
     ? categoryValue
     : String(categoryValue).split(/[,\n]+/)
   ).map((category) => String(category || "").trim()).filter(Boolean);
-  const sourceValue = String(data.source || data.eventSource || "").trim().toLowerCase();
-  const source = /\bcsc\b/.test(sourceValue)
-    ? "CSC"
-    : /organization|organizational|ibits|event organizer/.test(sourceValue)
+  const sourceValue = String(
+    data.source ||
+      data.eventSource ||
+      data.organizationName ||
+      data.organization ||
+      data.orgName ||
+      data.organizerOrganization ||
+      data.organizerName ||
+      "",
+  ).trim().toLowerCase();
+  const source = /\bcsc\b/.test(sourceValue) ||
+    sourceValue.includes("campus student council") ||
+    sourceValue.includes("central student council")
+    ? "Organizational"
+    : /organization|organizational|ibits|event organizer|organizer/.test(sourceValue)
       ? "Organizational"
       : /external|admin|other/.test(sourceValue)
         ? "Others / External"

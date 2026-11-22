@@ -43,7 +43,6 @@ import { teacherEventReadFilters, teacherEventsQuery } from "./TeacherEventQuery
 
   const CATEGORY_DEFS = [
     { key: "pup", label: "PUP Official", color: "#7A1F2E" },
-    { key: "csc", label: "CSC", color: "#D9A93B" },
     { key: "faculty", label: "Teachers/Faculty", color: "#10B981" },
     { key: "org", label: "Organizational", color: "#8B5CF6" },
     { key: "other", label: "Others/External", color: "#64748B" },
@@ -203,13 +202,12 @@ import { teacherEventReadFilters, teacherEventsQuery } from "./TeacherEventQuery
       return "holiday";
     }
 
-    const rawSource = String(
-      event.source ||
-        event.eventSource ||
-        event.organizerName ||
-        event.organization ||
-        "",
-    ).trim();
+    const rawSource = [
+      event.source,
+      event.eventSource,
+      event.organizerName,
+      event.organization,
+    ].map((value) => String(value || "").trim()).filter(Boolean).join(" ");
 
     const norm = rawSource
       .normalize("NFD")
@@ -217,14 +215,6 @@ import { teacherEventReadFilters, teacherEventsQuery } from "./TeacherEventQuery
       .toLowerCase();
 
     if (!norm) return "other";
-
-    if (
-      norm === "csc" ||
-      norm.includes("central student council") ||
-      norm.includes("council")
-    ) {
-      return "csc";
-    }
 
     if (
       norm.includes("teacher") ||
@@ -237,6 +227,15 @@ import { teacherEventReadFilters, teacherEventsQuery } from "./TeacherEventQuery
       norm.includes("organizational") ||
       norm.includes("organizer") ||
       /^(ibits|aces|jpcs|pice|iie|jma|jphia|pasoa|chrms|cites)\b/i.test(norm)
+    ) {
+      return "org";
+    }
+
+    if (
+      /\bcsc\b/.test(norm) ||
+      norm.includes("campus student council") ||
+      norm.includes("central student council") ||
+      norm.includes("council")
     ) {
       return "org";
     }
@@ -260,6 +259,19 @@ import { teacherEventReadFilters, teacherEventsQuery } from "./TeacherEventQuery
     }
 
     return "other";
+  }
+
+  function getCategoryFilterKeys(event) {
+    const categoryKey = getCategoryKey(event);
+    if (categoryKey !== "org") return [categoryKey];
+    const sourceValues = [
+      event.source,
+      event.eventSource,
+      event.organization,
+      event.organizerName,
+    ].map((value) => String(value || "").normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "").toLowerCase());
+    return ["org", "other"];
   }
 
   function isOwnOrganizerEvent(event) {
@@ -393,7 +405,9 @@ import { teacherEventReadFilters, teacherEventsQuery } from "./TeacherEventQuery
       return []; // All categories hidden
     }
     return getAllEvents().filter(
-      (ev) => !state.hiddenCategories.has(ev.categoryKey),
+      (ev) => getCategoryFilterKeys(ev).some(
+        (key) => !state.hiddenCategories.has(key),
+      ),
     );
   }
 

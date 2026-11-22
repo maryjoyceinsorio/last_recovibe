@@ -1028,6 +1028,32 @@ a.event-details-document:hover {
 .student-event-section p + p {
   margin-top: 6px;
 }
+.student-event-rejection-reason {
+  margin: 0;
+  padding: 14px 16px;
+  border: 1px solid #e6b7b7;
+  border-left: 4px solid #a52a35;
+  border-radius: 7px;
+  background: #fff3f2;
+  color: #5b2024;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+.student-event-rejection-reason strong {
+  display: block;
+  margin-bottom: 5px;
+  color: #7a1f2e;
+}
+.student-event-rejection-reason span {
+  display: block;
+  margin-bottom: 6px;
+  color: #765356;
+  font-size: 12px;
+}
+.student-event-rejection-reason p {
+  margin: 0;
+  line-height: 1.55;
+}
 .student-event-section ul,
 .student-event-list {
   display: grid;

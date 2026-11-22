@@ -40,7 +40,6 @@ import { auth, authReady, db, isFirebaseConfigured } from "../UserStudent/fireba
   ];
   const sources = [
     "PUP Official",
-    "CSC",
     "Organizational",
     "Others / External",
   ];
@@ -67,6 +66,12 @@ import { auth, authReady, db, isFirebaseConfigured } from "../UserStudent/fireba
     status: params.get("status") || "",
     availability: params.get("availability") || "",
   };
+  if (
+    /\bcsc\b/i.test(state.source) ||
+    /campus student council|central student council/i.test(state.source)
+  ) {
+    state.source = "Organizational";
+  }
   document.querySelector(".admin-logout").onclick = async (event) => {
     event.preventDefault();
     try {
@@ -167,12 +172,32 @@ import { auth, authReady, db, isFirebaseConfigured } from "../UserStudent/fireba
   }
   function normalizeSource(source) {
     const value = String(source || "").trim().toLowerCase();
-    if (/\bcsc\b/.test(value)) return "CSC";
+    if (
+      /\bcsc\b/.test(value) ||
+      value.includes("campus student council") ||
+      value.includes("central student council")
+    )
+      return "Organizational";
     if (/organization|organizational|ibits|event organizer|organizer/.test(value))
       return "Organizational";
     if (/external|admin|other/.test(value)) return "Others / External";
     if (/pup|campus|cite/.test(value)) return "PUP Official";
     return "Others / External";
+  }
+  function eventSourceText(event) {
+    return [
+      event.source,
+      event.eventSource,
+      event.organization,
+      event.organizationName,
+      event.organizerName,
+    ].map((value) => String(value || "").trim()).filter(Boolean).join(" ");
+  }
+  function sourceGroups(...sources) {
+    const value = sources.map((source) => String(source || "").trim()).filter(Boolean).join(" ");
+    const normalized = normalizeSource(value);
+    if (normalized !== "Organizational") return [normalized];
+    return ["Organizational", "Others / External"];
   }
   function timeMins(value) {
     const text = String(value || "").trim();
@@ -244,10 +269,16 @@ import { auth, authReady, db, isFirebaseConfigured } from "../UserStudent/fireba
         `${state.year}-${String(Number(state.month) + 1).padStart(2, "0")}`,
       );
     const full = openSlots(event) === 0;
-    const source = normalizeSource(event.source);
+    const sources = sourceGroups(
+      event.source,
+      event.eventSource,
+      event.organization,
+      event.organizationName,
+      event.organizerName,
+    );
     return (
       (!query || text.includes(query)) &&
-      (!state.source || source === normalizeSource(state.source)) &&
+      (!state.source || sources.includes(state.source)) &&
       (!state.category ||
         (event.categories || event.category || event.tag || "")
           .toString()
@@ -354,7 +385,7 @@ import { auth, authReady, db, isFirebaseConfigured } from "../UserStudent/fireba
     const organizer = event.organizerName || event.organizer || event.organization || "Event Organizer";
     const monthName = date ? new Date(`${date}T00:00:00`).toLocaleDateString("en-US", { month: "short", timeZone: "Asia/Manila" }) : "—";
     const dayNum = parts[2] ? parts[2].replace(/^0+/, '') || parts[2] : "—";
-    return `<article class="admin-event-card"><div class="event-card-header"><div class="event-date-tile"><small>${esc(monthName)}</small><strong>${esc(parts[2] || "—")}</strong></div><div class="event-card-titles"><h3 class="event-card-title">${esc(event.title || "Untitled event")}</h3><p class="event-organizer-text"><strong>Event Organizer:</strong> ${esc(organizer)}</p><p class="event-source-text"><strong>Source:</strong> ${esc(normalizeSource(event.source))}</p></div></div><div class="event-card-meta"><span><strong>Date:</strong> ${esc(date || "—")}</span><span><strong>Start:</strong> ${esc(time[0] || "—")}</span><span><strong>End:</strong> ${esc(time[1] || "—")}</span><span><strong>Venue:</strong> ${esc(event.venueOther || event.location || event.venue || "—")}</span><span style="grid-column: 1 / -1;"><strong>Capacity:</strong> ${caps === null ? "No capacity limit" : `${open} out of ${caps} Slots are Open`}</span></div><div class="event-card-bottom"><div class="admin-pills">${cats.map((category) => `<span class="admin-category-pill">${esc(category)}</span>`).join("")} ${chips.join(" ")}</div><button class="admin-row-action" type="button" data-event-view="${esc(event.eventId || event.id)}">View Details</button></div></article>`;
+    return `<article class="admin-event-card"><div class="event-card-header"><div class="event-date-tile"><small>${esc(monthName)}</small><strong>${esc(parts[2] || "—")}</strong></div><div class="event-card-titles"><h3 class="event-card-title">${esc(event.title || "Untitled event")}</h3><p class="event-organizer-text"><strong>Event Organizer:</strong> ${esc(organizer)}</p><p class="event-source-text"><strong>Source:</strong> ${esc(normalizeSource(eventSourceText(event)))}</p></div></div><div class="event-card-meta"><span><strong>Date:</strong> ${esc(date || "—")}</span><span><strong>Start:</strong> ${esc(time[0] || "—")}</span><span><strong>End:</strong> ${esc(time[1] || "—")}</span><span><strong>Venue:</strong> ${esc(event.venueOther || event.location || event.venue || "—")}</span><span style="grid-column: 1 / -1;"><strong>Capacity:</strong> ${caps === null ? "No capacity limit" : `${open} out of ${caps} Slots are Open`}</span></div><div class="event-card-bottom"><div class="admin-pills">${cats.map((category) => `<span class="admin-category-pill">${esc(category)}</span>`).join("")} ${chips.join(" ")}</div><button class="admin-row-action" type="button" data-event-view="${esc(event.eventId || event.id)}">View Details</button></div></article>`;
   }
   function dropdown(key, label, options) {
     const current = state[key];

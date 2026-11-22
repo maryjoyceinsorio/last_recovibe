@@ -85,7 +85,7 @@ import "./OrganizerNotificationBadge.js";
 
   let allEvents = [];
   let unsubscribeEvents = null;
-  let currentPeriod = "all";
+  let currentPeriod = "year";
   let customStartDate = null;
   let customEndDate = null;
   let activeDateRangeLabel = "All Dates";
@@ -140,6 +140,20 @@ import "./OrganizerNotificationBadge.js";
   const summaryAvgAttRate = document.getElementById("summaryAvgAttRate");
   const mostParticipatedList = document.getElementById("mostParticipatedList");
   const eventChangesBody = document.getElementById("eventChangesTableBody");
+  const activityPeriodFilter = document.getElementById("activityPeriodFilter");
+  const activityVenueFilter = document.getElementById("activityVenueFilter");
+  const activitySourceFilter = document.getElementById("activitySourceFilter");
+  const activityCategoryFilter = document.getElementById("activityCategoryFilter");
+  const activityStatusFilter = document.getElementById("activityStatusFilter");
+  const activityRefreshButton = document.getElementById("activityRefreshButton");
+  const activityExportButton = document.getElementById("activityExportButton");
+  const activityLastUpdated = document.getElementById("activityLastUpdated");
+  const activitySummaryError = document.getElementById("activitySummaryError");
+  const activityEventSearch = document.getElementById("activityEventSearch");
+  const activityEventDateFilter = document.getElementById("activityEventDateFilter");
+  const participationEventSearch = document.getElementById("participationEventSearch");
+  const participationEventSelect = document.getElementById("participationEventSelect");
+  let currentActivityEvents = [];
 
   // Initialize page
   function init() {
@@ -147,6 +161,7 @@ import "./OrganizerNotificationBadge.js";
     downloadCopyBtn.disabled = true;
     setupPeriodControls();
     setupDownloadButton();
+    setupActivitySummaryControls();
 
     if (!isFirebaseConfigured || !db) {
       showError("Firebase configuration unavailable.");
@@ -157,10 +172,7 @@ import "./OrganizerNotificationBadge.js";
 
     subscribeToEvents();
 
-    clockInterval = setInterval(() => {
-      updateOccupancyAsOf();
-      if (allEvents.length) renderVenueOccupancy(allEvents);
-    }, 60000);
+    clockInterval = setInterval(updateOccupancyAsOf, 60000);
 
     window.addEventListener("focus", () => {
       if (allEvents.length) renderReport();
@@ -176,6 +188,9 @@ import "./OrganizerNotificationBadge.js";
     dataContainer.hidden = true;
     errorState.hidden = false;
     errorMessage.textContent = msg;
+    activitySummaryError.textContent = msg;
+    activitySummaryError.hidden = false;
+    if (activityRefreshButton) activityRefreshButton.disabled = false;
     downloadCopyBtn.disabled = true;
     window.dispatchEvent(new Event("page-data-ready"));
   }
@@ -188,6 +203,8 @@ import "./OrganizerNotificationBadge.js";
 
   async function subscribeToEvents() {
     downloadCopyBtn.disabled = true;
+    if (activityRefreshButton) activityRefreshButton.disabled = true;
+    if (activitySummaryError) activitySummaryError.hidden = true;
     try {
       await authReady;
       if (auth?.authStateReady) await auth.authStateReady();
@@ -207,7 +224,10 @@ import "./OrganizerNotificationBadge.js";
           allEvents = snapshot.docs.map((docSnap) => normalizeEvent(docSnap));
           errorState.hidden = true;
           dataContainer.hidden = false;
+          activitySummaryError.hidden = true;
+          activityRefreshButton.disabled = false;
           downloadCopyBtn.disabled = false;
+          activityLastUpdated.textContent = `Last updated ${formatTime(getManilaNow())}`;
           renderReport();
           window.dispatchEvent(new Event("page-data-ready"));
         },
@@ -241,6 +261,7 @@ import "./OrganizerNotificationBadge.js";
       isRescheduled: Boolean(d.isRescheduled || d.rescheduleRequest?.status === "approved"),
       capacity: Number(d.maxCapacity ?? d.capacity ?? d.maxSlots ?? 0),
       openSlots: Number(d.openSlots ?? d.slotsOpen ?? 0),
+      openSlotsKnown: d.openSlots != null || d.slotsOpen != null,
       confirmedParticipantsCount: d.confirmedParticipantsCount,
       attendedCount: d.attendedCount,
       cancelledParticipantsCount: d.cancelledParticipantsCount,
@@ -419,12 +440,432 @@ import "./OrganizerNotificationBadge.js";
 
     // Scoped events for this organizer
     const scopedEvents = rangeEvents.filter(isUserAllowedEvent);
+    updateActivityFilterOptions(allEvents.filter(isUserAllowedEvent));
+    const filteredEvents = applyActivityFilters(scopedEvents);
 
-    renderEventSummary(scopedEvents);
+    renderActivitySummary(filteredEvents);
+    renderEventSummary(filteredEvents);
     renderVenueOccupancy(allEvents); // All rooms snapshot for today
-    renderRoomUtilization(scopedEvents, range);
-    renderParticipationSummary(scopedEvents);
-    renderEventChanges(scopedEvents, range);
+    renderRoomUtilization(filteredEvents, range);
+    renderParticipationSummary(filteredEvents);
+    renderEventChanges(filteredEvents, range);
+  }
+
+  function setupActivitySummaryControls() {
+    activityPeriodFilter.addEventListener("change", () => {
+      currentPeriod = activityPeriodFilter.value;
+      customStartDate = null;
+      customEndDate = null;
+      renderReport();
+    });
+    [activityVenueFilter, activitySourceFilter, activityCategoryFilter, activityStatusFilter]
+      .forEach((select) => select.addEventListener("change", renderReport));
+    activityEventSearch.addEventListener("input", renderActivityDetails);
+    activityEventDateFilter.addEventListener("change", renderActivityDetails);
+    participationEventSearch.addEventListener("input", renderParticipationPanels);
+    participationEventSelect.addEventListener("change", () => {
+      const selectedEvent = currentActivityEvents.find((event) =>
+        String(event.id || event.eventId || event.title) === participationEventSelect.value,
+      );
+      renderSelectedParticipation(selectedEvent || null);
+    });
+    activityRefreshButton.addEventListener("click", () => {
+      if (!activityRefreshButton.disabled) subscribeToEvents();
+    });
+    activityExportButton.addEventListener("click", exportActivitySummary);
+    document.querySelectorAll("[data-activity-tab]").forEach((button) => {
+      button.addEventListener("click", () => setActivityTab(button.dataset.activityTab));
+    });
+  }
+
+  function setActivityTab(tab) {
+    const isEvents = tab === "events";
+    document.getElementById("activityEventsTab").classList.toggle("is-active", isEvents);
+    document.getElementById("activityEventsTab").setAttribute("aria-selected", String(isEvents));
+    document.getElementById("activityVenuesTab").classList.toggle("is-active", !isEvents);
+    document.getElementById("activityVenuesTab").setAttribute("aria-selected", String(!isEvents));
+    document.getElementById("activityEventsPanel").hidden = !isEvents;
+    document.getElementById("activityVenuesPanel").hidden = isEvents;
+  }
+
+  function updateActivityFilterOptions(events) {
+    const selectedVenue = activityVenueFilter.value;
+    const venues = [...new Set(events.map((event) => String(event.venue || "").trim()).filter(Boolean))]
+      .sort((a, b) => a.localeCompare(b));
+    activityVenueFilter.replaceChildren(new Option("All venues", "all"));
+    venues.forEach((venue) => activityVenueFilter.add(new Option(venue, venue)));
+    if (venues.includes(selectedVenue)) activityVenueFilter.value = selectedVenue;
+  }
+
+  function getActivitySourceText(event) {
+    return [
+      event.source,
+      event.eventSource,
+      event.organization,
+      event.organizationName,
+      event.organizerName,
+    ].map((value) => String(value || "").trim()).filter(Boolean).join(" ");
+  }
+
+  function normalizeActivitySource(source) {
+    const value = String(source || "").trim().toLowerCase();
+    if (/\bcsc\b/.test(value) || value.includes("campus student council") ||
+        value.includes("central student council")) return "Organizational";
+    if (["organizational", "organization", "event organizer", "ibits", "organizer"]
+      .some((part) => value.includes(part))) return "Organizational";
+    if (["pup official", "pup biñan", "pup biñan campus", "pup cite", "pup main"]
+      .some((part) => value.includes(part))) return "PUP Official";
+    return "Others / External";
+  }
+
+  function activitySourceGroups(event) {
+    const normalized = normalizeActivitySource(getActivitySourceText(event));
+    return normalized === "Organizational"
+      ? ["Organizational", "Others / External"]
+      : [normalized];
+  }
+
+  const activityCategoryMatches = {
+    "Academic & Learning": ["academic", "learning"],
+    "Tech & Innovation": ["tech", "innovation"],
+    "Leadership & Career": ["leadership", "career"],
+    "Sports & Fitness": ["sport", "fitness"],
+    "Music & Entertainment": ["music", "entertainment"],
+    "Orgs & Student Acts": ["org", "organization", "student act"],
+    "Social Events": ["social"],
+    "Community & Outreach": ["community", "outreach"],
+    Competitions: ["competition", "hackathon"],
+    "Seminars & Workshops": ["seminar", "workshop"],
+    "Arts & Culture": ["art", "culture"],
+    "University & Campuses": ["university", "campus"],
+  };
+
+  function applyActivityFilters(events) {
+    const venue = activityVenueFilter.value;
+    const source = activitySourceFilter.value;
+    const category = activityCategoryFilter.value;
+    const status = activityStatusFilter.value;
+    return events.filter((event) => {
+      const eventState = computeEventState(event);
+      if (eventState === "excluded") return false;
+      if (venue !== "all" && String(event.venue || "").trim() !== venue) return false;
+      if (source !== "all" && !activitySourceGroups(event).includes(source)) return false;
+      if (category !== "all") {
+        const categoryText = String(event.category || event.eventType || "").toLowerCase();
+        if (!(activityCategoryMatches[category] || []).some((part) => categoryText.includes(part))) return false;
+      }
+      return status === "all" || eventState === status;
+    });
+  }
+
+  function getActivityRegistrationCount(event) {
+    const explicit = [
+      event.confirmedParticipantsCount,
+      event.confirmedRegistrations,
+      event.registrationCount,
+      event.registeredCount,
+      event.attendeesCount,
+    ].find((value) => value !== null && value !== undefined && Number.isFinite(Number(value)));
+    if (explicit !== undefined) return Math.max(0, Number(explicit));
+    if (event.openSlotsKnown && event.capacity > 0) {
+      return Math.max(0, event.capacity - event.openSlots);
+    }
+    return 0;
+  }
+
+  function getActivityAttendanceCount(event) {
+    const value = event.attendedCount ?? event.completedAttendance ?? event.attendanceCount;
+    return value !== undefined && value !== null && Number.isFinite(Number(value))
+      ? Math.max(0, Number(value))
+      : null;
+  }
+
+  function getActivityNoShowCount(event) {
+    const value = event.noShowCount ?? event.noShows ?? event.absentParticipantsCount ?? event.absentCount;
+    return value !== undefined && value !== null && Number.isFinite(Number(value))
+      ? Math.max(0, Number(value))
+      : 0;
+  }
+
+  function renderActivitySummary(events) {
+    currentActivityEvents = events;
+    const registrations = events.reduce((total, event) => total + getActivityRegistrationCount(event), 0);
+    const venues = new Set(events.map((event) => String(event.venue || "").trim()).filter(Boolean));
+    const endedEvents = events.filter((event) => computeEventState(event) === "completed");
+    const attendanceEvents = endedEvents
+      .map((event) => ({ event, attended: getActivityAttendanceCount(event) }))
+      .filter((entry) => entry.attended !== null);
+    const attendanceRegistrations = attendanceEvents.reduce(
+      (total, entry) => total + getActivityRegistrationCount(entry.event),
+      0,
+    );
+    const attended = attendanceEvents.reduce((total, entry) => total + entry.attended, 0);
+    const capacityEvents = events.filter((event) => event.capacity > 0);
+    const capacityTotal = capacityEvents.reduce((total, event) => total + event.capacity, 0);
+    const registeredForCapacity = capacityEvents.reduce(
+      (total, event) => total + getActivityRegistrationCount(event),
+      0,
+    );
+    const noShows = endedEvents.reduce((total, event) => total + getActivityNoShowCount(event), 0);
+
+    document.getElementById("activityMetricEvents").textContent = events.length.toLocaleString();
+    document.getElementById("activityMetricRegistrations").textContent = registrations.toLocaleString();
+    document.getElementById("activityMetricAttendance").textContent = attendanceRegistrations
+      ? `${((attended / attendanceRegistrations) * 100).toFixed(1)}%`
+      : "—";
+    document.getElementById("activityMetricVenues").textContent = venues.size.toLocaleString();
+    document.getElementById("activityMetricFillRate").textContent = capacityTotal
+      ? `${((registeredForCapacity / capacityTotal) * 100).toFixed(1)}%`
+      : "—";
+    document.getElementById("activityMetricNoShows").textContent = noShows.toLocaleString();
+    renderActivityCharts(events);
+    renderActivityDetails();
+    renderParticipationPanels();
+  }
+
+  function renderParticipationPanels() {
+    const search = participationEventSearch.value.trim().toLowerCase();
+    const matches = currentActivityEvents.filter((event) =>
+      String(event.title || "").toLowerCase().includes(search),
+    );
+    const previousSelection = participationEventSelect.value;
+    participationEventSelect.replaceChildren();
+
+    if (!matches.length) {
+      const optionText = currentActivityEvents.length
+        ? "No events match your search"
+        : "No events available";
+      participationEventSelect.add(new Option(optionText, ""));
+      participationEventSelect.value = "";
+      renderSelectedParticipation(null, currentActivityEvents.length
+        ? "No matching events. Participation totals are 0."
+        : "No events available. Participation totals are 0.");
+    } else {
+      matches.forEach((event) => {
+        const eventId = String(event.id || event.eventId || event.title);
+        const date = String(event.dateISO || event.date || "").slice(0, 10);
+        participationEventSelect.add(new Option(
+          date ? `${event.title} — ${date}` : event.title,
+          eventId,
+        ));
+      });
+      const selectedEvent = matches.find((event) =>
+        String(event.id || event.eventId || event.title) === previousSelection,
+      ) || matches[0];
+      participationEventSelect.value = String(selectedEvent.id || selectedEvent.eventId || selectedEvent.title);
+      renderSelectedParticipation(selectedEvent);
+    }
+
+    const topEvents = currentActivityEvents
+      .map((event) => ({ event, participants: getActivityRegistrationCount(event) }))
+      .filter((entry) => entry.participants > 0)
+      .sort((a, b) => b.participants - a.participants ||
+        String(a.event.title || "").localeCompare(String(b.event.title || "")))
+      .slice(0, 5);
+    const list = document.getElementById("activityMostParticipatedList");
+    const empty = document.getElementById("activityMostParticipatedEmpty");
+    list.replaceChildren();
+    empty.hidden = topEvents.length > 0;
+    topEvents.forEach(({ event, participants }) => {
+      const item = document.createElement("li");
+      const name = document.createElement("span");
+      name.className = "activity-most-participated-name";
+      name.textContent = event.title || "Untitled Event";
+      const count = document.createElement("span");
+      count.className = "activity-most-participated-count";
+      count.textContent = `${participants.toLocaleString()} participants`;
+      item.append(name, count);
+      list.appendChild(item);
+    });
+  }
+
+  function renderSelectedParticipation(event, emptyMessage = "No event selected. Participation totals are 0.") {
+    const empty = document.getElementById("participationEventEmpty");
+    const title = document.getElementById("participationSelectedEventName");
+    const meta = document.getElementById("participationSelectedEventMeta");
+    const registeredEl = document.getElementById("participationRegistered");
+    const attendedEl = document.getElementById("participationAttended");
+    const cancelledEl = document.getElementById("participationCancelled");
+    const noShowsEl = document.getElementById("participationNoShows");
+    const rateEl = document.getElementById("participationAttendanceRate");
+    if (!event) {
+      empty.textContent = emptyMessage;
+      empty.hidden = false;
+      title.textContent = "No event selected";
+      meta.textContent = "";
+      registeredEl.textContent = "0";
+      attendedEl.textContent = "0";
+      cancelledEl.textContent = "0";
+      noShowsEl.textContent = "0";
+      rateEl.textContent = "—";
+      return;
+    }
+
+    const registrations = getActivityRegistrationCount(event);
+    const attendance = getActivityAttendanceCount(event);
+    const cancelled = Number(event.cancelledParticipantsCount || 0);
+    const attendanceRate = attendance !== null && registrations > 0
+      ? `${((attendance / registrations) * 100).toFixed(1)}%`
+      : "—";
+    empty.hidden = true;
+    title.textContent = event.title || "Untitled Event";
+    meta.textContent = [String(event.dateISO || event.date || "").slice(0, 10), event.venue]
+      .filter(Boolean)
+      .join(" · ") || "No date or venue recorded";
+    registeredEl.textContent = registrations.toLocaleString();
+    attendedEl.textContent = (attendance ?? 0).toLocaleString();
+    cancelledEl.textContent = (Number.isFinite(cancelled) ? cancelled : 0).toLocaleString();
+    noShowsEl.textContent = getActivityNoShowCount(event).toLocaleString();
+    rateEl.textContent = attendanceRate;
+  }
+
+  function renderActivityCharts(events) {
+    const registrationsChart = document.getElementById("registrationsChart");
+    const venueUsageChart = document.getElementById("venueUsageChart");
+    if (!events.length) {
+      registrationsChart.innerHTML = "<p>No event data yet.</p>";
+      venueUsageChart.innerHTML = "<p>No venues used yet.</p>";
+      return;
+    }
+    const now = getManilaNow();
+    const startMonth = new Date(now.getFullYear(), now.getMonth() - 11, 1);
+    const months = Array.from({ length: 12 }, (_, index) => {
+      const date = new Date(startMonth.getFullYear(), startMonth.getMonth() + index, 1);
+      return {
+        key: `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`,
+        label: date.toLocaleDateString("en-US", { month: "short", timeZone: "Asia/Manila" }),
+        value: 0,
+      };
+    });
+    const monthMap = new Map(months.map((month) => [month.key, month]));
+    events.forEach((event) => {
+      const date = String(event.dateISO || event.date || "").slice(0, 7);
+      const month = monthMap.get(date);
+      if (month) month.value += getActivityRegistrationCount(event);
+    });
+    const maxRegistrations = Math.max(1, ...months.map((month) => month.value));
+    registrationsChart.innerHTML = `<div class="activity-chart-bars">${months.map((month) => `
+      <div class="activity-chart-bar-group" title="${escapeHTML(month.label)}: ${month.value.toLocaleString()} registrations">
+        <span class="activity-chart-bar" style="height:${Math.max(2, (month.value / maxRegistrations) * 76)}px"></span>
+        <span class="activity-chart-bar-label">${escapeHTML(month.label)}</span>
+      </div>`).join("")}</div>`;
+
+    const venueCounts = new Map();
+    events.forEach((event) => {
+      const venue = String(event.venue || "").trim();
+      if (venue) venueCounts.set(venue, (venueCounts.get(venue) || 0) + 1);
+    });
+    const topVenues = [...venueCounts.entries()]
+      .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+      .slice(0, 6);
+    if (!topVenues.length) {
+      venueUsageChart.innerHTML = "<p>No venues used yet.</p>";
+      return;
+    }
+    const maxEvents = Math.max(1, ...topVenues.map(([, count]) => count));
+    venueUsageChart.innerHTML = `<div class="activity-chart-bars">${topVenues.map(([venue, count]) => `
+      <div class="activity-chart-bar-group" title="${escapeHTML(venue)}: ${count} events">
+        <span class="activity-chart-bar" style="height:${Math.max(2, (count / maxEvents) * 76)}px"></span>
+        <span class="activity-chart-bar-label">${escapeHTML(venue)}</span>
+      </div>`).join("")}</div>`;
+  }
+
+  function renderActivityDetails() {
+    const search = activityEventSearch.value.trim().toLowerCase();
+    const dateFilter = activityEventDateFilter.value;
+    const visibleEvents = currentActivityEvents.filter((event) => {
+      const text = `${event.title} ${event.venue || ""} ${getActivitySourceText(event)} ${event.category || ""}`.toLowerCase();
+      return (!search || text.includes(search)) &&
+        (!dateFilter || String(event.dateISO || event.date || "").slice(0, 10) === dateFilter);
+    });
+    const eventsEmpty = document.getElementById("activityEventsEmpty");
+    const eventsTableWrap = document.getElementById("activityEventsTableWrap");
+    const eventsBody = document.getElementById("activityEventsTableBody");
+    eventsEmpty.hidden = visibleEvents.length > 0;
+    eventsTableWrap.hidden = visibleEvents.length === 0;
+    eventsBody.replaceChildren();
+    if (!visibleEvents.length && allEvents.length) {
+      eventsEmpty.innerHTML = "<strong>No events match these filters.</strong>";
+    } else if (!visibleEvents.length) {
+      eventsEmpty.innerHTML = '<strong>No event data yet.</strong> Create an event to start tracking activity. <a href="EventOrganizerCreateEvent.html" class="activity-create-event-link">Create Event</a>';
+    }
+    visibleEvents.forEach((event) => {
+      const attendance = getActivityAttendanceCount(event);
+      const registrations = getActivityRegistrationCount(event);
+      const attendanceRate = computeEventState(event) === "completed" &&
+        attendance !== null && registrations > 0
+        ? `${((attendance / registrations) * 100).toFixed(1)}%`
+        : "—";
+      const row = document.createElement("tr");
+      row.innerHTML = `
+        <td>${escapeHTML(event.title)}</td>
+        <td>${escapeHTML(String(event.dateISO || event.date || "—").slice(0, 10) || "—")}</td>
+        <td>${escapeHTML(event.venue || "—")}</td>
+        <td>${registrations.toLocaleString()}</td>
+        <td>${attendanceRate}</td>
+        <td>${escapeHTML(computeEventState(event).replace(/_/g, " "))}</td>`;
+      eventsBody.appendChild(row);
+    });
+    renderActivityVenueTable(currentActivityEvents);
+  }
+
+  function renderActivityVenueTable(events) {
+    const venueStats = new Map();
+    events.forEach((event) => {
+      const venue = String(event.venue || "").trim();
+      if (!venue) return;
+      const entry = venueStats.get(venue) || { events: 0, registrations: 0, capacity: 0 };
+      entry.events += 1;
+      entry.registrations += getActivityRegistrationCount(event);
+      entry.capacity += event.capacity > 0 ? event.capacity : 0;
+      venueStats.set(venue, entry);
+    });
+    const entries = [...venueStats.entries()].sort((a, b) => b[1].events - a[1].events || a[0].localeCompare(b[0]));
+    const empty = document.getElementById("activityVenuesEmpty");
+    const tableWrap = document.getElementById("activityVenuesTableWrap");
+    const tbody = document.getElementById("activityVenuesTableBody");
+    empty.hidden = entries.length > 0;
+    tableWrap.hidden = entries.length === 0;
+    tbody.replaceChildren();
+    entries.forEach(([venue, stats]) => {
+      const fillRate = stats.capacity
+        ? `${((stats.registrations / stats.capacity) * 100).toFixed(1)}%`
+        : "—";
+      const row = document.createElement("tr");
+      row.innerHTML = `
+        <td>${escapeHTML(venue)}</td>
+        <td>${stats.events.toLocaleString()}</td>
+        <td>${stats.registrations.toLocaleString()}</td>
+        <td>${stats.capacity ? stats.capacity.toLocaleString() : "—"}</td>
+        <td>${fillRate}</td>`;
+      tbody.appendChild(row);
+    });
+  }
+
+  function exportActivitySummary() {
+    const rows = [
+      ["Event", "Event date", "Venue", "Source", "Category", "Status", "Registrations", "Attended"],
+      ...currentActivityEvents.map((event) => [
+        event.title,
+        String(event.dateISO || event.date || "").slice(0, 10),
+        event.venue || "",
+        normalizeActivitySource(getActivitySourceText(event)),
+        event.category || event.eventType || "",
+        computeEventState(event).replace(/_/g, " "),
+        getActivityRegistrationCount(event),
+        getActivityAttendanceCount(event) ?? "",
+      ]),
+    ];
+    const csv = rows.map((row) => row.map((value) =>
+      `"${String(value ?? "").replace(/"/g, '""')}"`,
+    ).join(",")).join("\r\n");
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `activity-summary-${formatDateISO(getManilaNow())}.csv`;
+    link.click();
+    URL.revokeObjectURL(url);
   }
 
   function updateOccupancyAsOf() {

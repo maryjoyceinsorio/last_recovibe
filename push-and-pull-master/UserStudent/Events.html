@@ -2788,12 +2788,6 @@
                 ><button
                   type="button"
                   class="filter-option"
-                  data-value="CSC"
-                >
-                  CSC</button
-                ><button
-                  type="button"
-                  class="filter-option"
                   data-value="Organizational"
                 >
                   Organizational</button
@@ -3519,11 +3513,18 @@
       --------------------------------------------------------- */
       function normalizeSource(source) {
         const val = String(source || "").trim().toLowerCase();
-        if (/\bcsc\b/.test(val)) return "CSC";
+        if (/\bcsc\b/.test(val) || val.includes("campus student council") || val.includes("central student council")) return "Organizational";
         if (/organization|organizational|ibits|event organizer/.test(val)) return "Organizational";
         if (/external|admin|other/.test(val)) return "Others / External";
         if (/pup|campus|cite|teacher|faculty/.test(val)) return "PUP Official";
         return "Others / External";
+      }
+
+      function sourceGroups(...sources) {
+        const source = sources.map((value) => String(value || "").trim()).filter(Boolean).join(" ");
+        const normalized = normalizeSource(source);
+        if (normalized !== "Organizational") return [normalized];
+        return ["Organizational", "Others / External"];
       }
 
       function normalizeEvent(id, data) {
@@ -3607,7 +3608,20 @@
           venue,
           location: venue,
           category,
-          source: normalizeSource(data.source || data.eventSource),
+          source: normalizeSource([
+            data.source,
+            data.eventSource,
+            data.organization,
+            data.organizationName,
+            data.organizerName,
+          ].filter(Boolean).join(" ")),
+          sourceGroups: sourceGroups(
+            data.source,
+            data.eventSource,
+            data.organization,
+            data.organizationName,
+            data.organizerName,
+          ),
           startAt: startMs,
           endAt: endMs,
           hasExplicitEndTime,
@@ -3772,7 +3786,7 @@
 
         // Source filter
         if (filterState.source !== "All Sources") {
-          if (ev.source !== filterState.source) return false;
+          if (!(ev.sourceGroups || [ev.source]).includes(filterState.source)) return false;
         }
 
         // Category filter
@@ -3811,7 +3825,13 @@
       function readUrlParams() {
         const params = new URLSearchParams(window.location.search);
         if (params.has("q")) filterState.q = params.get("q").trim();
-        if (params.has("source")) filterState.source = params.get("source").trim();
+        if (params.has("source")) {
+          const source = params.get("source").trim();
+          filterState.source = /\bcsc\b/i.test(source) ||
+            /campus student council|central student council/i.test(source)
+            ? "Organizational"
+            : source;
+        }
         if (params.has("category")) filterState.category = params.get("category").trim();
         if (params.has("from")) filterState.from = params.get("from").trim();
         if (params.has("to")) filterState.to = params.get("to").trim();

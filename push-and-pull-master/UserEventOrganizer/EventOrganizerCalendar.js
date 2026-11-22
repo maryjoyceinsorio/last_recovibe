@@ -34,7 +34,6 @@ import { getEventDateRange } from "../UserStudent/calendarDateRange.mjs";
 
   const CATEGORY_DEFS = [
     { key: "pup", label: "PUP Official", color: "#7A1F2E" },
-    { key: "csc", label: "CSC", color: "#D9A93B" },
     { key: "org", label: "Organizational", color: "#8B5CF6" },
     { key: "other", label: "Others/External", color: "#64748B" },
     { key: "holiday", label: "Holiday", color: "#D97706" },
@@ -196,13 +195,21 @@ import { getEventDateRange } from "../UserStudent/calendarDateRange.mjs";
       return "holiday";
     }
 
-    const rawSource = String(
-      event.source ||
-        event.eventSource ||
-        event.organizerName ||
-        event.organization ||
-        "",
-    ).trim();
+    const rawSource = [
+      event.source,
+      event.eventSource,
+      event.organization,
+      event.organizationName,
+      event.organizerOrganization,
+      event.organizationCode,
+      event.orgCode,
+      event.organizer,
+      event.organizerName,
+      event.department,
+    ].map((value) => {
+      if (Array.isArray(value)) return value.map(sourceText).filter(Boolean).join(" ");
+      return sourceText(value);
+    }).filter(Boolean).join(" ");
 
     const norm = rawSource
       .normalize("NFD")
@@ -212,24 +219,19 @@ import { getEventDateRange } from "../UserStudent/calendarDateRange.mjs";
     if (!norm) return "other";
 
     if (
-      norm === "csc" ||
+      /\bcsc\b/.test(norm) ||
+      norm.includes("campus student council") ||
       norm.includes("central student council") ||
       norm.includes("council")
     ) {
-      return "csc";
-    }
-
-    if (
-      norm.includes("teacher") ||
-      norm.includes("faculty")
-    ) {
-      return "faculty";
+      return "org";
     }
 
     if (
       norm.includes("organizational") ||
+      norm.includes("organization") ||
       norm.includes("organizer") ||
-      /^(ibits|aces|jpcs|pice|iie|jma|jphia|pasoa|chrms|cites)\b/i.test(norm)
+      /(^|[^a-z0-9])(ibits|aces|jpcs|pice|iie|piie|hrss|sms|yes|jma|jphia|pasoa|chrms|cites)(?=$|[^a-z0-9])/i.test(norm)
     ) {
       return "org";
     }
@@ -248,11 +250,30 @@ import { getEventDateRange } from "../UserStudent/calendarDateRange.mjs";
       return "other";
     }
 
+    function sourceText(value) {
+      if (value && typeof value === "object") {
+        return [
+          value.name,
+          value.organization,
+          value.label,
+          value.code,
+          value.shortName,
+        ].map((part) => String(part || "").trim()).filter(Boolean).join(" ");
+      }
+      return String(value || "").trim();
+    }
+
     if (norm.startsWith("pup")) {
       return "pup";
     }
 
     return "other";
+  }
+
+  function getCategoryFilterKeys(event) {
+    const categoryKey = getCategoryKey(event);
+    if (categoryKey !== "org") return [categoryKey];
+    return ["org", "other"];
   }
 
   function isOwnOrganizerEvent(event) {
@@ -276,6 +297,16 @@ import { getEventDateRange } from "../UserStudent/calendarDateRange.mjs";
       event.published === true ||
       event.isPublished === true
     );
+  }
+
+  function isExcludedCalendarEvent(event) {
+    const status = String(
+      event.status || event.publicationStatus || event.approvalStatus || "",
+    )
+      .trim()
+      .toLowerCase()
+      .replace(/[\s_-]+/g, "");
+    return ["cancelled", "canceled", "rejected", "disapproved"].includes(status);
   }
 
   function normalizeEvent(id, data) {
@@ -317,7 +348,7 @@ import { getEventDateRange } from "../UserStudent/calendarDateRange.mjs";
       data.department || 
       data.organizerName || 
       (data.source ? data.source : "-");
-    const status = data.status || "published";
+    const status = data.status || data.publicationStatus || data.approvalStatus || "published";
 
     const categoryKey = getCategoryKey({ ...data, source, title });
 
@@ -385,6 +416,7 @@ import { getEventDateRange } from "../UserStudent/calendarDateRange.mjs";
     });
 
     return [...map.values()].filter((event) => {
+      if (isExcludedCalendarEvent(event)) return false;
       if (event.categoryKey === "holiday") return true;
       const isOwnUnpublished =
         !isTeacher && event.isOwn && event.isUnpublished;
@@ -397,7 +429,9 @@ import { getEventDateRange } from "../UserStudent/calendarDateRange.mjs";
       return []; // All categories hidden
     }
     return getAllEvents().filter(
-      (ev) => !state.hiddenCategories.has(ev.categoryKey),
+      (ev) => getCategoryFilterKeys(ev).some(
+        (key) => !state.hiddenCategories.has(key),
+      ),
     );
   }
 

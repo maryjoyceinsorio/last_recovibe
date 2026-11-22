@@ -175,7 +175,7 @@ import {
       { key: "org_adv", label: "Organization Adviser", aliases: ["org_adv", "org adviser", "organization adviser", "organization adviser review", "migs", "michael anjelo miguel"] },
       { key: "sir_abelida", label: "Laboratory Head, Property Custodian, Administrative Officer", aliases: ["sir_abelida", "abelidads", "abelida", "sir abelida", "gerino abelida", "gerino abelida jr", "laboratory head", "property custodian", "administrative officer", "laboratory head property custodian administrative officer"] },
       { key: "hap", label: "Head of Academic Programs, QAC Coordinator", aliases: ["hap", "archong", "archie", "archie arevalo", "head of academic programs", "qac coordinator", "head of academic programs qac coordinator"] },
-      { key: "osas", label: "OSAS", aliases: ["osas", "cheryl joyce jurado", "joyce"] },
+      { key: "osas", label: "Office of Student Affairs and Services", aliases: ["osas", "cheryl joyce jurado", "joyce"] },
     ];
     const sourceStages = safeEvent.approvalStages;
     const stageEntries = Array.isArray(sourceStages)
@@ -299,7 +299,7 @@ import {
     ) || overallStatusValues.find((value) => value !== "approved") || "pending";
 
     return {
-      submittedAt: safeEvent.approvalSubmittedAt || safeEvent.createdAt,
+      submittedAt: resolveApprovalSubmittedAt(safeEvent),
       members,
       files,
       history: approvalHistory,
@@ -390,9 +390,8 @@ import {
 
   function formatDateTime(ts) {
     if (!ts) return "";
-    const value = ts?.toDate ? ts.toDate() : ts;
-    const date = new Date(typeof value === "number" ? value : String(value));
-    if (Number.isNaN(date.getTime())) return "";
+    const date = toApprovalDate(ts);
+    if (!date) return "";
     return date.toLocaleDateString("en-US", {
       month: "short",
       day: "numeric",
@@ -400,6 +399,66 @@ import {
       hour: "numeric",
       minute: "2-digit",
     });
+  }
+
+  function toApprovalDate(value) {
+    if (value instanceof Date) {
+      return Number.isNaN(value.getTime()) ? null : value;
+    }
+    if (value && typeof value.toDate === "function") {
+      const date = value.toDate();
+      return date instanceof Date && !Number.isNaN(date.getTime()) ? date : null;
+    }
+    if (value && typeof value === "object") {
+      const seconds = Number(value.seconds ?? value._seconds);
+      if (Number.isFinite(seconds)) {
+        const nanoseconds = Number(value.nanoseconds ?? value._nanoseconds ?? 0);
+        const date = new Date(seconds * 1000 + (Number.isFinite(nanoseconds) ? nanoseconds / 1e6 : 0));
+        return Number.isNaN(date.getTime()) ? null : date;
+      }
+      return null;
+    }
+    if (typeof value === "number" || (typeof value === "string" && /^\d{10,13}$/.test(value.trim()))) {
+      const numericValue = Number(value);
+      const milliseconds = Math.abs(numericValue) < 1e12 ? numericValue * 1000 : numericValue;
+      const date = new Date(milliseconds);
+      return Number.isNaN(date.getTime()) ? null : date;
+    }
+    if (typeof value === "string" && value.trim()) {
+      const date = new Date(value.trim());
+      return Number.isNaN(date.getTime()) ? null : date;
+    }
+    return null;
+  }
+
+  function resolveApprovalSubmittedAt(event, approval = {}) {
+    const candidates = [
+      approval.approvalSubmittedAt,
+      approval.submittedAt,
+      approval.dateSubmitted,
+      approval.submittedDate,
+      approval.submissionDate,
+      event.approvalSubmittedAt,
+      event.submittedAt,
+      event.dateSubmitted,
+      event.submittedDate,
+      event.submissionDate,
+      event.approval?.submittedAt,
+      event.approval?.dateSubmitted,
+      event.approval?.submittedDate,
+      event.approvalData?.submittedAt,
+      event.approvalData?.dateSubmitted,
+      event.approvalData?.submittedDate,
+      event.createdAt,
+      approval.createdAt,
+      event.updatedAt,
+      approval.updatedAt,
+    ];
+    for (const candidate of candidates) {
+      const date = toApprovalDate(candidate);
+      if (date) return date;
+    }
+    return null;
   }
 
   function getEffectiveStatus(event) {
@@ -452,6 +511,7 @@ import {
       ...existing,
       ...derived,
       members: derived.members && typeof derived.members === "object" ? derived.members : {},
+      submittedAt: resolveApprovalSubmittedAt(safeEvent, existing),
       files: {
         ...(derived.files && typeof derived.files === "object" ? derived.files : {}),
         ...(existing.files && typeof existing.files === "object" ? existing.files : {}),
@@ -817,8 +877,8 @@ import {
     const approval = getHistoryBasedApproval(event);
 
     if (trackerSubmittedDate) {
-      const subDate = approval.submittedAt || event.createdAt;
-      trackerSubmittedDate.textContent = `Submitted ${formatDate(subDate)}`;
+      const submittedAt = resolveApprovalSubmittedAt(event, approval);
+      trackerSubmittedDate.textContent = `Submitted ${formatDateTime(submittedAt) || "TBA"}`;
     }
     if (trackerFacultyInCharge) {
       const savedFaculty = event.facultyInCharge || event.faculty_in_charge || "";
@@ -853,6 +913,7 @@ import {
     const files = approval.files || {};
     const history = Array.isArray(approval.history) ? approval.history : Object.values(approval.history || {});
     const effStatus = normalizeStatus(getEffectiveStatus(event));
+    const submittedAt = resolveApprovalSubmittedAt(event, approval);
 
     // 1. Horizontal Timeline Track
     let hasEncounteredReview = false;
@@ -873,7 +934,8 @@ import {
         if (isOk) {
           dotClass = "is-ok";
           dotContent = `<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2.5" width="14" height="14"><polyline points="4 10 8 14 16 6"/></svg>`;
-          statusText = member.updatedAt ? `Approved ${formatDate(member.updatedAt)}` : "Approved";
+          const approvedAt = formatDateTime(member.updatedAt);
+          statusText = approvedAt ? `Approved ${approvedAt}` : "Approved";
         } else if (isReview) {
           dotClass = "is-review";
           dotContent = `<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><circle cx="10" cy="10" r="7"/><polyline points="10 6 10 10 13 12"/></svg>`;
@@ -921,7 +983,7 @@ import {
           <div class="timeline-content-col">
             <span class="timeline-step-tag">Start</span>
             <strong class="timeline-step-name">Submitted</strong>
-            <span class="timeline-step-status">${formatDate(approval.submittedAt || event.createdAt)}</span>
+            <span class="timeline-step-status">${escapeHtml(formatDateTime(submittedAt) || "TBA")}</span>
           </div>
         </div>
         ${stepsMarkup}

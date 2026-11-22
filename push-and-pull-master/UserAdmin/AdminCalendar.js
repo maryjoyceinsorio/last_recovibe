@@ -564,8 +564,9 @@ import { isOsasReviewer } from "../correctionAccess.js";
     ) return "Holiday";
     if (sources.some((source) =>
       /(^|[^a-z])csc([^a-z]|$)/.test(source) ||
+      source.includes("campus student council") ||
       source.includes("central student council"),
-    )) return "CSC";
+    )) return "Organizational";
     if (sources.some((source) => source.includes("binan"))) return "Others/External";
     if (sources.some((source) =>
       source.includes("organization") ||
@@ -589,6 +590,18 @@ import { isOsasReviewer } from "../correctionAccess.js";
     ) return "Organizational";
     return "Others/External";
   }
+  function eventCategoryGroups(event) {
+    const category = eventCategory(event);
+    if (category !== "Organizational") return [category];
+    const sourceValues = [
+      event.category, event.categories, event.eventSource, event.source,
+      event.organization, event.organizer, event.organizerName, event.tag,
+      event.title, event.eventName, event.name,
+    ].flatMap((value) => Array.isArray(value) ? value : [value])
+      .map((value) => String(value || "").normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "").trim().toLowerCase());
+    return ["Organizational", "Others/External"];
+  }
   function visibleEvents() {
     const calendarEvents = [
       ...allEvents(),
@@ -606,7 +619,9 @@ import { isOsasReviewer } from "../correctionAccess.js";
       const id = String(event.eventId || event.id || `${dateOf(event)}:${event.title || ""}`);
       if (seen.has(id)) return false;
       seen.add(id);
-      return selectedCategories.has(eventCategory(event));
+      return eventCategoryGroups(event).some((category) =>
+        selectedCategories.has(category),
+      );
     });
   }
   function dateOf(event) {
@@ -664,7 +679,6 @@ import { isOsasReviewer } from "../correctionAccess.js";
   function cell(day, klass, iso, dayEvents = []) {
     const categoryClasses = {
       "PUP Official": "pup-official",
-      CSC: "csc",
       Organizational: "organizational",
       "Others/External": "others-external",
       Holiday: "holiday",
@@ -699,7 +713,6 @@ import { isOsasReviewer } from "../correctionAccess.js";
             const category = eventCategory(event);
             const categoryClass = {
               "PUP Official": "pup-official",
-              CSC: "csc",
               Organizational: "organizational",
               "Others/External": "others-external",
               Holiday: "holiday",
@@ -850,7 +863,6 @@ import { isOsasReviewer } from "../correctionAccess.js";
     const category = typeof event === "string" ? event : eventCategory(event);
     return {
       "PUP Official": "#8f2536",
-      CSC: "#c79a2b",
       Organizational: "#7c5cc4",
       "Others/External": "#64748b",
       Holiday: "#d97706",

@@ -332,15 +332,15 @@
           <div class="scan-side-panel">
             <div class="scan-manual-card">
               <h3>Manual Lookup</h3>
-              <p>Type the student number directly if the student has no phone or the screen cannot be read.</p>
+              <p>Search by student number or name if the student has no phone or the screen cannot be read.</p>
 
               <form id="manualCheckInForm" class="manual-form" novalidate>
-                <label for="manualStudentNo" class="visually-hidden">Student Number</label>
+                <label for="manualStudentNo" class="visually-hidden">Student Number or Name</label>
                 <div class="manual-input-group">
                   <input
-                    type="text"
+                    type="search"
                     id="manualStudentNo"
-                    placeholder="e.g. 2023-00123-BN-0"
+                    placeholder="Search student number or name..."
                     autocomplete="off"
                     required
                   />
@@ -350,7 +350,7 @@
                 </div>
                 <div id="manualValidationError" class="manual-validation-error" hidden style="color:#b91c1c; font-size:12.5px; font-weight:600; margin-top:6px;"></div>
                 <div id="manualSearchResult" class="manual-search-result" role="status" aria-live="polite" aria-atomic="true" hidden></div>
-                <p class="manual-hint">Search a Student Number to confirm registration before checking in.</p>
+                <p class="manual-hint">Select one registered student to confirm attendance.</p>
               </form>
             </div>
 
