@@ -897,3 +897,132 @@ body {
     left: 12px;
   }
 }
+
+.notification-toolbar,
+.notification-toolbar-left,
+.notification-toolbar-actions,
+.notification-read-filter,
+.notification-search,
+.notification-list,
+.notification-card-item,
+.notification-row,
+.notification-copy,
+.notification-meta,
+.notification-card-actions {
+  min-width: 0;
+}
+
+.notification-read-filter {
+  flex-wrap: wrap;
+}
+
+.notification-read-filter select,
+.notification-search input {
+  max-width: 100%;
+}
+
+.notification-toolbar-actions {
+  flex-wrap: wrap;
+}
+
+.notification-title,
+.notification-message,
+.notification-meta > * {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.notification-source-warning {
+  display: flex;
+  max-width: 100%;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0 6px;
+  overflow-wrap: anywhere;
+}
+
+.notification-source-warning button {
+  flex: 0 0 auto;
+}
+
+.notification-retry:disabled,
+.notification-retry-inline:disabled {
+  cursor: wait;
+  opacity: 0.7;
+}
+
+.skeleton-row {
+  min-width: 0;
+  grid-template-columns: 44px minmax(0, 1fr);
+}
+
+@media (max-width: 1080px) {
+  .notification-list {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 560px) {
+  .student-notifications {
+    width: 100%;
+    padding-inline: 12px;
+  }
+
+  .notifications-header,
+  .notifications-header > div {
+    min-width: 0;
+    width: 100%;
+  }
+
+  .notification-toolbar {
+    align-items: stretch;
+  }
+
+  .notification-toolbar-left,
+  .notification-toolbar-actions {
+    width: 100%;
+  }
+
+  .notification-toolbar-left {
+    align-items: center;
+    gap: 8px;
+  }
+
+  .notification-toolbar-actions {
+    justify-content: space-between;
+    margin-left: 0;
+  }
+
+  .notification-toolbar .mark-all-read {
+    max-width: calc(100% - 52px);
+    padding-inline: 0;
+    text-align: left;
+    white-space: normal;
+  }
+
+  .notification-trash-button {
+    flex: 0 0 40px;
+  }
+
+  .notification-row {
+    grid-template-columns: 40px minmax(0, 1fr) 36px;
+    align-items: start;
+  }
+
+  .notification-card-actions {
+    align-items: center;
+    flex-direction: column;
+  }
+
+  .notification-meta {
+    align-items: flex-start;
+  }
+
+  .notification-toast {
+    right: 12px;
+    bottom: 12px;
+    left: 12px;
+    max-width: calc(100% - 24px);
+    overflow-wrap: anywhere;
+  }
+}

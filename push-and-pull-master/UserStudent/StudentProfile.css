@@ -1115,6 +1115,21 @@ a {
   line-height: 1.4;
 }
 
+.qr-refresh-feedback {
+  color: #137333;
+  font-size: 12.5px;
+  line-height: 1.4;
+  margin: 8px 0 0;
+}
+
+.qr-refresh-feedback.is-error {
+  color: var(--maroon-primary);
+}
+
+.qr-refresh-feedback[hidden] {
+  display: none !important;
+}
+
 .qr-code-box {
   background-color: #FFFFFF;
   border: 1.5px solid var(--border-card);
@@ -1125,7 +1140,39 @@ a {
   display: flex;
   align-items: center;
   justify-content: center;
+  position: relative;
+  overflow: hidden;
   box-shadow: 0 2px 10px rgba(43, 26, 29, 0.04);
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.qr-code-box.is-refreshing {
+  border-color: rgba(122, 31, 46, 0.28);
+  box-shadow: 0 4px 16px rgba(43, 26, 29, 0.08);
+}
+
+.qr-code-box.is-refreshing::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  background: linear-gradient(
+    110deg,
+    transparent 30%,
+    rgba(122, 31, 46, 0.08) 45%,
+    rgba(255, 255, 255, 0.25) 50%,
+    rgba(122, 31, 46, 0.08) 55%,
+    transparent 70%
+  );
+  transform: translateX(-100%);
+  animation: qr-refresh-shimmer 1.2s ease-in-out infinite;
+}
+
+@keyframes qr-refresh-shimmer {
+  to {
+    transform: translateX(100%);
+  }
 }
 
 .qr-canvas-box {
@@ -1281,6 +1328,33 @@ a {
   background-color: rgba(122, 31, 46, 0.06);
 }
 
+.btn-outlined-action:disabled {
+  cursor: not-allowed;
+  opacity: 0.65;
+}
+
+.btn-outlined-action.is-refreshing svg {
+  transform-origin: center;
+  animation: qr-refresh-spin 0.9s linear infinite;
+}
+
+@keyframes qr-refresh-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .qr-code-box.is-refreshing::after,
+  .btn-outlined-action.is-refreshing svg {
+    animation: none;
+  }
+
+  .qr-code-box.is-refreshing::after {
+    transform: none;
+  }
+}
+
 /* ==========================================================================
    4. Modals (Profile Form, Password Form, Preferences, Fullscreen QR)
    ========================================================================== */
@@ -1391,6 +1465,59 @@ a {
   outline: 2px solid var(--gold-accent);
 }
 
+.password-input-wrap {
+  position: relative;
+  width: 100%;
+  min-width: 0;
+}
+
+#passwordForm .password-input-wrap input {
+  padding-right: 54px;
+}
+
+.password-visibility-toggle {
+  position: absolute;
+  top: 50%;
+  right: 6px;
+  display: grid;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  place-items: center;
+  transform: translateY(-50%);
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.password-visibility-toggle:hover {
+  background: rgba(43, 26, 29, 0.07);
+  color: var(--maroon-primary);
+}
+
+.password-visibility-toggle svg {
+  width: 19px;
+  height: 19px;
+}
+
+.password-visibility-toggle .password-eye-off,
+.password-visibility-toggle[aria-pressed="true"] .password-eye-on {
+  display: none;
+}
+
+.password-visibility-toggle[aria-pressed="true"] .password-eye-off {
+  display: block;
+}
+
+#passwordUpdateSubmitBtn:disabled,
+#cancelPasswordChange:disabled,
+#closePasswordModal:disabled {
+  cursor: wait;
+  opacity: 0.65;
+}
+
 .form-field .error-msg {
   display: none;
   color: #C0392B;
@@ -1420,6 +1547,10 @@ a {
   justify-content: flex-end;
   gap: 12px;
   margin-top: 24px;
+}
+
+#passwordForm .modal-footer {
+  flex-wrap: wrap;
 }
 
 .btn-secondary {
@@ -2093,6 +2224,29 @@ a {
   .fields-grid.cols-2,
   .fields-grid.cols-4-responsive {
     grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 560px) {
+  #passwordForm {
+    padding: 28px 20px;
+  }
+
+  #passwordForm .modal-footer {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+  }
+
+  #passwordForm .modal-footer button {
+    min-width: 0;
+    padding-inline: 12px;
+  }
+}
+
+@media (max-width: 380px) {
+  #passwordForm .modal-footer {
+    grid-template-columns: minmax(0, 1fr);
   }
 }
 

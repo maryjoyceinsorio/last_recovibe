@@ -507,6 +507,7 @@
                   <span class="qr-status-badge" id="qrCardStatusBadge" hidden>Checked In</span>
                 </div>
                 <p class="qr-caption">Show this at the event entrance to check in</p>
+                <p class="qr-refresh-feedback" id="qrCardRefreshFeedback" role="status" aria-live="polite" hidden></p>
               </div>
 
               <!-- Real-time Scanned Event Banner -->
@@ -634,27 +635,63 @@
 
     <!-- Change Password Modal Dialog -->
     <div class="account-form-modal" id="passwordFormModal" hidden>
-      <form class="modal-dialog" id="passwordForm" hidden>
+      <form class="modal-dialog" id="passwordForm" hidden novalidate>
         <button type="button" class="modal-close-btn" id="closePasswordModal" aria-label="Close change password">&times;</button>
         <h2 class="modal-title">Change Password</h2>
         <div class="account-form-grid single-col">
           <div class="form-field">
             <label for="currentPassword">Current Password</label>
-            <input id="currentPassword" type="password" required autocomplete="current-password" />
+            <div class="password-input-wrap">
+              <input id="currentPassword" type="password" required autocomplete="current-password" />
+              <button class="password-visibility-toggle" type="button" data-password-toggle="currentPassword" data-password-label="Current Password" aria-label="Show Current Password" aria-controls="currentPassword" aria-pressed="false" title="Show Current Password">
+                <svg class="password-eye-on" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
+                  <path d="M2.5 12s3.4-6.5 9.5-6.5 9.5 6.5 9.5 6.5-3.4 6.5-9.5 6.5-9.5-6.5-9.5-6.5Z" />
+                  <circle cx="12" cy="12" r="2.8" />
+                </svg>
+                <svg class="password-eye-off" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
+                  <path d="M3 3l18 18M10.6 5.7A10.7 10.7 0 0112 5.5c6.1 0 9.5 6.5 9.5 6.5a15 15 0 01-3 3.8M6.2 6.2C3.8 7.7 2.5 12 2.5 12s3.4 6.5 9.5 6.5c1.4 0 2.6-.4 3.7-1" />
+                  <path d="M9.9 9.9a3 3 0 004.2 4.2" />
+                </svg>
+              </button>
+            </div>
           </div>
           <div class="form-field">
             <label for="newPassword">New Password</label>
-            <input id="newPassword" type="password" required autocomplete="new-password" />
+            <div class="password-input-wrap">
+              <input id="newPassword" type="password" required autocomplete="new-password" />
+              <button class="password-visibility-toggle" type="button" data-password-toggle="newPassword" data-password-label="New Password" aria-label="Show New Password" aria-controls="newPassword" aria-pressed="false" title="Show New Password">
+                <svg class="password-eye-on" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
+                  <path d="M2.5 12s3.4-6.5 9.5-6.5 9.5 6.5 9.5 6.5-3.4 6.5-9.5 6.5-9.5-6.5-9.5-6.5Z" />
+                  <circle cx="12" cy="12" r="2.8" />
+                </svg>
+                <svg class="password-eye-off" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
+                  <path d="M3 3l18 18M10.6 5.7A10.7 10.7 0 0112 5.5c6.1 0 9.5 6.5 9.5 6.5a15 15 0 01-3 3.8M6.2 6.2C3.8 7.7 2.5 12 2.5 12s3.4 6.5 9.5 6.5c1.4 0 2.6-.4 3.7-1" />
+                  <path d="M9.9 9.9a3 3 0 004.2 4.2" />
+                </svg>
+              </button>
+            </div>
           </div>
           <div class="form-field">
             <label for="confirmPassword">Confirm New Password</label>
-            <input id="confirmPassword" type="password" required autocomplete="new-password" />
+            <div class="password-input-wrap">
+              <input id="confirmPassword" type="password" required autocomplete="new-password" />
+              <button class="password-visibility-toggle" type="button" data-password-toggle="confirmPassword" data-password-label="Confirm New Password" aria-label="Show Confirm New Password" aria-controls="confirmPassword" aria-pressed="false" title="Show Confirm New Password">
+                <svg class="password-eye-on" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
+                  <path d="M2.5 12s3.4-6.5 9.5-6.5 9.5 6.5 9.5 6.5-3.4 6.5-9.5 6.5-9.5-6.5-9.5-6.5Z" />
+                  <circle cx="12" cy="12" r="2.8" />
+                </svg>
+                <svg class="password-eye-off" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
+                  <path d="M3 3l18 18M10.6 5.7A10.7 10.7 0 0112 5.5c6.1 0 9.5 6.5 9.5 6.5a15 15 0 01-3 3.8M6.2 6.2C3.8 7.7 2.5 12 2.5 12s3.4 6.5 9.5 6.5c1.4 0 2.6-.4 3.7-1" />
+                  <path d="M9.9 9.9a3 3 0 004.2 4.2" />
+                </svg>
+              </button>
+            </div>
           </div>
         </div>
-        <p class="account-form-status" id="passwordFormStatus" role="alert" aria-live="polite"></p>
+        <p class="account-form-status" id="passwordFormStatus" role="status" aria-live="polite"></p>
         <div class="modal-footer">
           <button class="btn-secondary" id="cancelPasswordChange" type="button">Cancel</button>
-          <button class="btn-primary" type="submit">Update Password</button>
+          <button class="btn-primary" id="passwordUpdateSubmitBtn" type="submit">Update Password</button>
         </div>
       </form>
     </div>

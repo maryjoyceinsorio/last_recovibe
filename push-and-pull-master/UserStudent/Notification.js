@@ -17,7 +17,10 @@ import {
   update as updateRtdbValue,
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-database.js";
 import { auth, authReady, db, isRtdbConfigured, rtdb } from "./firebaseConfig.js";
-import { isEventVisibleToStudent } from "./eventAudience.js";
+import {
+  isEventVisibleToStudent,
+  STUDENT_EVENT_STATUSES,
+} from "./eventAudience.js";
 import {
   clearCachedStudentProfile,
   loadStudentProfile,
@@ -29,6 +32,9 @@ const TWO_WEEKS = 14 * 24 * 60 * 60 * 1000;
 const ONE_DAY = 24 * 60 * 60 * 1000;
 const TRASH_LIFETIME = 30 * ONE_DAY;
 const STORAGE_PREFIX = "recovibeStudentNotifications:";
+const STUDENT_EVENT_STATUS_QUERY_VALUES = STUDENT_EVENT_STATUSES.filter(
+  (status) => status !== "cancelled" && status !== "canceled",
+);
 const notificationRoot = document.getElementById("notificationMain");
 
 let currentUid = "";
@@ -46,16 +52,21 @@ let pendingNotificationWrites = new Set();
 let state = { read: {}, deleted: {}, restored: {}, purged: {} };
 let unsubscribeAuth = null;
 let unsubscribeFirestore = [];
-let unsubscribeEvents = null;
+let unsubscribeEvents = [];
 let unsubscribeRegistrations = null;
 let unsubscribeRtdb = null;
 let rtdbRef = null;
 let derivedRefreshInterval = null;
 let subscriptionVersion = 0;
 let firestoreReady = new Set();
+let firestoreSucceeded = new Set();
 let sourceErrors = new Map();
 let eventDocuments = new Map();
+let eventSnapshotsBySource = new Map();
+let eventSourceSuccesses = new Set();
+let eventSourceFailures = new Set();
 let registrationDocuments = new Map();
+let registrationEventDocuments = new Map();
 let firestoreNotifications = new Map();
 let rtdbNotifications = new Map();
 let academicCalendarItems = [];
@@ -65,6 +76,7 @@ let detailEventLoads = new Set();
 let publishedEventsTimeout = null;
 let initialLoadPending = new Set();
 let pageLoadSignaled = false;
+let publishedEventsRetrying = false;
 
 function settleInitialLoadSource(source) {
   initialLoadPending.delete(source);
@@ -257,6 +269,15 @@ function eventStatus(event) {
     .replace(/[\s_-]+/g, "");
 }
 
+function isPublishedEvent(event) {
+  const statuses = [event?.status, event?.publicationStatus].map((value) =>
+    String(value || "").trim().toLowerCase().replace(/[\s_-]+/g, ""),
+  );
+  return statuses.includes("published") ||
+    event?.published === true ||
+    event?.isPublished === true;
+}
+
 function eventTitle(event) {
   return String(event?.title || event?.name || event?.eventName || "Untitled event");
 }
@@ -312,14 +333,11 @@ function derivedItems() {
   const now = Date.now();
   const derived = [];
   eventDocuments.forEach((event, eventId) => {
-    const status = eventStatus(event);
-    const published =
-      status === "published" || event.published === true || event.isPublished === true;
     const publishedAt = toMillis(event.publishedAt) ||
       toMillis(event.updatedAt) ||
       toMillis(event.createdAt);
     if (
-      published &&
+      isPublishedEvent(event) &&
       publishedAt &&
       publishedAt <= now &&
       now - publishedAt <= TWO_WEEKS &&
@@ -518,13 +536,15 @@ function renderNotifications() {
     : activeFilter === "unread"
       ? "Everything has been read. Nice work."
       : "New notifications will show up here.";
+  const retryDisabled = publishedEventsRetrying ? ' disabled aria-busy="true"' : "";
+  const retryLabel = publishedEventsRetrying ? "Retrying..." : "Retry";
   let content = "";
   if (notificationsLoading && !notificationItems.length) {
-    content = "";
+    content = `<div class="notification-skeleton" role="status" aria-label="Loading notifications">${Array.from({ length: 3 }, () => '<div class="skeleton-row"><i></i><div><b></b><small></small></div></div>').join("")}</div>`;
   } else if (notificationError && !notificationItems.length) {
-    content = `<div class="notification-state" role="alert"><strong>Notifications couldn’t be loaded.</strong><p>${escapeHTML(notificationError)}</p><button type="button" class="notification-retry">Retry</button></div>`;
+    content = `<div class="notification-state" role="alert"><strong>Notifications couldn’t be loaded.</strong><p>${escapeHTML(notificationError)}</p><button type="button" class="notification-retry"${retryDisabled}>${retryLabel}</button></div>`;
   } else if (!visible.length) {
-    content = `<div class="notification-state"><span class="notification-state-icon" aria-hidden="true">${iconForType("default")}</span><strong>${emptyTitle}</strong><p>${emptyMessage}</p>${notificationError ? `<button type="button" class="notification-retry">Try again</button>` : ""}</div>`;
+    content = `<div class="notification-state"><span class="notification-state-icon" aria-hidden="true">${iconForType("default")}</span><strong>${emptyTitle}</strong><p>${emptyMessage}</p>${notificationError ? `<button type="button" class="notification-retry"${retryDisabled}>${publishedEventsRetrying ? retryLabel : "Try again"}</button>` : ""}</div>`;
   } else {
     content = groups.filter(([, items]) => items.length).map(([name, items]) =>
       `<section class="notification-group"><h2>${name.toUpperCase()}</h2><ul class="notification-list">${items.map((item) => renderRow(item, showingTrash)).join("")}</ul></section>`,
@@ -532,7 +552,7 @@ function renderNotifications() {
   }
   notificationRoot.innerHTML = `<section class="student-notifications" aria-labelledby="studentNotificationsTitle">
     <header class="notifications-header">
-      <div><h1 id="studentNotificationsTitle">Notifications</h1>${notificationError ? `<p class="notification-source-warning">${escapeHTML(notificationError)} <button type="button" class="notification-retry-inline">Retry</button></p>` : ""}</div>
+      <div><h1 id="studentNotificationsTitle">Notifications</h1>${notificationError ? `<p class="notification-source-warning">${escapeHTML(notificationError)} <button type="button" class="notification-retry-inline"${retryDisabled}>${retryLabel}</button></p>` : ""}</div>
     </header>
     <div class="notification-toolbar">
       <div class="notification-toolbar-left">
@@ -766,15 +786,15 @@ function bindPageInteractions() {
   });
 }
 
-function stopSubscriptions() {
+function stopSubscriptions(preserveLoadedItems = false) {
   unsubscribeFirestore.forEach((unsubscribe) => unsubscribe());
   unsubscribeFirestore = [];
   if (publishedEventsTimeout) {
     clearTimeout(publishedEventsTimeout);
     publishedEventsTimeout = null;
   }
-  unsubscribeEvents?.();
-  unsubscribeEvents = null;
+  unsubscribeEvents.forEach((unsubscribe) => unsubscribe());
+  unsubscribeEvents = [];
   unsubscribeRegistrations?.();
   unsubscribeRegistrations = null;
   unsubscribeRtdb?.();
@@ -789,12 +809,20 @@ function stopSubscriptions() {
   }
   rtdbRef = null;
   firestoreReady = new Set();
-  sourceErrors.clear();
-  eventDocuments.clear();
-  registrationDocuments.clear();
-  firestoreNotifications.clear();
-  rtdbNotifications.clear();
-  academicCalendarItems = [];
+  firestoreSucceeded = new Set();
+  eventSourceFailures = new Set();
+  if (!preserveLoadedItems) {
+    publishedEventsRetrying = false;
+    sourceErrors.clear();
+    eventDocuments.clear();
+    eventSnapshotsBySource.clear();
+    eventSourceSuccesses.clear();
+    registrationDocuments.clear();
+    registrationEventDocuments.clear();
+    firestoreNotifications.clear();
+    rtdbNotifications.clear();
+    academicCalendarItems = [];
+  }
   detailEventLoads.clear();
   initialLoadPending.clear();
 }
@@ -804,7 +832,7 @@ function syncItems(version) {
   notificationItems = mergedItems();
   const everyFirestoreQuerySettled = firestoreReady.size === 2;
   notificationsLoading = !everyFirestoreQuerySettled && !eventDocuments.size &&
-    !registrationDocuments.size && !sourceErrors.has("published-events");
+    !registrationDocuments.size && !sourceErrors.size;
   notificationError = [...sourceErrors.values()].join(" ");
   renderNotifications();
 }
@@ -820,9 +848,14 @@ function subscribeToFirestoreNotifications(uid, version) {
         const values = queryResults.get(field);
         values.clear();
         snapshot.docs.forEach((item) => values.set(item.id, item.data()));
-        firestoreNotifications.clear();
-        queryResults.forEach((items) => items.forEach((data, id) => firestoreNotifications.set(id, data)));
         firestoreReady.add(field);
+        firestoreSucceeded.add(field);
+        if (firestoreSucceeded.size === queryFields.length) {
+          firestoreNotifications.clear();
+          queryResults.forEach((items) => items.forEach((data, id) => firestoreNotifications.set(id, data)));
+        } else {
+          values.forEach((data, id) => firestoreNotifications.set(id, data));
+        }
         sourceErrors.delete(`notification-${field}`);
         syncItems(version);
         settleInitialLoadSource(`notification-${field}`);
@@ -846,6 +879,9 @@ function subscribeToFirestoreNotifications(uid, version) {
 }
 
 function loadMissingRegistrationEvents(version) {
+  registrationEventDocuments.forEach((event, eventId) => {
+    if (!registrationDocuments.has(eventId)) registrationEventDocuments.delete(eventId);
+  });
   registrationDocuments.forEach((registration, eventId) => {
     if (
       eventDocuments.has(eventId) ||
@@ -855,7 +891,8 @@ function loadMissingRegistrationEvents(version) {
     detailEventLoads.add(eventId);
     getDoc(doc(db, "events", eventId)).then((snapshot) => {
       if (version !== subscriptionVersion || !snapshot.exists()) return;
-      eventDocuments.set(eventId, snapshot.data());
+      registrationEventDocuments.set(eventId, snapshot.data());
+      rebuildEventDocuments();
       syncItems(version);
     }).catch((error) => {
       debug("Could not join registration to event:", eventId, error);
@@ -863,34 +900,83 @@ function loadMissingRegistrationEvents(version) {
   });
 }
 
+function rebuildEventDocuments() {
+  const merged = new Map();
+  eventSnapshotsBySource.forEach((sourceDocuments) => {
+    sourceDocuments.forEach((event, eventId) => merged.set(eventId, event));
+  });
+  registrationEventDocuments.forEach((event, eventId) => {
+    if (!merged.has(eventId)) merged.set(eventId, event);
+  });
+  eventDocuments = merged;
+}
+
 function subscribeToDerivedSources(uid, version) {
-  publishedEventsTimeout = setTimeout(() => {
-    if (version !== subscriptionVersion || eventDocuments.size || sourceErrors.has("published-events")) return;
-    sourceErrors.set("published-events", "Published event notifications are temporarily unavailable.");
+  const eventsRef = collection(db, "events");
+  const eventQueries = [
+    ["status", query(eventsRef, where("status", "in", STUDENT_EVENT_STATUS_QUERY_VALUES))],
+    [
+      "publicationStatus",
+      query(eventsRef, where("publicationStatus", "in", STUDENT_EVENT_STATUS_QUERY_VALUES)),
+    ],
+    ["published", query(eventsRef, where("published", "==", true))],
+    ["isPublished", query(eventsRef, where("isPublished", "==", true))],
+  ];
+  const hasPublishedEventSnapshot = () => eventSourceSuccesses.size > 0;
+  const reportPublishedEventFailure = (timedOut = false) => {
+    if (hasPublishedEventSnapshot()) {
+      sourceErrors.delete("published-events");
+      publishedEventsRetrying = false;
+    } else if (timedOut || eventSourceFailures.size === eventQueries.length) {
+      sourceErrors.set("published-events", "Published event notifications are temporarily unavailable.");
+      publishedEventsRetrying = false;
+    } else {
+      return;
+    }
     syncItems(version);
     settleInitialLoadSource("published-events");
+  };
+
+  publishedEventsTimeout = setTimeout(() => {
+    if (version !== subscriptionVersion) return;
+    publishedEventsTimeout = null;
+    reportPublishedEventFailure(true);
   }, 8000);
-  unsubscribeEvents = onSnapshot(
-    collection(db, "events"),
-    (snapshot) => {
-      if (version !== subscriptionVersion || currentUid !== uid) return;
-      clearTimeout(publishedEventsTimeout);
-      publishedEventsTimeout = null;
-      eventDocuments = new Map(snapshot.docs.map((item) => [item.id, item.data()]));
-      sourceErrors.delete("published-events");
-      syncItems(version);
-      settleInitialLoadSource("published-events");
-    },
-    (error) => {
-      if (version !== subscriptionVersion) return;
-      clearTimeout(publishedEventsTimeout);
-      publishedEventsTimeout = null;
-      debug("Published event listener failed:", error);
-      sourceErrors.set("published-events", "Published event notifications are temporarily unavailable.");
-      syncItems(version);
-      settleInitialLoadSource("published-events");
-    },
-  );
+  eventQueries.forEach(([source, eventsQuery]) => {
+    const unsubscribe = onSnapshot(
+      eventsQuery,
+      (snapshot) => {
+        if (version !== subscriptionVersion || currentUid !== uid) return;
+        const sourceDocuments = new Map(
+          snapshot.docs.map((item) => [item.id, item.data()]),
+        );
+        eventSnapshotsBySource.set(source, sourceDocuments);
+        eventSourceSuccesses.add(source);
+        eventSourceFailures.delete(source);
+        rebuildEventDocuments();
+        clearTimeout(publishedEventsTimeout);
+        publishedEventsTimeout = null;
+        publishedEventsRetrying = false;
+        sourceErrors.delete("published-events");
+        syncItems(version);
+        settleInitialLoadSource("published-events");
+      },
+      (error) => {
+        if (version !== subscriptionVersion || currentUid !== uid) return;
+        debug(`Published event query (${source}) failed:`, error);
+        eventSourceFailures.add(source);
+        if (
+          !hasPublishedEventSnapshot() &&
+          eventSourceFailures.size === eventQueries.length
+        ) {
+          clearTimeout(publishedEventsTimeout);
+          publishedEventsTimeout = null;
+        }
+        reportPublishedEventFailure();
+      },
+    );
+    unsubscribeEvents.push(unsubscribe);
+  });
   unsubscribeRegistrations = onSnapshot(
     query(collectionGroup(db, "registrations"), where("uid", "==", uid)),
     (snapshot) => {
@@ -942,8 +1028,8 @@ function subscribeToRtdb(uid, version) {
   }
 }
 
-function startSubscriptions(uid, includeDerivedSources = true) {
-  stopSubscriptions();
+function startSubscriptions(uid, includeDerivedSources = true, preserveLoadedItems = false) {
+  stopSubscriptions(preserveLoadedItems);
   const version = ++subscriptionVersion;
   pageLoadSignaled = false;
   initialLoadPending = new Set([
@@ -953,9 +1039,10 @@ function startSubscriptions(uid, includeDerivedSources = true) {
     "academic-calendar",
   ]);
   notificationsLoading = true;
-  notificationError = "";
+  notificationError = [...sourceErrors.values()].join(" ");
   renderNotifications();
   if (!db) {
+    publishedEventsRetrying = false;
     notificationsLoading = false;
     notificationError = "Notifications are unavailable because Firebase is not configured.";
     renderNotifications();
@@ -1015,7 +1102,10 @@ function startSubscriptions(uid, includeDerivedSources = true) {
 }
 
 function restartSubscriptions() {
-  if (currentUid) startSubscriptions(currentUid);
+  if (!currentUid || publishedEventsRetrying) return;
+  publishedEventsRetrying = sourceErrors.has("published-events");
+  const version = startSubscriptions(currentUid, true, true);
+  if (version !== null) settleInitialLoadSource("profile");
 }
 
 async function initializeStudent(user) {

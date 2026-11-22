@@ -15,7 +15,15 @@ import {
   updateDoc,
   where,
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
-import { auth, db, rtdb, functions, isFirebaseConfigured, isRtdbConfigured } from "./firebaseConfig.js";
+import {
+  auth,
+  authReady,
+  db,
+  rtdb,
+  functions,
+  isFirebaseConfigured,
+  isRtdbConfigured,
+} from "./firebaseConfig.js";
 import { httpsCallable } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-functions.js";
 import { ref, onValue, off, set, update, push } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-database.js";
 import {
@@ -383,6 +391,74 @@ function hydrateUserProfile() {
   const passwordFormModal = document.getElementById("passwordFormModal");
   const passwordForm = document.getElementById("passwordForm");
   const passwordFormStatus = document.getElementById("passwordFormStatus");
+  const passwordUpdateSubmitBtn = document.getElementById("passwordUpdateSubmitBtn");
+  const cancelPasswordChangeBtn = document.getElementById("cancelPasswordChange");
+  const passwordCloseBtn = document.getElementById("closePasswordModal");
+  const passwordFieldIds = ["currentPassword", "newPassword", "confirmPassword"];
+  let passwordUpdateInProgress = false;
+  let passwordUpdateSaving = false;
+  let passwordSuccessCloseTimer = null;
+
+  function setPasswordStatus(message, isError = false) {
+    if (!passwordFormStatus) return;
+    passwordFormStatus.textContent = message;
+    passwordFormStatus.style.color = message
+      ? isError ? "var(--red-500)" : "#1b6d43"
+      : "";
+    passwordFormStatus.setAttribute("role", isError ? "alert" : "status");
+    passwordFormStatus.setAttribute("aria-live", isError ? "assertive" : "polite");
+  }
+
+  function resetPasswordVisibility() {
+    passwordForm?.querySelectorAll("[data-password-toggle]").forEach((toggle) => {
+      const input = document.getElementById(toggle.dataset.passwordToggle);
+      if (input) input.type = "password";
+      const label = toggle.dataset.passwordLabel || "password";
+      toggle.setAttribute("aria-pressed", "false");
+      toggle.setAttribute("aria-label", `Show ${label}`);
+      toggle.title = `Show ${label}`;
+    });
+  }
+
+  function setPasswordSaving(isSaving) {
+    passwordUpdateSaving = isSaving;
+    passwordForm?.setAttribute("aria-busy", String(isSaving));
+    passwordFieldIds.forEach((id) => {
+      const input = document.getElementById(id);
+      if (input) input.disabled = isSaving;
+    });
+    if (cancelPasswordChangeBtn) cancelPasswordChangeBtn.disabled = isSaving;
+    if (passwordCloseBtn) passwordCloseBtn.disabled = isSaving;
+    if (passwordUpdateSubmitBtn) {
+      passwordUpdateSubmitBtn.disabled = isSaving || passwordUpdateInProgress;
+      passwordUpdateSubmitBtn.textContent = isSaving ? "Updating..." : "Update Password";
+    }
+  }
+
+  function passwordUpdateErrorMessage(error) {
+    switch (error?.code) {
+      case "auth/invalid-credential":
+      case "auth/invalid-login-credentials":
+      case "auth/user-mismatch":
+      case "auth/wrong-password":
+        return "Current password is incorrect.";
+      case "auth/requires-recent-login":
+      case "auth/user-token-expired":
+        return "Your sign-in has expired. Sign in again, then retry changing your password.";
+      case "auth/weak-password":
+        return "The new password does not meet the password requirements.";
+      case "auth/too-many-requests":
+        return "Too many attempts. Wait a few minutes, then try again.";
+      case "auth/network-request-failed":
+        return "A network error interrupted the password update. Check your connection and try again.";
+      case "auth/operation-not-allowed":
+        return "Password sign-in is not enabled for this account.";
+      case "auth/user-disabled":
+        return "This account is disabled. Contact support for help.";
+      default:
+        return error?.message || "Password could not be changed. Please try again.";
+    }
+  }
 
   /* ==========================================================================
      Feedback Alert Banner Controller
@@ -1485,9 +1561,14 @@ function hydrateUserProfile() {
   });
 
   function openPasswordModal() {
+    if (passwordUpdateSaving) return;
+    if (passwordSuccessCloseTimer) {
+      clearTimeout(passwordSuccessCloseTimer);
+      passwordSuccessCloseTimer = null;
+    }
     passwordForm.reset();
-    passwordFormStatus.textContent = "";
-    passwordFormStatus.style.color = "";
+    resetPasswordVisibility();
+    setPasswordStatus("");
     if (passwordFormModal) {
       passwordFormModal.hidden = false;
       passwordFormModal.style.display = "flex";
@@ -1500,36 +1581,63 @@ function hydrateUserProfile() {
   window.openPasswordModal = openPasswordModal;
 
   function closePasswordModal() {
+    if (passwordUpdateSaving) return;
+    if (passwordSuccessCloseTimer) {
+      clearTimeout(passwordSuccessCloseTimer);
+      passwordSuccessCloseTimer = null;
+    }
     if (passwordFormModal) {
       passwordFormModal.hidden = true;
       passwordFormModal.style.display = "none";
     }
     if (passwordForm) {
       passwordForm.hidden = true;
+      passwordForm.reset();
     }
-    passwordFormStatus.textContent = "";
-    passwordFormStatus.style.color = "";
+    resetPasswordVisibility();
+    setPasswordStatus("");
   }
   window.closePasswordModal = closePasswordModal;
 
   document.getElementById("changePassword")?.addEventListener("click", openPasswordModal);
-  document.getElementById("cancelPasswordChange")?.addEventListener("click", closePasswordModal);
-  document.getElementById("closePasswordModal")?.addEventListener("click", closePasswordModal);
+  cancelPasswordChangeBtn?.addEventListener("click", closePasswordModal);
+  passwordCloseBtn?.addEventListener("click", closePasswordModal);
   passwordFormModal?.addEventListener("click", (event) => {
     if (event.target === passwordFormModal) {
       closePasswordModal();
     }
   });
 
-  passwordForm.addEventListener("submit", async (event) => {
+  passwordForm?.querySelectorAll("[data-password-toggle]").forEach((toggle) => {
+    toggle.addEventListener("click", () => {
+      const input = document.getElementById(toggle.dataset.passwordToggle);
+      if (!input) return;
+      const isVisible = input.type === "password";
+      input.type = isVisible ? "text" : "password";
+      const label = toggle.dataset.passwordLabel || "password";
+      toggle.setAttribute("aria-pressed", String(isVisible));
+      toggle.setAttribute("aria-label", `${isVisible ? "Hide" : "Show"} ${label}`);
+      toggle.title = `${isVisible ? "Hide" : "Show"} ${label}`;
+    });
+  });
+
+  passwordForm?.addEventListener("submit", async (event) => {
     event.preventDefault();
-    passwordFormStatus.textContent = "";
+    if (passwordUpdateInProgress) return;
+    setPasswordStatus("");
     const current = document.getElementById("currentPassword").value;
     const next = document.getElementById("newPassword").value;
     const confirmation = document.getElementById("confirmPassword").value;
-    if (!current) {
-      passwordFormStatus.style.color = "var(--red-500)";
-      passwordFormStatus.textContent = "Enter your current password.";
+    if (!current.length) {
+      setPasswordStatus("Enter your current password.", true);
+      return;
+    }
+    if (!next.length) {
+      setPasswordStatus("Enter a new password.", true);
+      return;
+    }
+    if (!confirmation.length) {
+      setPasswordStatus("Confirm your new password.", true);
       return;
     }
     if (
@@ -1541,63 +1649,71 @@ function hydrateUserProfile() {
       !/\d/.test(next) ||
       !/[^\p{L}\p{N}\s]/u.test(next)
     ) {
-      passwordFormStatus.style.color = "var(--red-500)";
-      passwordFormStatus.textContent =
-        "Use 8–64 characters with uppercase, lowercase, a number, and a special character, without spaces.";
+      setPasswordStatus(
+        "Use 8–64 characters with uppercase, lowercase, a number, and a special character, without spaces.",
+        true,
+      );
       return;
     }
     if (next === current) {
-      passwordFormStatus.style.color = "var(--red-500)";
-      passwordFormStatus.textContent = "The new password must be different from the current password.";
+      setPasswordStatus("The new password must be different from the current password.", true);
       return;
     }
     if (next !== confirmation) {
-      passwordFormStatus.style.color = "var(--red-500)";
-      passwordFormStatus.textContent = "The new passwords do not match.";
+      setPasswordStatus("The new passwords do not match.", true);
       return;
     }
 
-    const confirmed = await showConfirmation({
-      title: "Change Password?",
-      message: "Are you sure you want to change your account password? You will need your new password for future sign-ins.",
-      confirmText: "Update Password",
-      cancelText: "Cancel",
-      isDanger: false,
-    });
-    if (!confirmed) return;
-
-    const submit = passwordForm.querySelector('[type="submit"]');
-    submit.disabled = true;
+    passwordUpdateInProgress = true;
+    if (passwordUpdateSubmitBtn) passwordUpdateSubmitBtn.disabled = true;
     try {
-      const signedInUser = await requireSignedInStudent();
+      const confirmed = await showConfirmation({
+        title: "Change Password?",
+        message: "Are you sure you want to change your account password? You will need your new password for future sign-ins.",
+        confirmText: "Update Password",
+        cancelText: "Cancel",
+        isDanger: false,
+      });
+      if (!confirmed || passwordFormModal?.hidden) return;
+
+      setPasswordSaving(true);
+      await authReady;
+      const signedInUser = auth?.currentUser;
+      if (!signedInUser) {
+        throw new Error("Your session has expired. Sign in again before changing your password.");
+      }
       if (!signedInUser.email) {
         throw new Error("This account does not have a sign-in email.");
+      }
+      if (!signedInUser.providerData?.some(
+        (provider) => provider.providerId === EmailAuthProvider.PROVIDER_ID,
+      )) {
+        throw new Error("This account does not use email and password sign-in.");
       }
       await reauthenticateWithCredential(
         signedInUser,
         EmailAuthProvider.credential(signedInUser.email, current),
       );
+      if (auth?.currentUser?.uid !== signedInUser.uid) {
+        throw new Error("Your account changed during this request. Sign in again and retry.");
+      }
       await updatePassword(signedInUser, next);
       passwordForm.reset();
-      passwordFormStatus.style.color = "#1b6d43";
-      passwordFormStatus.textContent = "Password changed successfully.";
+      resetPasswordVisibility();
+      setPasswordStatus("Password changed successfully.");
       showToast("Password updated successfully.");
-      window.setTimeout(() => {
+      passwordSuccessCloseTimer = window.setTimeout(() => {
+        passwordSuccessCloseTimer = null;
         closePasswordModal();
       }, 1200);
     } catch (error) {
       console.error("Student password update failed:", error);
-      passwordFormStatus.style.color = "var(--red-500)";
-      passwordFormStatus.textContent =
-        error.code === "auth/invalid-credential" ||
-        error.code === "auth/wrong-password"
-          ? "Current password is incorrect."
-          : error.code === "auth/requires-recent-login"
-            ? "Please sign in again, then retry changing your password."
-            : error.message || "Password could not be changed.";
-      showToast(passwordFormStatus.textContent, true);
+      const message = passwordUpdateErrorMessage(error);
+      setPasswordStatus(message, true);
+      showToast(message, true);
     } finally {
-      submit.disabled = false;
+      passwordUpdateInProgress = false;
+      setPasswordSaving(false);
     }
   });
   setText("heroUserName", storedName || firstName);
@@ -2005,33 +2121,97 @@ function hydrateUserProfile() {
    ========================================================================== */
 
 let qrLibraryLoadPromise = null;
+const STUDENT_NUMBER_QR_PATTERN = /^\d{4}-\d{5}-BN-\d$/;
 
 async function getQRCodeLib() {
   if (window.QRCode && typeof window.QRCode.toCanvas === "function") {
     return window.QRCode;
   }
-  const existingScript = document.querySelector('script[src*="qrcode/build/qrcode.min.js"]');
-  if (!existingScript) throw new Error("QR code library is unavailable.");
   if (!qrLibraryLoadPromise) {
-    qrLibraryLoadPromise = new Promise((resolve, reject) => {
-      const retryScript = document.createElement("script");
-      retryScript.src = existingScript.src;
-      retryScript.onload = () => {
-        if (window.QRCode && typeof window.QRCode.toCanvas === "function") {
-          resolve(window.QRCode);
-        } else {
-          qrLibraryLoadPromise = null;
-          reject(new Error("QR code library is unavailable."));
-        }
-      };
-      retryScript.onerror = () => {
-        qrLibraryLoadPromise = null;
-        reject(new Error("QR code library is unavailable."));
-      };
-      document.head.append(retryScript);
+    qrLibraryLoadPromise = import("https://esm.sh/qrcode@1.5.4").then((mod) => {
+      const library = mod.default || mod;
+      if (typeof library.toCanvas !== "function") {
+        throw new Error("QR code library is unavailable.");
+      }
+      return library;
+    }).catch((error) => {
+      qrLibraryLoadPromise = null;
+      throw error;
     });
   }
   return qrLibraryLoadPromise;
+}
+
+function getStudentQrData(profile = {}, authUser = auth?.currentUser) {
+  const registration = profile.registration && typeof profile.registration === "object"
+    ? profile.registration
+    : {};
+  const studentNumberCandidates = [
+    profile.studentNumber,
+    profile.studentNo,
+    profile.studentId,
+    registration.studentNumber,
+    registration.studentNo,
+    registration.studentId,
+  ]
+    .map(normalizeStudentNumber)
+    .filter(Boolean);
+  const studentNumber = studentNumberCandidates[0] || "";
+  const qrStudentNumber = studentNumberCandidates.find((value) =>
+    STUDENT_NUMBER_QR_PATTERN.test(value),
+  );
+  const uid = String(authUser?.uid || profile.uid || "").trim();
+  const payload = qrStudentNumber || uid;
+  if (!payload) {
+    throw new Error("Your student account could not be identified. Please sign in again.");
+  }
+
+  const organizationValue =
+    profile.organization ||
+    profile.courseOrganization ||
+    profile.courseOrg ||
+    profile.organizationCode ||
+    profile.organizationName ||
+    registration.organization ||
+    (Array.isArray(profile.StudentOrgs) ? profile.StudentOrgs[0] : "");
+  const organization = typeof organizationValue === "string" || typeof organizationValue === "number"
+    ? String(organizationValue).trim()
+    : "";
+  const storedName = String(profile.name || profile.fullName || "").trim();
+  const fullName = storedName || [
+    profile.firstName,
+    profile.middleName,
+    profile.lastName,
+  ].map((part) => String(part || "").trim()).filter(Boolean).join(" ");
+
+  return { payload, studentNumber, organization, fullName };
+}
+
+async function createQrCanvas(payload, width) {
+  const cleanPayload = String(payload || "").trim();
+  if (!cleanPayload) throw new Error("Your QR code data is empty. Please try again.");
+  const QRCodeLib = await getQRCodeLib();
+  const stagedCanvas = document.createElement("canvas");
+  await QRCodeLib.toCanvas(stagedCanvas, cleanPayload, {
+    width,
+    margin: 4,
+    color: { dark: "#000000", light: "#ffffff" },
+    errorCorrectionLevel: "H",
+  });
+  if (!stagedCanvas.width || !stagedCanvas.height) {
+    throw new Error("Your QR code could not be generated. Please try again.");
+  }
+  return stagedCanvas;
+}
+
+function commitQrCanvas(canvas, stagedCanvas, displayWidth) {
+  const context = canvas?.getContext("2d");
+  if (!context) throw new Error("Your QR code could not be displayed. Please try again.");
+  canvas.width = stagedCanvas.width;
+  canvas.height = stagedCanvas.height;
+  context.drawImage(stagedCanvas, 0, 0);
+  canvas.style.width = `${displayWidth}px`;
+  canvas.style.height = `${displayWidth}px`;
 }
 
 function formatScannedTime(scannedAt) {
@@ -2069,7 +2249,7 @@ function downloadCanvasAsPng(canvas, filename = "student-qr-code.png") {
 function renderMyQr(canvas, options = {}) {
   if (!canvas) return () => {};
 
-  const studentNumber = normalizeStudentNumber(options.studentNumber);
+  const payload = String(options.payload || "").trim();
   const width = options.width || 720;
   const displayWidth = options.displayWidth || 180;
   const skeleton = options.skeletonEl;
@@ -2101,29 +2281,15 @@ function renderMyQr(canvas, options = {}) {
     setUIState("loading");
 
     try {
-      if (!/^\d{4}-\d{5}-BN-\d$/.test(studentNumber)) {
-        throw new Error("Your student number is missing or invalid. Please contact OSAS.");
-      }
-
-      const QRCodeLib = await getQRCodeLib();
-      await QRCodeLib.toCanvas(canvas, studentNumber, {
-        width,
-        margin: 4,
-        color: { dark: "#000000", light: "#ffffff" },
-        errorCorrectionLevel: "H",
-      });
-      canvas.style.width = `${displayWidth}px`;
-      canvas.style.height = `${displayWidth}px`;
+      const stagedCanvas = await createQrCanvas(payload, width);
+      if (!active) return;
+      commitQrCanvas(canvas, stagedCanvas, displayWidth);
 
       if (active) setUIState("ready");
     } catch (err) {
       if (!active) return;
       console.error("Could not render the student QR code:", err);
-      const ctx = canvas.getContext("2d");
-      if (ctx) ctx.clearRect(0, 0, canvas.width, canvas.height);
-      setUIState("error", err.message === "Your student number is missing or invalid. Please contact OSAS."
-        ? err.message
-        : "Couldn't load your QR code");
+      setUIState("error", err.message || "Couldn't load your QR code. Please try again.");
     }
   }
 
@@ -2131,8 +2297,6 @@ function renderMyQr(canvas, options = {}) {
 
   return function cleanup() {
     active = false;
-    const ctx = canvas.getContext("2d");
-    if (ctx) ctx.clearRect(0, 0, canvas.width, canvas.height);
   };
 }
 
@@ -2143,6 +2307,7 @@ function renderMyQr(canvas, options = {}) {
 
   // QR Card Elements
   const canvas = document.getElementById("studentQrCanvas");
+  const qrCardFrame = document.getElementById("qrCardFrameWrapper");
   const skeleton = document.getElementById("qrCardSkeleton");
   const canvasBox = document.getElementById("qrCardCanvasBox");
   const errorBox = document.getElementById("qrCardError");
@@ -2158,6 +2323,7 @@ function renderMyQr(canvas, options = {}) {
   const checkedInBanner = document.getElementById("qrCheckedInBanner");
   const checkedInEventName = document.getElementById("qrCheckedInEventName");
   const checkedInTime = document.getElementById("qrCheckedInTime");
+  const refreshFeedback = document.getElementById("qrCardRefreshFeedback");
   const checkedInUnsubscribers = [];
 
   // Full-screen Modal Elements
@@ -2189,32 +2355,32 @@ function renderMyQr(canvas, options = {}) {
 
   let currentStudentNumber = "";
   let currentStudentName = "";
+  let currentQrPayload = "";
+  let cardQrReady = false;
+  let modalQrReady = false;
+  let qrRefreshInProgress = false;
+  let qrRefreshFeedbackTimer = null;
 
-  function setCardQrActionsEnabled(enabled) {
-    if (downloadBtn) downloadBtn.disabled = !enabled;
-    if (refreshBtn) refreshBtn.disabled = !enabled;
+  function setCardQrActionsEnabled(canDownload, canRefresh = canDownload) {
+    if (downloadBtn) downloadBtn.disabled = !canDownload;
+    if (refreshBtn) refreshBtn.disabled = !canRefresh;
   }
 
-  function setModalQrActionsEnabled(enabled) {
-    if (modalDownloadBtn) modalDownloadBtn.disabled = !enabled;
-    if (modalRefreshBtn) modalRefreshBtn.disabled = !enabled;
+  function setModalQrActionsEnabled(canDownload, canRefresh = canDownload) {
+    if (modalDownloadBtn) modalDownloadBtn.disabled = !canDownload;
+    if (modalRefreshBtn) modalRefreshBtn.disabled = !canRefresh;
   }
 
   function updateStudentCardInfo(userObj) {
     const user = userObj || {};
-    const storedFirstName = String(user.firstName || "").trim();
-    const storedFullName = String(user.name || user.fullName || "").trim();
-    const nameFromProfile = [storedFirstName, user.middleName, user.lastName]
-      .map((part) => String(part || "").trim())
-      .filter(Boolean)
-      .join(" ");
-    currentStudentName = storedFullName || nameFromProfile;
-    currentStudentNumber = normalizeStudentNumber(user.studentNumber || user.studentId);
-    const organization = String(user.organization || "").trim();
+    const qrData = getStudentQrData(user);
+    currentStudentName = qrData.fullName;
+    currentStudentNumber = qrData.studentNumber;
+    currentQrPayload = qrData.payload;
 
     if (nameEl) nameEl.textContent = currentStudentName;
     if (numberEl) numberEl.textContent = currentStudentNumber;
-    if (orgEl) orgEl.textContent = organization;
+    if (orgEl) orgEl.textContent = qrData.organization;
     if (modalStudentName) modalStudentName.textContent = currentStudentName;
   }
 
@@ -2229,30 +2395,129 @@ function renderMyQr(canvas, options = {}) {
 
     cardQrCleanup = renderMyQr(canvas, {
       studentNumber: currentStudentNumber,
+      payload: currentQrPayload,
       width: 720,
       displayWidth: 180,
       skeletonEl: skeleton,
       canvasBoxEl: canvasBox,
       errorEl: errorBox,
       errorMessageEl: errorMessage,
-      onStateChange: (state) => setCardQrActionsEnabled(state === "ready"),
+      onStateChange: (state) => {
+        cardQrReady = state === "ready";
+        setCardQrActionsEnabled(cardQrReady, state !== "loading");
+      },
     });
   }
 
-  function handleRefreshCode() {
-    initCardQr();
-    if (modalOverlay && !modalOverlay.hidden && modalOverlay.style.display !== "none") {
-      initModalQr();
+  function setQrRefreshFeedback(message, isError = false) {
+    if (!refreshFeedback) return;
+    if (qrRefreshFeedbackTimer) {
+      clearTimeout(qrRefreshFeedbackTimer);
+      qrRefreshFeedbackTimer = null;
+    }
+    refreshFeedback.textContent = message;
+    refreshFeedback.hidden = !message;
+    refreshFeedback.classList.toggle("is-error", isError);
+    if (message && !isError) {
+      qrRefreshFeedbackTimer = setTimeout(() => {
+        refreshFeedback.hidden = true;
+        qrRefreshFeedbackTimer = null;
+      }, 4000);
+    }
+  }
+
+  function setQrRefreshBusy(isBusy) {
+    if (qrCardFrame) {
+      qrCardFrame.classList.toggle("is-refreshing", isBusy);
+      qrCardFrame.setAttribute("aria-busy", String(isBusy));
+    }
+    if (refreshBtn) {
+      refreshBtn.disabled = isBusy;
+      refreshBtn.classList.toggle("is-refreshing", isBusy);
+      refreshBtn.setAttribute("aria-busy", String(isBusy));
+      const label = document.getElementById("btnRefreshQrLabel");
+      if (label) label.textContent = isBusy ? "Refreshing..." : "Refresh code";
+    }
+    if (modalRefreshBtn) {
+      modalRefreshBtn.disabled = isBusy;
+      modalRefreshBtn.classList.toggle("is-refreshing", isBusy);
+      modalRefreshBtn.setAttribute("aria-busy", String(isBusy));
+      const label = document.getElementById("qrModalRefreshLabel");
+      if (label) label.textContent = isBusy ? "Refreshing..." : "Refresh code";
+    }
+    if (isBusy) {
+      if (downloadBtn) downloadBtn.disabled = true;
+      if (modalDownloadBtn) modalDownloadBtn.disabled = true;
+    }
+  }
+
+  async function handleRefreshCode() {
+    if (qrRefreshInProgress) return;
+    const authUser = auth?.currentUser;
+    if (!authUser?.uid) {
+      setQrRefreshFeedback("Sign in again before refreshing your QR code.", true);
+      return;
+    }
+
+    const hadExistingQr = cardQrReady;
+    qrRefreshInProgress = true;
+    setQrRefreshBusy(true);
+    setQrRefreshFeedback("Updating your QR code...");
+    try {
+      const refreshedProfile = await loadStudentProfile(authUser);
+      if (auth?.currentUser?.uid !== authUser.uid) {
+        throw new Error("Your account changed. Sign in again before refreshing your QR code.");
+      }
+      const qrData = getStudentQrData(refreshedProfile, authUser);
+      const visibleModal = modalOverlay && !modalOverlay.hidden && modalOverlay.style.display !== "none";
+      const targets = [{ canvas, width: 720 }];
+      if (visibleModal && modalCanvas) targets.push({ canvas: modalCanvas, width: 720 });
+      if (targets.some((target) => !target.canvas || !target.canvas.getContext("2d"))) {
+        throw new Error("The QR code display is unavailable. Please try again.");
+      }
+
+      const stagedCanvases = await Promise.all(
+        targets.map((target) => createQrCanvas(qrData.payload, target.width)),
+      );
+      if (auth?.currentUser?.uid !== authUser.uid) {
+        throw new Error("Your account changed. Sign in again before refreshing your QR code.");
+      }
+      targets.forEach((target, index) => {
+        const displayWidth = target.canvas === modalCanvas ? 260 : 180;
+        commitQrCanvas(target.canvas, stagedCanvases[index], displayWidth);
+      });
+
+      updateStudentCardInfo(refreshedProfile);
+      cardQrReady = true;
+      if (visibleModal) modalQrReady = true;
+      setCardQrActionsEnabled(true);
+      if (visibleModal) setModalQrActionsEnabled(true);
+      setQrRefreshFeedback("Code refreshed.");
+    } catch (err) {
+      console.error("Could not refresh the student QR code:", err);
+      setQrRefreshFeedback(
+        hadExistingQr
+          ? "Couldn't refresh your QR code. Your current code is still available. Please try again."
+          : "Couldn't refresh your QR code. Please try again.",
+        true,
+      );
+    } finally {
+      qrRefreshInProgress = false;
+      setQrRefreshBusy(false);
+      const signedInUserIsCurrent = auth?.currentUser?.uid === profileAuthUid;
+      setCardQrActionsEnabled(signedInUserIsCurrent && cardQrReady, signedInUserIsCurrent);
+      setModalQrActionsEnabled(signedInUserIsCurrent && modalQrReady, signedInUserIsCurrent);
     }
   }
 
   function handleDownloadCode(targetCanvas, targetButton) {
-    if (!currentStudentNumber || targetButton?.disabled) {
+    const downloadId = currentStudentNumber || auth?.currentUser?.uid || "";
+    if (!currentQrPayload || !downloadId || targetButton?.disabled) {
       return;
     }
     const downloaded = downloadCanvasAsPng(
       targetCanvas,
-      `recovibe-attendance-code-${currentStudentNumber}.png`,
+      `recovibe-attendance-code-${downloadId.replace(/[^a-zA-Z0-9_-]/g, "_")}.png`,
     );
     const toastFn = window.showToast || (typeof showToast === "function" ? showToast : null);
     if (toastFn) {
@@ -2269,7 +2534,7 @@ function renderMyQr(canvas, options = {}) {
   if (refreshBtn) {
     refreshBtn.addEventListener("click", (e) => {
       e.preventDefault();
-      handleRefreshCode();
+      void handleRefreshCode();
     });
   }
   if (downloadBtn) {
@@ -2375,6 +2640,9 @@ function renderMyQr(canvas, options = {}) {
       profileAuthUid = "";
       currentStudentNumber = "";
       currentStudentName = "";
+      currentQrPayload = "";
+      cardQrReady = false;
+      modalQrReady = false;
       setCardQrActionsEnabled(false);
       setModalQrActionsEnabled(false);
       clearCachedStudentProfile();
@@ -2499,13 +2767,17 @@ function renderMyQr(canvas, options = {}) {
 
     modalQrCleanup = renderMyQr(modalCanvas, {
       studentNumber: currentStudentNumber,
+      payload: currentQrPayload,
       width: 720,
       displayWidth: 260,
       skeletonEl: modalSkeleton,
       canvasBoxEl: modalCanvasBox,
       errorEl: modalError,
       errorMessageEl: modalErrorMessage,
-      onStateChange: (state) => setModalQrActionsEnabled(state === "ready"),
+      onStateChange: (state) => {
+        modalQrReady = state === "ready";
+        setModalQrActionsEnabled(modalQrReady, state !== "loading");
+      },
     });
   }
 
@@ -2555,7 +2827,7 @@ function renderMyQr(canvas, options = {}) {
     modalRefreshBtn.addEventListener("click", (e) => {
       e.preventDefault();
       e.stopPropagation();
-      handleRefreshCode();
+      void handleRefreshCode();
     });
   }
   if (modalDownloadBtn) {
