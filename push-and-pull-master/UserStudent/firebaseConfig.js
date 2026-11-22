@@ -3,7 +3,10 @@ import { getAuth } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-aut
 import { getFirestore } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 import { getDatabase } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-database.js";
 import { getFunctions } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-functions.js";
-import { startActiveSessionAccessGuard } from "../systemAccess.js";
+import {
+  startActiveSessionAccessGuard,
+  startPortalRoleGuard,
+} from "../systemAccess.js";
 
 const RTDB_URL = "https://recovibe-v1-default-rtdb.asia-southeast1.firebasedatabase.app";
 
@@ -61,3 +64,4 @@ if (app) {
 export const functions = functionsInstance;
 
 startActiveSessionAccessGuard(auth, db);
+startPortalRoleGuard(auth, db);

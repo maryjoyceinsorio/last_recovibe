@@ -203,6 +203,7 @@
               </svg>
               <span id="profileFeedbackText">Profile updated successfully.</span>
             </div>
+            <button type="button" class="btn-outlined-card" id="btnRetryProfileFetch" hidden>Retry</button>
             <button type="button" class="alert-dismiss-btn" id="btnDismissFeedback" aria-label="Dismiss">&times;</button>
           </div>
 
@@ -311,7 +312,7 @@
                   </div>
                   <div class="field-item" id="field-contact-phone">
                     <label class="field-label" for="inputContactPhone">Contact number</label>
-                    <input type="tel" id="inputContactPhone" required autocomplete="tel" placeholder="0912 345 6789" maxlength="13" class="card-input" />
+                    <input type="tel" id="inputContactPhone" required inputmode="numeric" autocomplete="tel" placeholder="09XXXXXXXXX" maxlength="13" class="card-input" />
                     <div class="field-error" id="errContactPhone" role="alert"></div>
                   </div>
                 </div>
@@ -378,15 +379,6 @@
                 <button type="button" class="btn-outlined-card" id="btnRequestCorrection">
                   Request a correction
                 </button>
-              </div>
-            </article>
-
-            <article class="profile-card full-width-card cr-card" id="correctionRequestsCard" aria-labelledby="correctionRequestsHeading">
-              <div class="card-header-flex">
-                <h2 class="card-title" id="correctionRequestsHeading">My correction requests</h2>
-              </div>
-              <div class="cr-list-content" id="correctionRequestsContent" aria-live="polite">
-                <p class="cr-state" role="status">Loading your requests...</p>
               </div>
             </article>
 
@@ -582,6 +574,15 @@
                   </svg>
                   <span>Show full screen</span>
                 </button>
+              </div>
+            </article>
+
+            <article class="profile-card full-width-card cr-card" id="correctionRequestsCard" aria-labelledby="correctionRequestsHeading">
+              <div class="card-header-flex">
+                <h2 class="card-title" id="correctionRequestsHeading">My correction requests</h2>
+              </div>
+              <div class="cr-list-content" id="correctionRequestsContent" aria-live="polite">
+                <p class="cr-state" role="status">Loading your requests...</p>
               </div>
             </article>
           </section>
@@ -782,24 +783,40 @@
         completed = true;
         clearTimeout(timeoutId);
         if (timedOut) {
-          root.removeAttribute("data-page-loading");
-          root.removeAttribute("data-page-load-error");
-          if (container) container.setAttribute("aria-busy", "false");
-          const existingError = container && container.querySelector("[role='alert'], .notification-source-warning, .page-load-error");
-          if (
-            existingError &&
-            !existingError.hidden &&
-            existingError.textContent.trim() &&
-            getComputedStyle(existingError).visibility !== "hidden" &&
-            existingError.getClientRects().length
-          ) {
+          const sidebarName = document.querySelector(".user-name, #userName")?.textContent.trim();
+          if (container && (!container.hidden || sidebarName)) {
+            container.removeAttribute("hidden");
+            root.removeAttribute("data-page-loading");
+            root.removeAttribute("data-page-load-error");
+            container.setAttribute("aria-busy", "false");
+            const feedbackAlert = document.getElementById("profileFeedbackAlert");
+            const feedbackText = document.getElementById("profileFeedbackText");
+            const retryProfileButton = document.getElementById("btnRetryProfileFetch");
+            if (sidebarName && feedbackAlert && feedbackText && feedbackAlert.hidden) {
+              feedbackText.textContent = "Showing available profile information while the live profile loads.";
+              feedbackAlert.classList.add("error");
+              feedbackAlert.hidden = false;
+            }
+            if (sidebarName && retryProfileButton) retryProfileButton.hidden = false;
             preloader.hidden = true;
             return;
           }
+          root.removeAttribute("data-page-loading");
+          if (container) container.setAttribute("aria-busy", "false");
           root.setAttribute("data-page-load-error", "true");
           preloader.classList.add("page-preloader-error");
           preloader.innerHTML = "Could not load data. Please try again.<button class=\"btn-primary page-preloader-retry\" type=\"button\">Retry</button>";
-          preloader.querySelector("button").addEventListener("click", () => window.location.reload());
+          preloader.querySelector("button").addEventListener("click", () => {
+            completed = false;
+            root.removeAttribute("data-page-load-error");
+            root.setAttribute("data-page-loading", "true");
+            if (container) container.setAttribute("aria-busy", "true");
+            preloader.classList.remove("page-preloader-error");
+            preloader.hidden = false;
+            preloader.innerHTML = '<span class="page-preloader-spinner" aria-hidden="true"></span><span>Loading...</span>';
+            timeoutId = setTimeout(() => finish(true), 10000);
+            window.dispatchEvent(new Event("page-data-retry"));
+          });
           return;
         }
         root.removeAttribute("data-page-loading");

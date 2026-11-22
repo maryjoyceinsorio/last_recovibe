@@ -3,10 +3,20 @@ import {
   reauthenticateWithCredential,
   signOut,
   updatePassword,
+  verifyBeforeUpdateEmail,
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
 import { doc, getDoc } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 import { push, ref, set } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-database.js";
 import { auth, authReady, db, isRtdbConfigured, rtdb } from "../UserStudent/firebaseConfig.js";
+import {
+  formatPhilippineMobile,
+  isValidPhilippineMobile,
+  mobileDigits,
+  profileCollectionsForRole,
+  savePendingProfileEmail,
+  saveProfileFields,
+  syncVerifiedProfileEmail,
+} from "../portalProfileAccount.js";
 
 (async () => {
   "use strict";
@@ -20,7 +30,7 @@ import { auth, authReady, db, isRtdbConfigured, rtdb } from "../UserStudent/fire
   const root = document.getElementById("profileRoot"),
     toastElement = document.querySelector(".admin-toast"),
     namePattern = /^[A-Z][a-z]*(?: [A-Z][a-z]*)*$/,
-    phonePattern = /^(09\d{9}|\+639\d{9})$/;
+    phonePattern = /^09\d{9}$/;
   let profileLoadExpired = false;
   let pageLoadSignaled = false;
   const signalProfilePageReady = () => {
@@ -47,6 +57,13 @@ import { auth, authReady, db, isRtdbConfigured, rtdb } from "../UserStudent/fire
       return;
     }
     firebaseUser = user;
+    await syncVerifiedProfileEmail(
+      auth,
+      db,
+      user,
+      "admin",
+      profileCollectionsForRole("admin"),
+    );
     const [adminResult, userResult] = await Promise.allSettled([
       getDoc(doc(db, "adminUser", user.uid)),
       getDoc(doc(db, "users", user.uid)),
@@ -176,7 +193,7 @@ import { auth, authReady, db, isRtdbConfigured, rtdb } from "../UserStudent/fire
   root.querySelector("#viewPosition").textContent = position || "Not set";
   root.querySelector("#viewRole").textContent = role || "Not set";
   root.querySelector("#viewCampus").textContent = campus || "Not set";
-  root.querySelector("#profileError").insertAdjacentHTML("beforebegin", '<div class="admin-field"><label for="emailAddress">Email Address</label><input id="emailAddress" type="email" readonly></div><div class="admin-field"><label for="contactNumber">Contact Number</label><input id="contactNumber" type="tel" autocomplete="tel" placeholder="09XXXXXXXXX or +639XXXXXXXXX"></div>');
+  root.querySelector("#profileError").insertAdjacentHTML("beforebegin", '<div class="admin-field"><label for="emailAddress">Email Address</label><input id="emailAddress" type="email" autocomplete="email" required></div><div class="admin-field"><label for="contactNumber">Contact Number</label><input id="contactNumber" type="tel" inputmode="numeric" autocomplete="tel" maxlength="13" placeholder="09XXXXXXXXX" required></div>');
   root.insertAdjacentHTML("beforeend", '<div class="admin-correction-overlay" id="correctionModal" hidden><div class="admin-correction-dialog" role="dialog" aria-modal="true" aria-labelledby="correctionTitle"><button type="button" class="admin-close" id="closeCorrection" aria-label="Close dialog">×</button><h2 id="correctionTitle">Request a correction</h2><p>Tell OSAS which admin record detail needs to be updated and what it should say.</p><form id="correctionForm"><div class="admin-field"><label for="correctionField">Which detail is wrong?</label><select id="correctionField" required><option value="">Select a detail</option><option>Admin ID</option><option>Position</option><option>Role</option><option>Campus</option></select></div><div class="admin-field"><label for="correctionMessage">Tell OSAS what it should say</label><textarea id="correctionMessage" required minlength="10" rows="4"></textarea></div><p class="admin-error-text" id="correctionError" role="alert"></p><div class="admin-dialog-actions"><button class="admin-button" id="cancelCorrection" type="button">Cancel</button><button class="admin-button green" type="submit">Send request</button></div></form></div></div>');
   const correctionModal = root.querySelector("#correctionModal");
   root.querySelector("#btnRequestCorrection").onclick = () => {
@@ -269,7 +286,7 @@ import { auth, authReady, db, isRtdbConfigured, rtdb } from "../UserStudent/fire
     form.middleName.value = profile.middleName;
     form.lastName.value = profile.lastName;
     form.emailAddress.value = profile.email || identity;
-    form.contactNumber.value = profile.contactNumber || "";
+    form.contactNumber.value = formatPhilippineMobile(profile.contactNumber || "");
     form.noMiddleName.checked = !profile.middleName;
     form.middleName.disabled = form.noMiddleName.checked;
     root.querySelector("#profileError").textContent = "";
@@ -282,6 +299,9 @@ import { auth, authReady, db, isRtdbConfigured, rtdb } from "../UserStudent/fire
     button.onclick = () => setEditing(true);
   });
   root.querySelector("#profileForm").addEventListener("input", changed);
+  root.querySelector("#contactNumber").addEventListener("input", (event) => {
+    event.currentTarget.value = formatPhilippineMobile(event.currentTarget.value);
+  });
   root.querySelector("#noMiddleName").addEventListener("change", (event) => {
     const middle = root.querySelector("#middleName");
     middle.disabled = event.target.checked;
@@ -293,14 +313,14 @@ import { auth, authReady, db, isRtdbConfigured, rtdb } from "../UserStudent/fire
     if (dirty && !confirm("Discard your unsaved profile changes?")) return;
     setEditing(false);
   };
-  root.querySelector("#profileForm").onsubmit = (event) => {
+  root.querySelector("#profileForm").onsubmit = async (event) => {
     event.preventDefault();
     const form = event.currentTarget,
       first = form.firstName.value.trim(),
       middle = form.noMiddleName.checked ? "" : form.middleName.value.trim(),
       last = form.lastName.value.trim(),
-      phone = form.contactNumber.value.trim(),
-      normalizedPhone = phone.replace(/[\s-]/g, ""),
+      email = form.emailAddress.value.trim().toLowerCase(),
+      normalizedPhone = mobileDigits(form.contactNumber.value),
       error = root.querySelector("#profileError");
     if (
       !first ||
@@ -313,9 +333,46 @@ import { auth, authReady, db, isRtdbConfigured, rtdb } from "../UserStudent/fire
         "Enter valid first and last names; middle name is required unless you select the checkbox.";
       return;
     }
-    if (phone && !phonePattern.test(normalizedPhone)) {
-      error.textContent = "Use 09XXXXXXXXX or +639XXXXXXXXX.";
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      error.textContent = "Enter a valid email address.";
+      form.emailAddress.focus();
+      return;
+    }
+    if (!phonePattern.test(normalizedPhone) || !isValidPhilippineMobile(normalizedPhone)) {
+      error.textContent = "Use a Philippine mobile number in 09XXXXXXXXX format.";
       form.contactNumber.focus();
+      return;
+    }
+    const emailChanged = email !== String(profile.email || "").trim().toLowerCase();
+    const phoneChanged = normalizedPhone !== mobileDigits(profile.contactNumber);
+    try {
+      if (emailChanged) {
+        await verifyBeforeUpdateEmail(firebaseUser, email);
+        profile.pendingEmail = email;
+        localStorage.setItem(
+          `recovibe_pending_email_${firebaseUser.uid}`,
+          JSON.stringify({ pendingEmail: email, oldEmail: profile.email, timestamp: Date.now() }),
+        );
+        await savePendingProfileEmail(
+          db,
+          firebaseUser.uid,
+          "admin",
+          email,
+          profileCollectionsForRole("admin"),
+        );
+      }
+      if (phoneChanged) {
+        await saveProfileFields(
+          db,
+          firebaseUser.uid,
+          "admin",
+          { contactNumber: normalizedPhone },
+          profileCollectionsForRole("admin"),
+        );
+      }
+    } catch (saveError) {
+      console.error("[AdminProfile] Could not update contact details:", saveError);
+      error.textContent = saveError?.message || "Could not update contact details.";
       return;
     }
     profile.firstName = first;
@@ -343,7 +400,9 @@ import { auth, authReady, db, isRtdbConfigured, rtdb } from "../UserStudent/fire
     root.querySelector("#heroUserName").textContent = profile.name;
     display();
     setEditing(false);
-    toast("Profile saved.");
+    toast(emailChanged
+      ? "Verification sent. Keep using your current email until you confirm the new address."
+      : "Profile saved.");
   };
   const layer = root.querySelector("#passwordLayer");
   function closePassword() {
@@ -450,5 +509,8 @@ import { auth, authReady, db, isRtdbConfigured, rtdb } from "../UserStudent/fire
     }
   });
   display();
+  if (profile.pendingEmail) {
+    toast(`Email change pending verification at ${profile.pendingEmail}. Keep using your current email until confirmed.`);
+  }
   signalProfilePageReady();
 })();

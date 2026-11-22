@@ -2,15 +2,21 @@ import {
   browserLocalPersistence,
   browserSessionPersistence,
   setPersistence,
-  signInWithEmailAndPassword,
   signOut,
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
 import { doc, getDoc } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 import { auth, authReady, db, isFirebaseConfigured } from "../UserStudent/firebaseConfig.js";
 import {
+  profileCollectionsForRole,
+  signInWithPendingEmailFallback,
+  syncVerifiedProfileEmail,
+} from "../portalProfileAccount.js";
+import {
+  clearPortalProfileCaches,
   maintenanceMessage,
   readSystemAccessSettings,
   takeMaintenanceNotice,
+  takePortalRoleNotice,
 } from "../systemAccess.js";
 
 (() => {
@@ -27,6 +33,11 @@ import {
   const maintenanceNotice = takeMaintenanceNotice();
   if (maintenanceNotice) {
     banner.textContent = maintenanceNotice;
+    banner.classList.add("show");
+  }
+  const portalRoleNotice = takePortalRoleNotice();
+  if (portalRoleNotice) {
+    banner.textContent = portalRoleNotice;
     banner.classList.add("show");
   }
 
@@ -193,13 +204,28 @@ import {
           persistenceError?.code || "unknown",
         );
       }
-      const credential = await signInWithEmailAndPassword(auth, email, password);
+      const credential = await signInWithPendingEmailFallback(
+        auth,
+        db,
+        email,
+        password,
+        "eventorganizer",
+        profileCollectionsForRole("eventorganizer"),
+      );
       authenticated = true;
+      clearPortalProfileCaches();
       banner.textContent = "Verifying organizer account...";
       banner.classList.add("show");
       const profile = await withTimeout(
         findOrganizerProfile(credential.user.uid),
         PROFILE_VERIFICATION_TIMEOUT_MS,
+      );
+      await syncVerifiedProfileEmail(
+        auth,
+        db,
+        credential.user,
+        "eventorganizer",
+        profileCollectionsForRole("eventorganizer"),
       );
       accessSettings = await readSystemAccessSettings(db);
       if (!accessSettings.userLoginEnabled) {
@@ -220,7 +246,7 @@ import {
         "recovibeOrganizerProfile",
         JSON.stringify(organizerProfile),
       );
-      saveRememberedEmail(email);
+      saveRememberedEmail(credential.user.email || email);
       signInVerified = true;
       window.location.assign("EventOrganizerDashBoard.html");
     } catch (error) {
@@ -234,11 +260,16 @@ import {
           });
         }
       }
+      clearPortalProfileCaches();
       console.error("[EventOrganizerLogin] Sign-in/profile verification failed:", {
         code: error?.code || "unknown",
         message: error?.message || String(error),
       });
       if (
+        error?.code === "portal/email-change-pending"
+      ) {
+        banner.textContent = "If your email change is still pending, verify the new address and sign in with your current email until then.";
+      } else if (
         ["auth/invalid-credential", "auth/user-not-found", "auth/wrong-password", "auth/invalid-email"].includes(
           error?.code,
         )

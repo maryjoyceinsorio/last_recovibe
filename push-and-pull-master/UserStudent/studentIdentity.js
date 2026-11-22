@@ -7,12 +7,44 @@ import {
   query,
   where,
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
-import { auth, db } from "./firebaseConfig.js";
+import { auth, db, rtdb } from "./firebaseConfig.js";
+import { syncVerifiedProfileEmail } from "../portalProfileAccount.js";
 
 const currentUserStorageKey = "recovibeCurrentUser";
+const studentProfileCollections = ["users", "students"];
 
 function normalizedEmail(value) {
   return String(value || "").trim().toLowerCase();
+}
+
+export function normalizeStudentNumber(value) {
+  return String(value || "")
+    .replace(/\s/g, "")
+    .toUpperCase()
+    .replace(/[^0-9BN-]/g, "")
+    .slice(0, 16);
+}
+
+export function studentNumberValidationMessage(value) {
+  const normalized = normalizeStudentNumber(value);
+  if (!normalized) return "Student number is required.";
+  const parts = /^(\d{4})-(\d{5})-([A-Z]{2})-(\d+)$/.exec(normalized);
+  if (!parts) return "Student number must follow the format 2025-12345-BN-0.";
+  const year = Number(parts[1]);
+  const currentYear = new Date().getFullYear();
+  if (year < 2000 || year > currentYear) {
+    return `Enter a valid year in the first 4 digits (2000 to ${currentYear}).`;
+  }
+  if (parts[2] === "00000") return "Enter a valid 5-digit student number.";
+  if (parts[3] !== "BN") return "Campus code must be BN (PUP Biñan).";
+  if (!/^[01]$/.test(parts[4])) return "The last digit must be 0 or 1.";
+  return /^\d{4}-\d{5}-BN-[01]$/.test(normalized)
+    ? ""
+    : "Student number must follow the format 2025-12345-BN-0.";
+}
+
+export function syncVerifiedStudentEmail(user) {
+  return syncVerifiedProfileEmail(auth, db, user, "student", studentProfileCollections, rtdb);
 }
 
 function readStoredProfile(email) {
@@ -60,9 +92,35 @@ export async function loadStudentProfile(user, { storage, createIfMissing = fals
     throw new Error("The authenticated student changed before their profile could be loaded.");
   }
 
-  const profileRef = doc(db, "users", user.uid);
-  const profileSnapshot = await getDoc(profileRef);
-  let profile = profileSnapshot.exists() ? profileSnapshot.data() : null;
+  await syncVerifiedStudentEmail(user);
+  const profileReads = await Promise.allSettled(
+    studentProfileCollections.map(async (collectionName) => ({
+      collectionName,
+      snapshot: await getDoc(doc(db, collectionName, user.uid)),
+    })),
+  );
+  const profileRecords = [];
+  const profileReadErrors = [];
+  profileReads.forEach((result, index) => {
+    if (result.status === "rejected") {
+      profileReadErrors.push(result.reason);
+      console.warn("[Student Identity] Could not read a student profile collection:", {
+        collection: studentProfileCollections[index],
+        code: result.reason?.code || "unknown",
+      });
+    } else if (result.value.snapshot.exists()) {
+      profileRecords.push({
+        collectionName: result.value.collectionName,
+        snapshot: result.value.snapshot,
+        data: result.value.snapshot.data(),
+      });
+    }
+  });
+  if (!profileRecords.length && profileReadErrors.length === studentProfileCollections.length) {
+    throw profileReadErrors[0];
+  }
+  let profileRecord = profileRecords[0] || null;
+  let profile = profileRecord?.data || null;
 
   if (profile && profile.uid && profile.uid !== user.uid) {
     throw new Error("The profile document UID does not match the authenticated user.");
@@ -73,21 +131,51 @@ export async function loadStudentProfile(user, { storage, createIfMissing = fals
     normalizedEmail(user.email) &&
     normalizedEmail(profile.email) !== normalizedEmail(user.email)
   ) {
-    throw new Error("The profile email does not match the authenticated user.");
+    throw Object.assign(new Error("The profile email does not match the authenticated user."), {
+      code: "profile/email-mismatch",
+    });
   }
 
   if (!profile && normalizedEmail(user.email)) {
-    const emailQuery = query(
-      collection(db, "users"),
-      where("email", "==", normalizedEmail(user.email)),
-      limit(2),
+    const emailReads = await Promise.allSettled(
+      studentProfileCollections.map((collectionName) => getDocs(query(
+        collection(db, collectionName),
+        where("email", "==", normalizedEmail(user.email)),
+        limit(2),
+      ))),
     );
-    const matches = await getDocs(emailQuery);
-    if (matches.size > 1) {
+    const emailMatches = new Map();
+    emailReads.forEach((result, index) => {
+      if (result.status === "rejected") {
+        console.warn("[Student Identity] Could not query student profiles by email:", {
+          collection: studentProfileCollections[index],
+          code: result.reason?.code || "unknown",
+        });
+        return;
+      }
+      result.value.docs.forEach((snapshot) => {
+        const data = snapshot.data();
+        const role = String(data.role || data.userRole || "")
+          .trim()
+          .toLowerCase()
+          .replace(/[\s_-]+/g, "");
+        if (role !== "student" && !(studentProfileCollections[index] === "students" && !role)) return;
+        const recordId = data.uid || snapshot.id;
+        emailMatches.set(recordId, {
+          collectionName: studentProfileCollections[index],
+          data,
+        });
+      });
+    });
+    if (!emailMatches.size && emailReads.every((result) => result.status === "rejected")) {
+      throw emailReads.find((result) => result.status === "rejected").reason;
+    }
+    if (emailMatches.size > 1) {
       throw new Error("More than one student profile matches this authenticated email.");
     }
-    if (matches.size === 1) {
-      profile = matches.docs[0].data();
+    if (emailMatches.size === 1) {
+      profileRecord = [...emailMatches.values()][0];
+      profile = profileRecord.data;
     }
   }
 
@@ -95,12 +183,19 @@ export async function loadStudentProfile(user, { storage, createIfMissing = fals
     const cached = readStoredProfile(user.email);
     if (cached) {
       profile = cached;
+      profileRecord = null;
     }
   }
 
   if (!profile) {
     if (!createIfMissing) {
-      throw new Error("No student profile matches this authenticated account.");
+      console.warn("[Student Identity] No student profile matched the authenticated account.", {
+        collections: studentProfileCollections,
+        code: "profile/not-found",
+      });
+      throw Object.assign(new Error("No student profile matches this authenticated account."), {
+        code: "profile/not-found",
+      });
     }
     profile = {
       email: user.email || "",
@@ -111,9 +206,15 @@ export async function loadStudentProfile(user, { storage, createIfMissing = fals
     };
   }
 
-  const role = String(profile.role || profile.userRole || "").trim().toLowerCase();
-  if (role !== "student") {
-    throw new Error(`The authenticated account is not a student profile (role: ${role}).`);
+  const role = String(profile.role || profile.userRole || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[\s_-]+/g, "");
+  if (role !== "student" && !(profileRecord?.collectionName === "students" && !role)) {
+    throw Object.assign(
+      new Error(`The authenticated account is not a student profile (role: ${role}).`),
+      { code: "profile/role-mismatch" },
+    );
   }
 
   const canonicalProfile = {

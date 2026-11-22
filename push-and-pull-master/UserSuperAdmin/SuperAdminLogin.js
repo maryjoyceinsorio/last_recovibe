@@ -2,11 +2,19 @@ import {
   browserLocalPersistence,
   browserSessionPersistence,
   setPersistence,
-  signInWithEmailAndPassword,
   signOut,
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
 import { doc, getDoc } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 import { auth, authReady, db, isFirebaseConfigured } from "../UserStudent/firebaseConfig.js";
+import {
+  profileCollectionsForRole,
+  signInWithPendingEmailFallback,
+  syncVerifiedProfileEmail,
+} from "../portalProfileAccount.js";
+import {
+  clearPortalProfileCaches,
+  takePortalRoleNotice,
+} from "../systemAccess.js";
 
 (() => {
   const emailInput = document.getElementById("login-email");
@@ -16,6 +24,11 @@ import { auth, authReady, db, isFirebaseConfigured } from "../UserStudent/fireba
   const rememberMe = document.getElementById("remember-me");
   const rememberedEmailKey = "rememberedEmail_super_admin";
   let signInVerified = false;
+  const portalRoleNotice = takePortalRoleNotice();
+  if (portalRoleNotice) {
+    banner.textContent = portalRoleNotice;
+    banner.classList.add("show");
+  }
   const setInvalid = (id, invalid) =>
     document.getElementById(id).classList.toggle("invalid", invalid);
 
@@ -87,8 +100,16 @@ import { auth, authReady, db, isFirebaseConfigured } from "../UserStudent/fireba
           persistenceError?.code || "unknown",
         );
       }
-      const credential = await signInWithEmailAndPassword(auth, email, password);
+      const credential = await signInWithPendingEmailFallback(
+        auth,
+        db,
+        email,
+        password,
+        "superadmin",
+        profileCollectionsForRole("superadmin"),
+      );
       authenticated = true;
+      clearPortalProfileCaches();
       let profileSnapshot = await getDoc(doc(db, "adminUser", credential.user.uid));
       if (!profileSnapshot.exists()) {
         profileSnapshot = await getDoc(doc(db, "users", credential.user.uid));
@@ -109,6 +130,13 @@ import { auth, authReady, db, isFirebaseConfigured } from "../UserStudent/fireba
           code: "profile/role-mismatch",
         });
       }
+      await syncVerifiedProfileEmail(
+        auth,
+        db,
+        credential.user,
+        "superadmin",
+        profileCollectionsForRole("superadmin"),
+      );
 
       const authenticatedProfile = {
         ...profile,
@@ -135,15 +163,20 @@ import { auth, authReady, db, isFirebaseConfigured } from "../UserStudent/fireba
           });
         }
       }
+      clearPortalProfileCaches();
       console.error("[SuperAdminLogin] Sign-in/profile verification failed:", {
         code: error?.code || "unknown",
         message: error?.message || String(error),
       });
       banner.textContent =
-        error?.code?.startsWith("auth/")
+        error?.code === "portal/email-change-pending"
+          ? "If your email change is still pending, verify the new address and sign in with your current email until then."
+          : error?.code?.startsWith("auth/")
           ? ["auth/invalid-credential", "auth/wrong-password", "auth/user-not-found"].includes(error.code)
             ? "Incorrect email or password."
             : "Unable to sign in right now. Please try again."
+          : error?.code === "profile/role-mismatch"
+          ? "This account belongs to a different portal. Sign in through the correct portal."
           : "Your account could not be verified for the super administrator portal.";
       banner.classList.add("show");
     } finally {

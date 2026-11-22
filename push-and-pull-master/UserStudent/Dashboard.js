@@ -346,49 +346,184 @@ function getDashboardEventDetails(eventId, event) {
 }
 
 function getRegistrationDeadlineAt(event) {
-  const registrationEnd = event.registrationEnd || event.registrationDeadline || "";
-  const deadlineText = String(registrationEnd || "").trim();
-  return registrationEnd instanceof Date
-    ? registrationEnd.getTime()
-    : typeof registrationEnd?.toDate === "function"
-      ? registrationEnd.toDate().getTime()
-      : Number.isFinite(registrationEnd?.seconds)
-        ? registrationEnd.seconds * 1000
-        : typeof registrationEnd === "number"
-          ? registrationEnd
-          : deadlineText
-            ? Date.parse(
-                /^\d{4}-\d{2}-\d{2}$/.test(deadlineText)
-                  ? `${deadlineText}T23:59:59.999+08:00`
-                  : /^\d{4}-\d{2}-\d{2}[T ]\d{1,2}:\d{2}(?::\d{2}(?:\.\d+)?)?$/.test(deadlineText)
-                    ? `${deadlineText.replace(" ", "T")}+08:00`
-                    : deadlineText,
-              )
-            : NaN;
+  const closeTimeValue =
+    event.registrationCloseTime ??
+    event.registration_close_time ??
+    event.registrationEndTime ??
+    event.registration_end_time ??
+    "";
+  const closeTime = String(closeTimeValue || "").trim();
+  const hasCloseTime = closeTimeValue !== "" && closeTimeValue != null;
+  const closeTimeIsTimestamp = hasCloseTime &&
+    !/^\d{1,2}(?::\d{2}(?::\d{2}(?:\.\d+)?)?)?\s*(?:AM|PM)?$/i.test(closeTime);
+  const closeTimeParts = closeTime.match(
+    /^(\d{1,2})(?::(\d{2}))?(?::(\d{2})(?:\.\d+)?)?\s*(AM|PM)?$/i,
+  );
+  let closeHour = Number(closeTimeParts?.[1] || 23);
+  const closeMinute = closeTimeParts?.[2] || (closeTimeParts ? "00" : "59");
+  const closeSecond = closeTimeParts?.[3] || (closeTimeParts ? "00" : "59");
+  if (closeTimeParts?.[4]?.toUpperCase() === "PM" && closeHour < 12) closeHour += 12;
+  if (closeTimeParts?.[4]?.toUpperCase() === "AM" && closeHour === 12) closeHour = 0;
+  const closeTimeForDate = closeTimeParts
+    ? `${String(closeHour).padStart(2, "0")}:${closeMinute}:${closeSecond}`
+    : "23:59:59.999";
+  const deadlineFields = [
+    event.registrationDeadlineAt,
+    event.registration_deadline_at,
+    event.registrationCloseAt,
+    event.registration_close_at,
+    event.registrationEnd,
+    event.registration_end,
+    event.registrationDeadline,
+    event.registration_deadline,
+  ];
+  const dateFields = [
+    closeTimeIsTimestamp ? closeTimeValue : undefined,
+    event.registrationEndDate,
+    event.registration_end_date,
+    event.registrationCloseDate,
+    event.registration_close_date,
+  ];
+  const parseDeadline = (value) => {
+    if (value instanceof Date) return value.getTime();
+    if (typeof value?.toDate === "function") return value.toDate().getTime();
+    if (Number.isFinite(value?.seconds)) return value.seconds * 1000;
+    if (typeof value === "number") return value;
+    const text = String(value || "").trim();
+    if (!text) return NaN;
+    if (/^\d{4}-\d{2}-\d{2}$/.test(text)) {
+      return Date.parse(`${text}T${closeTimeForDate}+08:00`);
+    }
+    if (/^\d{4}-\d{2}-\d{2}[T ]\d{1,2}:\d{2}(?::\d{2}(?:\.\d+)?)?$/.test(text)) {
+      return Date.parse(`${text.replace(" ", "T")}+08:00`);
+    }
+    return Date.parse(text);
+  };
+  for (const value of [...deadlineFields, ...dateFields]) {
+    if (value === undefined || value === null || value === "") continue;
+    if (
+      closeTimeIsTimestamp &&
+      /^\d{4}-\d{2}-\d{2}$/.test(String(value).trim())
+    ) {
+      const timestamp = parseDeadline(closeTimeValue);
+      if (Number.isFinite(timestamp)) return timestamp;
+    }
+    const timestamp = parseDeadline(value);
+    if (Number.isFinite(timestamp)) return timestamp;
+  }
+  return NaN;
+}
+
+function normalizeRegistrationStatus(value) {
+  return String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[\s_-]+/g, " ");
+}
+
+function isClosedRegistrationStatus(value) {
+  const status = normalizeRegistrationStatus(value);
+  return [
+    "closed",
+    "registration closed",
+    "registration is closed",
+    "registration ended",
+    "expired",
+    "ended",
+    "disabled",
+    "not open",
+    "registration not open",
+    "not accepting registrations",
+  ].includes(status) || /\bregistration\b.*\bclosed\b/.test(status);
+}
+
+function isFullRegistrationStatus(value) {
+  return ["full", "fully booked", "sold out"].includes(
+    normalizeRegistrationStatus(value),
+  );
 }
 
 function getRegistrationBlockReason(event, now = getNow(), eventEndMs = event.endMs) {
   if (!systemAccessSettings.eventRegistrationEnabled) {
     return EVENT_REGISTRATION_CLOSED_MESSAGE;
   }
-  const status = String(event.status || event.publicationStatus || "")
-    .trim()
-    .toLowerCase();
+  const statuses = [
+    event.status,
+    event.eventStatus,
+    event.event_status,
+    event.publicationStatus,
+    event.publication_status,
+    event.registrationStatus,
+    event.registration_status,
+    event.registrationState,
+    event.registration_state,
+    event.registrationStatusLabel,
+    event.registration_status_label,
+    event.regStatus,
+    event.reg_status,
+    event.registrationAvailability,
+    event.registration_availability,
+    event.registrationLabel,
+    event.registration_label,
+    event.registration?.status,
+    event.registration?.state,
+    event.registration,
+    event.availability,
+  ];
   const deadlineAt = getRegistrationDeadlineAt(event);
+  const fullStatus = statuses.some(isFullRegistrationStatus);
+  const endedStatus = [
+    event.status,
+    event.eventStatus,
+    event.event_status,
+    event.publicationStatus,
+    event.publication_status,
+  ].some((value) =>
+    ["completed", "complete", "ended", "finished", "cancelled", "canceled"]
+      .includes(normalizeRegistrationStatus(value)),
+  );
+  const endAt = Number(eventEndMs);
   if (
     event.registrationClosed === true ||
+    event.registration_closed === true ||
+    event.isRegistrationClosed === true ||
+    event.registration === false ||
     event.registrationEnabled === false ||
-    status === "closed" ||
-    String(event.registrationStatus || "").trim().toLowerCase() === "closed" ||
-    ["cancelled", "canceled", "completed"].includes(status) ||
+    event.registration_enabled === false ||
+    event.isRegistrationOpen === false ||
+    event.is_registration_open === false ||
+    event.registrationOpen === false ||
+    event.registration_open === false ||
+    event.allowRegistration === false ||
+    event.allow_registration === false ||
+    statuses.some(isClosedRegistrationStatus) ||
+    endedStatus ||
     Number.isFinite(deadlineAt) && now > deadlineAt ||
-    Number.isFinite(eventEndMs) && eventEndMs > 0 && now >= eventEndMs
+    Number.isFinite(endAt) && endAt > 0 && now >= endAt
   ) {
     return "Registration Closed";
   }
-  const capacity = Number(event.capacity ?? event.maxCapacity ?? event.maxSlots ?? 0);
+  const capacity = Number(
+    event.capacity ?? event.maxCapacity ?? event.maxSlots ?? event.slots,
+  );
   const registeredCount = Math.max(0, Number(event.registeredCount) || 0);
-  return capacity > 0 && registeredCount >= capacity ? "Fully Booked" : "";
+  const remainingSlots = Number(
+    event.slotsOpen ??
+      event.availableSlots ??
+      event.slotsLeft ??
+      event.remainingSlots ??
+      event.slots_remaining,
+  );
+  const noCapacityLimit = event.capacityMode === "N/A";
+  return (
+    fullStatus ||
+    !noCapacityLimit && (
+      Number.isFinite(capacity) && capacity > 0 && registeredCount >= capacity ||
+      Number.isFinite(remainingSlots) && remainingSlots <= 0
+    )
+  )
+    ? "Fully Booked"
+    : "";
 }
 
 function highlightMatch(text, query) {
@@ -534,7 +669,24 @@ function normalizeEvent(id, data) {
   if (["event organizer", "not specified", "n/a"].includes(organizationName.toLowerCase())) {
     organizationName = "";
   }
-  const registrationEnd = data.registrationEnd || data.registrationDeadline || "";
+  const registrationEnd =
+    data.registrationDeadlineAt ??
+    data.registration_deadline_at ??
+    data.registrationEnd ??
+    data.registration_end ??
+    data.registrationDeadline ??
+    data.registration_deadline ??
+    data.registrationCloseAt ??
+    data.registration_close_at ??
+    data.registrationEndDate ??
+    data.registration_end_date ??
+    data.registrationCloseDate ??
+    data.registration_close_date ??
+    data.registrationCloseTime ??
+    data.registration_close_time ??
+    data.registrationEndTime ??
+    data.registration_end_time ??
+    "";
   const dateISO = calendarDateToISO(
     data.dateISO || data.eventDate || data.event_date || data.date ||
     data.startDate || data.start_date || data.dateStart || data.startDateTime ||
@@ -607,12 +759,74 @@ function normalizeEvent(id, data) {
     source,
     organizationName,
     registrationEnd,
-    registrationDeadline: data.registrationDeadline || registrationEnd,
+    registrationDeadline:
+      data.registrationDeadline || data.registration_deadline || registrationEnd,
     registrationDeadlineAt: getRegistrationDeadlineAt(data),
     registrationClosed:
       data.registrationClosed === true ||
+      data.registration_closed === true ||
+      data.isRegistrationClosed === true ||
+      data.registration === false ||
       data.registrationEnabled === false ||
-      String(data.registrationStatus || "").trim().toLowerCase() === "closed",
+      data.registration_enabled === false ||
+      data.isRegistrationOpen === false ||
+      data.is_registration_open === false ||
+      data.registrationOpen === false ||
+      data.registration_open === false ||
+      data.allowRegistration === false ||
+      data.allow_registration === false ||
+      [
+        data.registrationStatus,
+        data.registration_status,
+        data.registrationState,
+        data.registration_state,
+        data.registrationStatusLabel,
+        data.registration_status_label,
+        data.regStatus,
+        data.reg_status,
+        data.registrationAvailability,
+        data.registration_availability,
+        data.registrationLabel,
+        data.registration_label,
+        data.registration?.status,
+        data.registration?.state,
+        data.registration,
+      ].some(isClosedRegistrationStatus),
+    registrationStatus:
+      data.registrationStatus ||
+      data.registration_status ||
+      data.registrationState ||
+      data.registration_state ||
+      data.registrationStatusLabel ||
+      data.registration_status_label ||
+      data.regStatus ||
+      data.reg_status ||
+      data.registrationAvailability ||
+      data.registration_availability ||
+      data.registrationLabel ||
+      data.registration_label ||
+      data.registration?.status ||
+      data.registration?.state ||
+      data.registration ||
+      "",
+    registrationEnabled: data.registrationEnabled ?? data.registration_enabled,
+    isRegistrationOpen:
+      data.isRegistrationOpen ??
+      data.is_registration_open ??
+      data.registrationOpen ??
+      data.registration_open,
+    registrationCloseTime:
+      data.registrationCloseTime ||
+      data.registration_close_time ||
+      data.registrationEndTime ||
+      data.registration_end_time ||
+      "",
+    registrationEndDate:
+      data.registrationEndDate ||
+      data.registration_end_date ||
+      data.registrationCloseDate ||
+      data.registration_close_date ||
+      "",
     startAt: data.startAt || new Date(startMs).toISOString(),
     endAt: data.endAt || new Date(endMs).toISOString(),
     startMs: startMs,
@@ -621,9 +835,16 @@ function normalizeEvent(id, data) {
     endDateISO,
     status: String(
       data.status ||
+      data.eventStatus ||
+      data.event_status ||
       data.publicationStatus ||
+      data.publication_status ||
       (data.published === true || data.isPublished === true ? "published" : ""),
     ).trim().toLowerCase(),
+    eventStatus: data.eventStatus || "",
+    event_status: data.event_status || "",
+    publicationStatus: data.publicationStatus || "",
+    publication_status: data.publication_status || "",
     organizerUid: data.organizerUid || "",
     organizerName: data.organizerName || data.organizer || "Event Organizer",
     targetAudience: data.targetAudience || data.target_audience ||
@@ -711,8 +932,15 @@ function normalizeEvent(id, data) {
     creatorRole: data.creatorRole || data.createdByRole || "",
     eventSource: data.eventSource || "",
     organizer: data.organizer || "",
-    capacity: Number(data.capacity ?? data.maxCapacity ?? data.maxSlots ?? 0),
-    registeredCount: Number(data.registeredCount ?? 0),
+    capacity: Number(
+      data.capacity ?? data.maxCapacity ?? data.maxSlots ?? data.slots ?? 0,
+    ),
+    capacityMode: data.capacityMode || "",
+    registeredCount: Number(data.registeredCount ?? data.registered_count ?? 0),
+    slotsOpen: data.slotsOpen ?? data.slots_open,
+    availableSlots: data.availableSlots ?? data.available_slots,
+    slotsLeft: data.slotsLeft ?? data.slots_left,
+    remainingSlots: data.remainingSlots ?? data.remaining_slots,
     checkedInCount: Number(data.checkedInCount ?? 0),
     description: data.description || data.desc || "No additional description provided.",
     adminDocuments: data.adminDocuments || "",
@@ -767,6 +995,11 @@ function isFirestorePublishedEvent(data) {
 function normalizeFirestoreStudentEvent(documentSnapshot) {
   const data = documentSnapshot.data();
   if (!isFirestorePublishedEvent(data)) return null;
+  const rawStatus = String(data.status || "").trim().toLowerCase();
+  const preserveStatus =
+    ["approved", "published", "completed", "rescheduled"].includes(rawStatus) ||
+    isClosedRegistrationStatus(rawStatus) ||
+    isFullRegistrationStatus(rawStatus);
 
   const rawDate =
     data.eventDate ||
@@ -797,9 +1030,7 @@ function normalizeFirestoreStudentEvent(documentSnapshot) {
     endAt: timestampToIso(data.endAt),
     venue: data.venue || data.location || data.venueOther,
     description: data.eventDescription || data.description || data.desc,
-    status: ["approved", "published", "completed", "rescheduled"].includes(
-      String(data.status || "").trim().toLowerCase(),
-    )
+    status: preserveStatus
       ? data.status
       : "published",
     organizerUid: data.organizerUid || data.organizerId || data.createdBy || "",
@@ -807,11 +1038,27 @@ function normalizeFirestoreStudentEvent(documentSnapshot) {
 }
 
 function getEventClassification(ev, now) {
-  if (["completed", "cancelled", "canceled"].includes(ev.status) || now > ev.endMs) {
+  const statuses = [
+    ev.status,
+    ev.eventStatus,
+    ev.event_status,
+    ev.publicationStatus,
+    ev.publication_status,
+  ].map(normalizeRegistrationStatus);
+  if (
+    statuses.some((status) =>
+      ["completed", "complete", "ended", "finished", "cancelled", "canceled"].includes(status),
+    ) ||
+    !Number.isFinite(Number(ev.startMs)) ||
+    !Number.isFinite(Number(ev.endMs)) ||
+    now >= Number(ev.endMs)
+  ) {
     return "past";
   }
-  if (["approved", "published", "rescheduled"].includes(ev.status)) {
-    if (ev.startMs <= now && now <= ev.endMs) {
+  if (statuses.some((status) =>
+    ["approved", "published", "rescheduled", "ongoing", "active", "live"].includes(status),
+  )) {
+    if (ev.startMs <= now && now < ev.endMs) {
       return "live";
     }
     if (ev.startMs > now) {
@@ -819,6 +1066,13 @@ function getEventClassification(ev, now) {
     }
   }
   return "past";
+}
+
+function isEventJoinable(event, now = getNow()) {
+  return (
+    getEventClassification(event, now) === "upcoming" &&
+    !getRegistrationBlockReason(event, now)
+  );
 }
 
 /* ---------------------------------------------------------
@@ -1081,7 +1335,7 @@ function renderRecommended() {
       .filter(Boolean),
   );
   const upcoming = Array.from(rawEventsMap.values())
-    .filter((ev) => getEventClassification(ev, now) === "upcoming")
+    .filter((ev) => isEventJoinable(ev, now))
     .sort((a, b) => a.startMs - b.startMs);
   const matched = upcoming
     .filter((ev) =>

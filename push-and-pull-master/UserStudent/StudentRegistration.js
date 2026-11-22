@@ -10,6 +10,10 @@ import {
   setDoc,
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 import { auth, db, isFirebaseConfigured } from "./firebaseConfig.js";
+import {
+  normalizeStudentNumber,
+  studentNumberValidationMessage,
+} from "./studentIdentity.js";
 
 const form = document.getElementById("student-registration-form");
 const submitButton = document.getElementById("create-account");
@@ -35,7 +39,6 @@ const noMiddleNameBox = document.getElementById("no-middle-name");
 const namePattern = /^[\p{L}\p{M}]+(?:[ .'-][\p{L}\p{M}]+)*\.?$/u;
 const emailPattern =
   /^(?=.{1,254}$)(?!.*\.\.)[A-Z0-9!#$%&'*+/=?^_`{|}~-]+(?:\.[A-Z0-9!#$%&'*+/=?^_`{|}~-]+)*@(?:[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?\.)+[A-Z]{2,}$/i;
-const studentNumberPattern = /^\d{4}-(?!00000)\d{5}-BN-\d$/;
 const contactPattern = /^09[0-9]{9}$/;
 const yearPattern = /^[1-5]-[1-5]$/;
 const departmentOrganizationMap = Object.freeze({
@@ -123,30 +126,6 @@ function normalizePhone(value) {
   if (digits.startsWith("639")) return `0${digits.slice(2, 12)}`;
   if (digits.startsWith("9")) return `0${digits.slice(0, 10)}`;
   return `09${digits.replace(/^0+/, "").slice(0, 9)}`;
-}
-
-function normalizeStudentNumber(value) {
-  return String(value || "")
-    .replace(/\s/g, "")
-    .toUpperCase()
-    .slice(0, 15);
-}
-
-function studentNumberValidationMessage(value) {
-  const normalized = String(value || "").trim().toUpperCase();
-  if (!normalized) return "Student number is required.";
-  const parts = /^(\d{4})-(\d{5})-([A-Z]{2})-(\d)$/.exec(normalized);
-  if (!parts) return "Student number must follow the format 2025-12345-BN-0.";
-  const year = Number(parts[1]);
-  const currentYear = new Date().getFullYear();
-  if (year < 2000 || year > currentYear) {
-    return `Enter a valid year in the first 4 digits (2000 to ${currentYear}).`;
-  }
-  if (parts[2] === "00000") return "Enter a valid 5-digit student number.";
-  if (parts[3] !== "BN") return "Campus code must be BN (PUP Biñan).";
-  return studentNumberPattern.test(normalized)
-    ? ""
-    : "Student number must follow the format 2025-12345-BN-0.";
 }
 
 function normalizeWithCaret(control, normalize) {
@@ -520,7 +499,10 @@ Object.entries(fields).forEach(([name, control]) => {
     });
   } else {
     control.addEventListener("input", () => {
-      if (name === "studentId") studentNumberPasteError = "";
+      if (name === "studentId") {
+        studentNumberPasteError = "";
+        touchedFields.add(name);
+      }
       normalize();
       if (name === "password") updatePasswordChecklist();
       updateLiveValidation(name);

@@ -1,4 +1,17 @@
-(() => {
+import { auth, authReady, db } from "../UserStudent/firebaseConfig.js";
+import { verifyBeforeUpdateEmail } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
+import {
+  formatPhilippineMobile,
+  isValidPhilippineMobile,
+  mobileDigits,
+  profileCollectionsForRole,
+  savePendingProfileEmail,
+  saveProfileFields,
+  syncVerifiedProfileEmail,
+} from "../portalProfileAccount.js";
+
+(async () => {
+  await authReady;
   const storageKey = "recovibeAdminProfile";
   const fallback = {
     firstName: "",
@@ -27,10 +40,13 @@
     if (element) element.textContent = value || fallbackText;
   };
 
-  function showFeedback(message) {
+  function showFeedback(message, isError = false) {
     text("profileFeedbackText", message);
     const alert = document.getElementById("profileFeedbackAlert");
-    if (alert) alert.hidden = false;
+    if (alert) {
+      alert.classList.toggle("error", isError);
+      alert.hidden = false;
+    }
   }
 
   function saveProfile() {
@@ -120,7 +136,7 @@
   const contactEdit = document.getElementById("contactCardEdit");
   document.getElementById("btnEditContact")?.addEventListener("click", () => {
     document.getElementById("inputContactEmail").value = profile.email || "";
-    document.getElementById("inputContactPhone").value = profile.contactNumber || "";
+    document.getElementById("inputContactPhone").value = formatPhilippineMobile(profile.contactNumber || "");
     contactView.hidden = true;
     contactEdit.hidden = false;
   });
@@ -128,16 +144,71 @@
     contactEdit.hidden = true;
     contactView.hidden = false;
   });
-  contactEdit?.addEventListener("submit", (event) => {
+  const contactEmailInput = document.getElementById("inputContactEmail");
+  const contactPhoneInput = document.getElementById("inputContactPhone");
+  contactPhoneInput?.addEventListener("input", () => {
+    contactPhoneInput.value = formatPhilippineMobile(contactPhoneInput.value);
+  });
+  contactEdit?.addEventListener("submit", async (event) => {
     event.preventDefault();
-    profile.email = document.getElementById("inputContactEmail").value.trim().toLowerCase();
-    profile.contactNumber = document.getElementById("inputContactPhone").value.trim();
-    if (!profile.email) return;
-    saveProfile();
-    updateDisplay();
-    contactEdit.hidden = true;
-    contactView.hidden = false;
-    showFeedback("Contact details updated successfully.");
+    const email = contactEmailInput.value.trim().toLowerCase();
+    const phone = mobileDigits(contactPhoneInput.value);
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      showFeedback("Enter a valid email address.", true);
+      contactEmailInput.focus();
+      return;
+    }
+    if (!isValidPhilippineMobile(phone)) {
+      showFeedback("Enter a Philippine mobile number in 09XXXXXXXXX format.", true);
+      contactPhoneInput.focus();
+      return;
+    }
+
+    const authUser = auth?.currentUser;
+    if (!authUser?.uid || !db) {
+      showFeedback("Sign in again before updating your contact details.", true);
+      return;
+    }
+    const emailChanged = email !== String(profile.email || "").trim().toLowerCase();
+    const phoneChanged = phone !== mobileDigits(profile.contactNumber);
+    try {
+      if (emailChanged) {
+        await verifyBeforeUpdateEmail(authUser, email);
+        profile.pendingEmail = email;
+        localStorage.setItem(
+          `recovibe_pending_email_${authUser.uid}`,
+          JSON.stringify({ pendingEmail: email, oldEmail: profile.email, timestamp: Date.now() }),
+        );
+        await savePendingProfileEmail(
+          db,
+          authUser.uid,
+          "superadmin",
+          email,
+          profileCollectionsForRole("superadmin"),
+        );
+      }
+      if (phoneChanged) {
+        await saveProfileFields(
+          db,
+          authUser.uid,
+          "superadmin",
+          { contactNumber: phone },
+          profileCollectionsForRole("superadmin"),
+        );
+      }
+      profile.uid = authUser.uid;
+      profile.contactNumber = phone;
+      saveProfile();
+      updateDisplay();
+      contactEdit.hidden = true;
+      contactView.hidden = false;
+      showFeedback(emailChanged
+        ? "Verification was sent. Keep using your current email until you confirm the new address."
+        : "Contact details updated successfully.");
+    } catch (error) {
+      console.error("[SuperAdminProfile] Could not update contact details:", error);
+      showFeedback(error?.message || "Could not update contact details.", true);
+    }
   });
 
   const passwordModal = document.getElementById("passwordFormModal");
@@ -165,5 +236,35 @@
     updateDisplay();
     window.dispatchEvent(new Event("page-data-ready"));
   });
+  async function syncProfileEmail() {
+    const authUser = auth?.currentUser;
+    if (!authUser?.uid || !db) return;
+    try {
+      const result = await syncVerifiedProfileEmail(
+        auth,
+        db,
+        authUser,
+        "superadmin",
+        profileCollectionsForRole("superadmin"),
+      );
+      if (!result || auth?.currentUser?.uid !== authUser.uid) return;
+      profile.uid = authUser.uid;
+      profile.email = result.email;
+      if (result.pendingEmail) profile.pendingEmail = result.pendingEmail;
+      else delete profile.pendingEmail;
+      saveProfile();
+      updateDisplay();
+      if (result.changed) showFeedback("Email address verified and updated.");
+    } catch (error) {
+      console.warn("[SuperAdminProfile] Could not sync verified email:", error);
+    }
+  }
+  await syncProfileEmail();
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden) void syncProfileEmail();
+  });
   updateDisplay();
-})();
+  if (profile.pendingEmail) {
+    showFeedback(`Email change pending verification at ${profile.pendingEmail}. Keep using your current email until confirmed.`);
+  }
+})().catch((error) => console.error("[SuperAdminProfile] Could not initialize profile:", error));

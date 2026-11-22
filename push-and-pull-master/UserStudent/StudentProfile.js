@@ -8,10 +8,12 @@ import {
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
 import {
   collection,
+  deleteField,
   doc,
   getDoc,
   getDocs,
   query,
+  setDoc,
   updateDoc,
   where,
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
@@ -20,22 +22,27 @@ import {
   authReady,
   db,
   rtdb,
-  functions,
   isFirebaseConfigured,
   isRtdbConfigured,
 } from "./firebaseConfig.js";
-import { httpsCallable } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-functions.js";
 import { ref, onValue, off, set, update, push } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-database.js";
 import {
   clearCachedStudentProfile,
   loadStudentProfile,
   renderStudentSidebar,
+  syncVerifiedStudentEmail,
 } from "./studentIdentity.js";
 import {
   CORRECTION_FIELDS_BY_ROLE,
   submitCorrectionRequest,
   subscribeMyCorrectionRequests,
 } from "../correctionRequests.js";
+import {
+  formatPhilippineMobile,
+  isValidPhilippineMobile,
+  mobileDigits,
+  savePendingProfileEmail,
+} from "../portalProfileAccount.js";
 
 const DEFAULT_STUDENT = {};
 
@@ -54,28 +61,38 @@ function uniqueProfileValues(...values) {
 }
 
 function formatPhilippinePhone(raw) {
-  const digits = String(raw || "").replace(/\D/g, "");
-  let cleanDigits = digits;
-  if (digits.startsWith("639")) {
-    cleanDigits = "0" + digits.slice(2);
-  } else if (digits.startsWith("9")) {
-    cleanDigits = "0" + digits;
-  }
-  cleanDigits = cleanDigits.slice(0, 11);
-  if (cleanDigits.length <= 4) return cleanDigits;
-  if (cleanDigits.length <= 7) return `${cleanDigits.slice(0, 4)} ${cleanDigits.slice(4)}`;
-  return `${cleanDigits.slice(0, 4)} ${cleanDigits.slice(4, 7)} ${cleanDigits.slice(7, 11)}`;
+  return formatPhilippineMobile(raw);
 }
 
 function unformatPhone(formatted) {
-  const digits = String(formatted || "").replace(/\D/g, "");
-  if (digits.startsWith("639")) return "0" + digits.slice(2);
-  if (digits.startsWith("9")) return "0" + digits;
-  return digits.slice(0, 11);
+  return mobileDigits(formatted);
 }
 
 function normalizeStudentNumber(value) {
   return String(value || "").trim().toUpperCase();
+}
+
+function studentOrganization(profile = {}, fallbackProfile = {}) {
+  const departmentValues = [
+    profile.department,
+    profile.departmentCode,
+    profile.program,
+    profile.course,
+  ].map((value) => String(value || "").trim().toLowerCase()).filter(Boolean);
+  const organization = String(profile.organization || "").trim();
+  if (organization && !departmentValues.includes(organization.toLowerCase())) return organization;
+
+  const fallbackDepartmentValues = [
+    fallbackProfile.department,
+    fallbackProfile.departmentCode,
+    fallbackProfile.program,
+    fallbackProfile.course,
+  ].map((value) => String(value || "").trim().toLowerCase()).filter(Boolean);
+  const fallbackOrganization = String(fallbackProfile.organization || "").trim();
+  return fallbackOrganization &&
+    !fallbackDepartmentValues.includes(fallbackOrganization.toLowerCase())
+    ? fallbackOrganization
+    : "";
 }
 
 function hydrateUserProfile() {
@@ -121,7 +138,7 @@ function hydrateUserProfile() {
     .filter(Boolean)
     .map((part) => Array.from(String(part))[0]?.toUpperCase() || "")
     .join("");
-  const organization = String(user.organization || "").trim();
+  const organization = studentOrganization(user);
   const studentNo = normalizeStudentNumber(user.studentNumber || user.studentId);
   const yearSec = String(user.yearSection || user.year || "").replace(/^Year\s+/i, "").trim();
   const department = String(user.department || user.program || user.course || "").trim();
@@ -181,7 +198,8 @@ function hydrateUserProfile() {
   if (qrModalName) qrModalName.textContent = displayName;
 
   // Pending verification notice
-  const pendingRaw = localStorage.getItem("recovibe_pending_email_" + (user.uid || "me"));
+  const pendingRaw = localStorage.getItem("recovibe_pending_email_" + (user.uid || "me")) ||
+    (user.pendingEmail ? JSON.stringify({ pendingEmail: user.pendingEmail }) : "");
   const pendingBox = document.getElementById("pendingVerificationBox");
   if (pendingRaw) {
     try {
@@ -205,10 +223,11 @@ function hydrateUserProfile() {
   }
 }
 
-(() => {
+(async () => {
+  await authReady;
   hydrateUserProfile();
   const localUser = JSON.parse(localStorage.getItem("recovibeCurrentUser") || sessionStorage.getItem("recovibeCurrentUser") || "null");
-  const user =
+  let user =
     auth?.currentUser?.uid && localUser?.uid === auth.currentUser.uid
       ? { ...DEFAULT_STUDENT, ...localUser }
       : DEFAULT_STUDENT;
@@ -348,10 +367,10 @@ function hydrateUserProfile() {
   setText("profileContact", user.contactNumber || user.contact);
   setText("profileDepartment", department);
   setText("profileYear", user.year);
-  setText("profileOrganization", user.organization);
+  setText("profileOrganization", studentOrganization(user));
   setText("qrCardStudentName", storedName);
   setText("qrCardStudentNumber", normalizeStudentNumber(user.studentNumber || user.studentId));
-  setText("qrCardStudentOrg", user.organization);
+  setText("qrCardStudentOrg", studentOrganization(user));
   setText(
     "todayDate",
     new Date().toLocaleDateString("en-US", {
@@ -464,9 +483,11 @@ function hydrateUserProfile() {
      Feedback Alert Banner Controller
      ========================================================================== */
   let feedbackAlertTimer = null;
-  function showFeedbackAlert(message, isError = false) {
+  function showFeedbackAlert(message, isError = false, showProfileRetry = false) {
     const alertEl = document.getElementById("profileFeedbackAlert");
     const textEl = document.getElementById("profileFeedbackText");
+    const retryButton = document.getElementById("btnRetryProfileFetch");
+    if (retryButton) retryButton.hidden = !showProfileRetry;
     if (!alertEl || !textEl) {
       showToast(message, isError);
       return;
@@ -475,16 +496,33 @@ function hydrateUserProfile() {
     alertEl.classList.toggle("error", Boolean(isError));
     alertEl.hidden = false;
     if (feedbackAlertTimer) clearTimeout(feedbackAlertTimer);
+    if (showProfileRetry) {
+      feedbackAlertTimer = null;
+      return;
+    }
     feedbackAlertTimer = setTimeout(() => {
       alertEl.hidden = true;
       feedbackAlertTimer = null;
     }, 4000);
   }
 
-  document.getElementById("btnDismissFeedback")?.addEventListener("click", () => {
+  function clearProfileLoadFeedback() {
+    const retryButton = document.getElementById("btnRetryProfileFetch");
+    if (!retryButton || retryButton.hidden) return;
     const alertEl = document.getElementById("profileFeedbackAlert");
     if (alertEl) alertEl.hidden = true;
+    retryButton.hidden = true;
     if (feedbackAlertTimer) clearTimeout(feedbackAlertTimer);
+    feedbackAlertTimer = null;
+  }
+
+  document.getElementById("btnDismissFeedback")?.addEventListener("click", () => {
+    const alertEl = document.getElementById("profileFeedbackAlert");
+    const retryButton = document.getElementById("btnRetryProfileFetch");
+    if (alertEl) alertEl.hidden = true;
+    if (retryButton) retryButton.hidden = true;
+    if (feedbackAlertTimer) clearTimeout(feedbackAlertTimer);
+    feedbackAlertTimer = null;
   });
 
   /* ==========================================================================
@@ -493,12 +531,34 @@ function hydrateUserProfile() {
   const namePattern = /^[\p{L}\p{M}]+(?:[ .'-][\p{L}\p{M}]+)*\.?$/u;
   const emailPattern =
     /^(?=.{1,254}$)(?!.*\.\.)[A-Z0-9!#$%&'*+/=?^_`{|}~-]+(?:\.[A-Z0-9!#$%&'*+/=?^_`{|}~-]+)*@(?:[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?\.)+[A-Z]{2,}$/i;
-  const contactPattern = /^09[0-9]{9}$/;
-
   function isValidName(value) {
     const normalized = value.normalize("NFC");
     const length = Array.from(normalized).length;
-    return length >= 2 && length <= 50 && namePattern.test(normalized);
+    return length >= 1 && length <= 50 && namePattern.test(normalized);
+  }
+
+  function sanitizeNameValue(value) {
+    return value.replace(/[^\p{L}\p{M} .'-]/gu, "");
+  }
+
+  function sanitizeNameInput(input) {
+    const originalValue = input.value;
+    const selectionStart = input.selectionStart === null
+      ? originalValue.length
+      : input.selectionStart;
+    const selectionEnd = input.selectionEnd === null
+      ? selectionStart
+      : input.selectionEnd;
+    const safeBeforeStart = sanitizeNameValue(originalValue.slice(0, selectionStart));
+    const safeSelection = sanitizeNameValue(originalValue.slice(selectionStart, selectionEnd));
+    const sanitizedValue = sanitizeNameValue(originalValue);
+    if (sanitizedValue === originalValue) return;
+
+    input.value = sanitizedValue;
+    input.setSelectionRange(
+      safeBeforeStart.length,
+      safeBeforeStart.length + safeSelection.length,
+    );
   }
 
   function isValidEmail(value) {
@@ -588,9 +648,10 @@ function hydrateUserProfile() {
   const correctionSubmitStatus = document.getElementById("correctionSubmitStatus");
   const correctionRequestsContent = document.getElementById("correctionRequestsContent");
   const btnSendCorrection = document.getElementById("btnSendCorrection");
+  const correctionRequestsBatchSize = 3;
   let correctionRequests = [];
+  let correctionRequestsVisibleCount = correctionRequestsBatchSize;
   let correctionRequestsLoading = true;
-  let profilePageLoadSignaled = false;
   let correctionRequestsError = "";
   let correctionRequestsUnsubscribe = null;
   let correctionRequestsTimeout = null;
@@ -726,9 +787,15 @@ function hydrateUserProfile() {
         errFirstName.classList.add("is-visible");
         return false;
       }
+      if (/\d/.test(val)) {
+        inputFirstName.classList.add("is-invalid");
+        errFirstName.textContent = "Numbers are not allowed in name fields.";
+        errFirstName.classList.add("is-visible");
+        return false;
+      }
       if (!isValidName(val)) {
         inputFirstName.classList.add("is-invalid");
-        errFirstName.textContent = "Use 2–50 valid name characters.";
+        errFirstName.textContent = "Use letters, spaces, hyphens, periods, or apostrophes (up to 50 characters).";
         errFirstName.classList.add("is-visible");
         return false;
       }
@@ -745,9 +812,15 @@ function hydrateUserProfile() {
         errLastName.classList.add("is-visible");
         return false;
       }
+      if (/\d/.test(val)) {
+        inputLastName.classList.add("is-invalid");
+        errLastName.textContent = "Numbers are not allowed in name fields.";
+        errLastName.classList.add("is-visible");
+        return false;
+      }
       if (!isValidName(val)) {
         inputLastName.classList.add("is-invalid");
-        errLastName.textContent = "Use 2–50 valid name characters.";
+        errLastName.textContent = "Use letters, spaces, hyphens, periods, or apostrophes (up to 50 characters).";
         errLastName.classList.add("is-visible");
         return false;
       }
@@ -758,9 +831,15 @@ function hydrateUserProfile() {
     }
     if (field === "middleName") {
       const val = inputMiddleName.value.trim();
+      if (/\d/.test(val)) {
+        inputMiddleName.classList.add("is-invalid");
+        errMiddleName.textContent = "Numbers are not allowed in name fields.";
+        errMiddleName.classList.add("is-visible");
+        return false;
+      }
       if (val && !isValidName(val)) {
         inputMiddleName.classList.add("is-invalid");
-        errMiddleName.textContent = "Use 2–50 valid name characters.";
+        errMiddleName.textContent = "Use letters, spaces, hyphens, periods, or apostrophes (up to 50 characters).";
         errMiddleName.classList.add("is-visible");
         return false;
       }
@@ -823,9 +902,35 @@ function hydrateUserProfile() {
   btnEditName?.addEventListener("click", openNameEdit);
   nameCancelBtn?.addEventListener("click", cancelNameEdit);
 
-  [inputFirstName, inputMiddleName, inputLastName].forEach((inp) => {
-    if (!inp) return;
-    inp.addEventListener("input", () => {
+  [
+    { input: inputFirstName, field: "firstName" },
+    { input: inputMiddleName, field: "middleName" },
+    { input: inputLastName, field: "lastName" },
+  ].forEach(({ input, field }) => {
+    if (!input) return;
+    input.addEventListener("keydown", (event) => {
+      if (/^[0-9]$/.test(event.key)) event.preventDefault();
+    });
+    input.addEventListener("beforeinput", (event) => {
+      if (typeof event.data === "string" && /\d/.test(event.data)) {
+        event.preventDefault();
+      }
+    });
+    input.addEventListener("paste", (event) => {
+      const pastedValue = event.clipboardData?.getData("text");
+      if (typeof pastedValue !== "string") return;
+      event.preventDefault();
+      input.setRangeText(
+        sanitizeNameValue(pastedValue),
+        input.selectionStart,
+        input.selectionEnd,
+        "end",
+      );
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    input.addEventListener("input", () => {
+      sanitizeNameInput(input);
+      if (input.classList.contains("is-invalid")) validateNameField(field);
       updateNameDirtyUI();
     });
   });
@@ -864,37 +969,36 @@ function hydrateUserProfile() {
     const first = normalizeName(inputFirstName.value.trim());
     const mid = inputMiddleName.value.trim() ? normalizeName(inputMiddleName.value.trim()) : "";
     const last = normalizeName(inputLastName.value.trim());
+    if (/\d/.test(first) || /\d/.test(mid) || /\d/.test(last)) {
+      validateNameField("firstName");
+      validateNameField("middleName");
+      validateNameField("lastName");
+      return;
+    }
 
     nameSaveBtn.disabled = true;
     nameSaveBtn.textContent = "Saving...";
 
     try {
-      if (isFirebaseConfigured && rtdb && user.uid) {
-        await update(ref(rtdb, `users/${user.uid}`), {
-          firstName: first,
-          middleName: mid,
-          lastName: last,
-        });
-      }
       const fullName = [first, mid, last].filter(Boolean).join(" ");
+      const updatedNameFields = {
+        firstName: first,
+        middleName: mid,
+        lastName: last,
+        fullName,
+        name: fullName,
+      };
+      if (isFirebaseConfigured && rtdb && user.uid) {
+        await update(ref(rtdb, `users/${user.uid}`), updatedNameFields);
+      }
       if (isFirebaseConfigured && db && user.uid) {
-        await updateDoc(doc(db, "users", user.uid), {
-          firstName: first,
-          middleName: mid,
-          lastName: last,
-          fullName,
-          name: fullName,
-        });
+        await setDoc(doc(db, "users", user.uid), updatedNameFields, { merge: true });
       }
       savedState.firstName = first;
       savedState.middleName = mid;
       savedState.lastName = last;
 
-      user.firstName = first;
-      user.middleName = mid;
-      user.lastName = last;
-      user.fullName = fullName;
-      user.name = fullName;
+      user = { ...user, ...updatedNameFields };
       localStorage.setItem("recovibeCurrentUser", JSON.stringify(user));
 
       hydrateUserProfile();
@@ -928,7 +1032,7 @@ function hydrateUserProfile() {
   function validateContactField(field) {
     if (field === "phone") {
       const digits = unformatPhone(inputContactPhone.value);
-      if (!digits || !contactPattern.test(digits)) {
+      if (!digits || !isValidPhilippineMobile(digits)) {
         inputContactPhone.classList.add("is-invalid");
         errContactPhone.textContent = "Enter a valid 11-digit mobile number (e.g. 0912 345 6789).";
         errContactPhone.classList.add("is-visible");
@@ -1047,6 +1151,7 @@ function hydrateUserProfile() {
     contactSaveBtn.disabled = true;
     contactSaveBtn.textContent = "Saving...";
 
+    let pendingEmailSyncWarning = false;
     try {
       if (phoneChanged) {
         if (isFirebaseConfigured && rtdb && user.uid) {
@@ -1066,9 +1171,17 @@ function hydrateUserProfile() {
       }
 
       if (emailChanged) {
-        if (isFirebaseConfigured && auth && auth.currentUser) {
-          await verifyBeforeUpdateEmail(auth.currentUser, newEmail);
+        const signedInAuthUser = auth?.currentUser;
+        if (
+          !isFirebaseConfigured ||
+          !signedInAuthUser ||
+          signedInAuthUser.uid !== user.uid
+        ) {
+          throw new Error("Please sign in again before changing your email address.");
         }
+        await verifyBeforeUpdateEmail(signedInAuthUser, newEmail);
+        user.pendingEmail = newEmail;
+        savedState.pendingEmail = newEmail;
         localStorage.setItem(
           "recovibe_pending_email_" + (user.uid || "me"),
           JSON.stringify({
@@ -1077,12 +1190,25 @@ function hydrateUserProfile() {
             timestamp: Date.now(),
           })
         );
+        if (db && user.uid) {
+          try {
+            await savePendingProfileEmail(db, user.uid, "student", newEmail, ["users"]);
+          } catch (pendingEmailError) {
+            pendingEmailSyncWarning = true;
+            console.warn("Could not save pending email for sign-in fallback:", pendingEmailError);
+          }
+        }
       }
 
       localStorage.setItem("recovibeCurrentUser", JSON.stringify(user));
       hydrateUserProfile();
       closeContactEdit();
-      showFeedbackAlert("Contact details updated.");
+      showFeedbackAlert(
+        emailChanged
+          ? "Verification was sent. Sign in with your current email until the new address is confirmed."
+          : "Contact details updated.",
+        pendingEmailSyncWarning,
+      );
     } catch (err) {
       console.error("Failed to save contact:", err);
       if (err.code === "auth/email-already-in-use") {
@@ -1100,8 +1226,19 @@ function hydrateUserProfile() {
     }
   });
 
-  btnCancelEmailChange?.addEventListener("click", () => {
+  btnCancelEmailChange?.addEventListener("click", async () => {
     localStorage.removeItem("recovibe_pending_email_" + (user.uid || "me"));
+    sessionStorage.removeItem("recovibe_pending_email_" + (user.uid || "me"));
+    delete user.pendingEmail;
+    delete savedState.pendingEmail;
+    if (db && user.uid) {
+      try {
+        await updateDoc(doc(db, "users", user.uid), { pendingEmail: deleteField() });
+      } catch (error) {
+        console.warn("Could not clear pending email change:", error);
+      }
+    }
+    localStorage.setItem("recovibeCurrentUser", JSON.stringify(user));
     const pendingBox = document.getElementById("pendingVerificationBox");
     if (pendingBox) pendingBox.hidden = true;
     showFeedbackAlert("Email change cancelled.");
@@ -1161,23 +1298,23 @@ function hydrateUserProfile() {
     if (correctionRequestsError) {
       correctionRequestsContent.innerHTML = `<p class="cr-state" role="alert">${escapeCorrectionHtml(correctionRequestsError)}</p><button class="cr-retry-button" type="button" data-retry-correction-requests>Retry</button>`;
       updateCorrectionSubmitButton();
-      if (!profilePageLoadSignaled) {
-        profilePageLoadSignaled = true;
-        window.dispatchEvent(new Event("page-data-ready"));
-      }
       return;
     }
     if (!correctionRequests.length) {
       correctionRequestsContent.innerHTML = '<p class="cr-state">No correction requests yet.</p>';
       updateCorrectionSubmitButton();
-      if (!profilePageLoadSignaled) {
-        profilePageLoadSignaled = true;
-        window.dispatchEvent(new Event("page-data-ready"));
-      }
       return;
     }
 
-    correctionRequestsContent.innerHTML = correctionRequests.map((request) => {
+    correctionRequestsVisibleCount = Math.max(
+      correctionRequestsBatchSize,
+      Math.min(correctionRequestsVisibleCount, correctionRequests.length),
+    );
+    const visibleRequests = correctionRequests.slice(0, correctionRequestsVisibleCount);
+    const toggleButton = correctionRequests.length > correctionRequestsBatchSize
+      ? `<button class="cr-retry-button" type="button" data-toggle-correction-requests aria-expanded="${correctionRequestsVisibleCount >= correctionRequests.length}">${correctionRequestsVisibleCount >= correctionRequests.length ? "Show less" : "Load more"}</button>`
+      : "";
+    correctionRequestsContent.innerHTML = visibleRequests.map((request) => {
       const rawStatus = String(request.status || "").trim().toLowerCase();
       const status = rawStatus === "rejected"
         ? "rejected"
@@ -1203,13 +1340,9 @@ function hydrateUserProfile() {
         <p class="cr-request-date">${escapeCorrectionHtml(date)}</p>
         ${reviewerNote ? `<p class="cr-request-note"><strong>Reviewer note:</strong> ${escapeCorrectionHtml(reviewerNote)}</p>` : ""}
       </article>`;
-    }).join("");
+    }).join("") + toggleButton;
     updatePendingCorrectionFields();
     updateCorrectionSubmitButton();
-    if (!profilePageLoadSignaled) {
-      profilePageLoadSignaled = true;
-      window.dispatchEvent(new Event("page-data-ready"));
-    }
   }
 
   function updatePendingCorrectionFields() {
@@ -1244,6 +1377,7 @@ function hydrateUserProfile() {
     correctionUid = uid;
     correctionProfileData = profileData;
     correctionRequests = [];
+    correctionRequestsVisibleCount = correctionRequestsBatchSize;
     correctionRequestsLoading = true;
     correctionRequestsError = "";
     renderCorrectionRequests();
@@ -1346,6 +1480,16 @@ function hydrateUserProfile() {
   btnCancelCorrection?.addEventListener("click", closeCorrectionModalDialog);
   correctionModalBackdrop?.addEventListener("click", closeCorrectionModalDialog);
   correctionRequestsContent?.addEventListener("click", (event) => {
+    if (event.target.closest("[data-toggle-correction-requests]")) {
+      correctionRequestsVisibleCount = correctionRequestsVisibleCount >= correctionRequests.length
+        ? correctionRequestsBatchSize
+        : Math.min(
+            correctionRequests.length,
+            correctionRequestsVisibleCount + correctionRequestsBatchSize,
+          );
+      renderCorrectionRequests();
+      return;
+    }
     if (event.target.closest("[data-retry-correction-requests]") && correctionUid && correctionProfileData) {
       startCorrectionRequests(correctionUid, correctionProfileData);
     }
@@ -1356,12 +1500,16 @@ function hydrateUserProfile() {
   });
   window.addEventListener("pageshow", (event) => {
     if (!event.persisted) return;
-    correctionPageActive = true;
-    if (correctionAuthUser?.uid && auth?.currentUser?.uid === correctionAuthUser.uid) {
-      startCorrectionRequests(correctionAuthUser.uid, correctionProfileData);
-    } else if (!auth?.currentUser) {
-      window.location.replace("StudentLogin.html");
-    }
+    authReady.then(() => {
+      correctionPageActive = true;
+      if (correctionAuthUser?.uid && auth?.currentUser?.uid === correctionAuthUser.uid) {
+        startCorrectionRequests(correctionAuthUser.uid, correctionProfileData);
+      } else if (!auth?.currentUser) {
+        window.location.replace("StudentLogin.html");
+      }
+    }).catch((error) => {
+      console.error("Could not restore the student profile session:", error);
+    });
   });
   window.addEventListener("student-correction-profile-ready", (event) => {
     const { uid, profile } = event.detail || {};
@@ -1484,10 +1632,15 @@ function hydrateUserProfile() {
           "firstName", "middleName", "lastName", "contactNumber",
           "studentNo", "yearSection", "department", "organization", "email"
         ].forEach((k) => {
-          if (val[k] !== undefined && val[k] !== user[k]) {
-            user[k] = val[k];
+          const nextValue = k === "email" && auth.currentUser.emailVerified
+            ? auth.currentUser.email
+            : k === "organization"
+              ? studentOrganization({ ...user, ...val }, user)
+              : val[k];
+          if (nextValue !== undefined && nextValue !== user[k]) {
+            user[k] = nextValue;
             if (savedState[k] !== undefined && activeEditCard === null) {
-              savedState[k] = val[k];
+              savedState[k] = nextValue;
             }
             changed = true;
           }
@@ -1511,24 +1664,42 @@ function hydrateUserProfile() {
     window.addEventListener("pagehide", stopUserRealtimeSync, { once: true });
   }
 
-  if (isFirebaseConfigured && auth) {
-    onAuthStateChanged(auth, async (authUser) => {
-      if (authUser && authUser.emailVerified && functions) {
-        const pendingRaw = localStorage.getItem("recovibe_pending_email_" + authUser.uid);
-        if (pendingRaw) {
-          try {
-            const syncEmailFn = httpsCallable(functions, "syncUserEmail");
-            await syncEmailFn();
-            localStorage.removeItem("recovibe_pending_email_" + authUser.uid);
-            user.email = authUser.email;
-            savedState.email = authUser.email;
-            localStorage.setItem("recovibeCurrentUser", JSON.stringify(user));
-            hydrateUserProfile();
-            showFeedbackAlert("Email address verified and updated.");
-          } catch (e) {
-            console.warn("syncUserEmail notice:", e);
-          }
+  let pendingEmailSyncPromise = null;
+  async function syncPendingVerifiedEmail(authUser) {
+    if (!authUser?.uid) return;
+    if (pendingEmailSyncPromise) return pendingEmailSyncPromise;
+    pendingEmailSyncPromise = (async () => {
+      try {
+        const syncResult = await syncVerifiedStudentEmail(authUser);
+        if (!syncResult || auth?.currentUser?.uid !== authUser.uid) return;
+        user.email = syncResult.email;
+        savedState.email = syncResult.email;
+        if (syncResult.pendingEmail) {
+          user.pendingEmail = syncResult.pendingEmail;
+          savedState.pendingEmail = syncResult.pendingEmail;
+        } else {
+          delete user.pendingEmail;
+          delete savedState.pendingEmail;
         }
+        localStorage.setItem("recovibeCurrentUser", JSON.stringify(user));
+        hydrateUserProfile();
+        if (syncResult.changed) showFeedbackAlert("Email address verified and updated.");
+      } catch (error) {
+        console.warn("Could not sync verified student email:", error);
+      } finally {
+        pendingEmailSyncPromise = null;
+      }
+    })();
+    return pendingEmailSyncPromise;
+  }
+
+  if (isFirebaseConfigured && auth) {
+    onAuthStateChanged(auth, (authUser) => {
+      if (authUser) void syncPendingVerifiedEmail(authUser);
+    });
+    document.addEventListener("visibilitychange", () => {
+      if (!document.hidden && auth.currentUser) {
+        void syncPendingVerifiedEmail(auth.currentUser);
       }
     });
   }
@@ -1745,6 +1916,9 @@ function hydrateUserProfile() {
 
       try {
         if (auth) {
+          if (auth.currentUser) {
+            await syncPendingVerifiedEmail(auth.currentUser);
+          }
           const { signOut } = await import(
             "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js"
           );
@@ -2166,17 +2340,7 @@ function getStudentQrData(profile = {}, authUser = auth?.currentUser) {
     throw new Error("Your student account could not be identified. Please sign in again.");
   }
 
-  const organizationValue =
-    profile.organization ||
-    profile.courseOrganization ||
-    profile.courseOrg ||
-    profile.organizationCode ||
-    profile.organizationName ||
-    registration.organization ||
-    (Array.isArray(profile.StudentOrgs) ? profile.StudentOrgs[0] : "");
-  const organization = typeof organizationValue === "string" || typeof organizationValue === "number"
-    ? String(organizationValue).trim()
-    : "";
+  const organization = studentOrganization(profile);
   const storedName = String(profile.name || profile.fullName || "").trim();
   const fullName = storedName || [
     profile.firstName,
@@ -2632,8 +2796,111 @@ function renderMyQr(canvas, options = {}) {
   window.addEventListener("pagehide", stopCheckedInWatchers, { once: true });
 
   // Connect Firebase Auth to populate Profile and refresh QR
+  let user = {};
   let profileAuthUid = "";
-  onAuthStateChanged(auth, async (authUser) => {
+  let profileLoadRequestId = 0;
+  let profileFeedbackTimer = null;
+
+  function getCachedProfileForUser(uid) {
+    for (const storage of [localStorage, sessionStorage]) {
+      try {
+        const cached = JSON.parse(storage.getItem("recovibeCurrentUser") || "null");
+        if (cached && typeof cached === "object" && cached.uid === uid) {
+          return cached;
+        }
+      } catch (error) {
+        console.warn("Could not read the cached student profile:", error);
+      }
+    }
+    return {};
+  }
+
+  function setProfileText(id, value, fallback = "Not provided") {
+    const element = document.getElementById(id);
+    if (element) element.textContent = String(value || "").trim() || fallback;
+  }
+
+  function clearProfileLoadFeedback() {
+    const alertEl = document.getElementById("profileFeedbackAlert");
+    const retryButton = document.getElementById("btnRetryProfileFetch");
+    if (alertEl) alertEl.hidden = true;
+    if (retryButton) retryButton.hidden = true;
+    if (profileFeedbackTimer) clearTimeout(profileFeedbackTimer);
+    profileFeedbackTimer = null;
+  }
+
+  function showProfileLoadFeedback(message) {
+    const alertEl = document.getElementById("profileFeedbackAlert");
+    const textEl = document.getElementById("profileFeedbackText");
+    const retryButton = document.getElementById("btnRetryProfileFetch");
+    if (!alertEl || !textEl) {
+      console.warn("Profile load status:", message);
+      return;
+    }
+    textEl.textContent = message;
+    alertEl.classList.add("error");
+    alertEl.hidden = false;
+    if (retryButton) retryButton.hidden = false;
+    if (profileFeedbackTimer) clearTimeout(profileFeedbackTimer);
+    profileFeedbackTimer = null;
+  }
+
+  function renderStudentProfileData(profile) {
+    const fullName = String(
+      profile.fullName ||
+        profile.name ||
+        [profile.firstName, profile.middleName, profile.lastName].filter(Boolean).join(" "),
+    ).trim();
+    const nameParts = fullName.split(/\s+/).filter(Boolean);
+    const firstName = String(profile.firstName || nameParts[0] || "").trim();
+    const middleName = String(
+      profile.middleName || (nameParts.length > 2 ? nameParts.slice(1, -1).join(" ") : ""),
+    ).trim();
+    const lastName = String(
+      profile.lastName || (nameParts.length > 1 ? nameParts.at(-1) : ""),
+    ).trim();
+    const studentNumber = normalizeStudentNumber(
+      profile.studentNumber || profile.studentNo || profile.studentId,
+    );
+    const department = profile.department || profile.program || profile.course;
+    const yearSection = profile.yearSection || profile.year;
+    const contact = profile.contactNumber || profile.contact;
+    const organization = studentOrganization(profile);
+
+    setProfileText("profileFirstName", firstName);
+    setProfileText("profileMiddleName", middleName);
+    setProfileText("profileLastName", lastName);
+    setProfileText("profileStudentId", studentNumber);
+    setProfileText("profileEmail", profile.email);
+    setProfileText("profileContact", contact);
+    setProfileText("profileDepartment", department);
+    setProfileText("profileYear", yearSection);
+    setProfileText("profileOrganization", organization);
+    setProfileText("viewFirstName", firstName);
+    setProfileText("viewLastName", lastName);
+    setProfileText("viewEmail", profile.email);
+    setProfileText("viewContact", formatPhilippinePhone(contact));
+    setProfileText("viewStudentNumber", studentNumber);
+    setProfileText("viewYearSection", yearSection);
+    setProfileText("viewDepartment", department);
+    setProfileText("viewOrganization", organization);
+
+    const middleNameView = document.getElementById("viewMiddleName");
+    if (middleNameView) {
+      if (middleName) {
+        middleNameView.textContent = middleName;
+      } else {
+        middleNameView.innerHTML = '<span class="empty-muted">Not set</span>';
+      }
+    }
+
+    if (fullName) setProfileText("heroUserName", fullName);
+    renderStudentSidebar(profile);
+    updateStudentCardInfo(profile);
+  }
+
+  async function loadAuthenticatedStudentProfile(authUser) {
+    const requestId = ++profileLoadRequestId;
     stopCheckedInWatchers();
     if (!authUser) {
       window.dispatchEvent(new Event("student-correction-signed-out"));
@@ -2650,18 +2917,63 @@ function renderMyQr(canvas, options = {}) {
       return;
     }
     profileAuthUid = authUser.uid;
+    const profileMain = document.getElementById("profileMain");
+    const cachedProfile = user.uid === authUser.uid
+      ? user
+      : getCachedProfileForUser(authUser.uid);
+    const cachedName = String(
+      cachedProfile.fullName ||
+        cachedProfile.name ||
+        [cachedProfile.firstName, cachedProfile.middleName, cachedProfile.lastName]
+          .filter(Boolean)
+          .join(" "),
+    ).trim();
+    const fallbackName = cachedName || String(authUser.displayName || "").trim();
+    const fallbackNameParts = fallbackName.split(/\s+/).filter(Boolean);
+    const fallbackProfile = {
+      ...cachedProfile,
+      uid: authUser.uid,
+      email: cachedProfile.email || authUser.email || "",
+      organization: studentOrganization(cachedProfile),
+      fullName: fallbackName,
+      name: fallbackName,
+      firstName: cachedProfile.firstName || fallbackNameParts[0] || "",
+      middleName: cachedProfile.middleName ||
+        (fallbackNameParts.length > 2 ? fallbackNameParts.slice(1, -1).join(" ") : ""),
+      lastName: cachedProfile.lastName ||
+        (fallbackNameParts.length > 1 ? fallbackNameParts.at(-1) : ""),
+    };
+    user = { ...fallbackProfile };
+    renderStudentProfileData(fallbackProfile);
+    clearProfileLoadFeedback();
+    profileMain?.removeAttribute("hidden");
+    window.dispatchEvent(new Event("page-data-ready"));
+    const profileLoadWarningTimer = setTimeout(() => {
+      if (requestId === profileLoadRequestId) {
+        showProfileLoadFeedback(
+          "Showing available profile details while the latest profile data loads.",
+        );
+      }
+    }, 8000);
     if (!db) {
+      clearTimeout(profileLoadWarningTimer);
       window.dispatchEvent(new Event("student-correction-unavailable"));
+      showProfileLoadFeedback("Showing available profile details. The profile service is unavailable.");
       return;
     }
 
     try {
       const profileData = await loadStudentProfile(authUser);
-      if (auth.currentUser?.uid !== profileAuthUid) return;
+      if (
+        requestId !== profileLoadRequestId ||
+        auth.currentUser?.uid !== profileAuthUid
+      ) return;
+      clearTimeout(profileLoadWarningTimer);
       const merged = {
         ...profileData,
         uid: authUser.uid,
         email: profileData.email || authUser.email || "",
+        organization: studentOrganization(profileData, user),
         studentNumber: normalizeStudentNumber(profileData.studentNumber || profileData.studentId),
         studentId: normalizeStudentNumber(profileData.studentNumber || profileData.studentId),
         StudentOrgs: uniqueProfileValues(
@@ -2681,34 +2993,36 @@ function renderMyQr(canvas, options = {}) {
           profileData.program,
         ),
       };
+      user = { ...user, ...merged };
       hydrateUserProfile();
-      const setText = (id, val) => {
-        const el = document.getElementById(id);
-        if (el) el.textContent = String(val || "").trim() || "Not provided";
-      };
-      const sName = String(merged.fullName || merged.name || "").trim();
-      const nParts = sName.split(/\s+/).filter(Boolean);
-      setText("profileFirstName", merged.firstName || nParts[0] || "");
-      setText("profileMiddleName", merged.middleName || (nParts.length > 2 ? nParts.slice(1, -1).join(" ") : ""));
-      setText("profileLastName", merged.lastName || (nParts.length > 1 ? nParts.at(-1) : ""));
-      setText("profileStudentId", normalizeStudentNumber(merged.studentNumber || merged.studentId));
-      setText("profileEmail", merged.email);
-      setText("profileContact", merged.contactNumber || merged.contact);
-      setText("profileDepartment", merged.department || merged.program || merged.course);
-      setText("profileYear", merged.year);
-      setText("profileOrganization", merged.organization);
-      updateStudentCardInfo(merged);
+      clearProfileLoadFeedback();
+      renderStudentProfileData(merged);
       window.dispatchEvent(new CustomEvent("student-correction-profile-ready", {
         detail: { uid: authUser.uid, profile: merged },
       }));
-      document.getElementById("profileMain")?.removeAttribute("hidden");
+      profileMain?.removeAttribute("hidden");
+      window.dispatchEvent(new Event("page-data-ready"));
       initCardQr();
       setupCheckedInWatcher();
     } catch (err) {
+      if (requestId !== profileLoadRequestId) return;
+      clearTimeout(profileLoadWarningTimer);
       console.error("Could not load the signed-in student profile:", err);
-      clearCachedStudentProfile();
-      window.location.replace("StudentLogin.html");
+      showProfileLoadFeedback("Showing available profile details. The latest profile could not be loaded.");
+      window.dispatchEvent(new Event("student-correction-unavailable"));
     }
+  }
+
+  onAuthStateChanged(auth, (authUser) => {
+    loadAuthenticatedStudentProfile(authUser);
+  });
+  window.addEventListener("page-data-retry", () => {
+    const authUser = auth?.currentUser;
+    if (authUser) loadAuthenticatedStudentProfile(authUser);
+  });
+  document.getElementById("btnRetryProfileFetch")?.addEventListener("click", () => {
+    const authUser = auth?.currentUser;
+    if (authUser) loadAuthenticatedStudentProfile(authUser);
   });
 
   // Modal Component Setup (Task 2)

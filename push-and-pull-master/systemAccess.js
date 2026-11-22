@@ -7,6 +7,20 @@ import {
 
 const ACCESS_SETTINGS_PATH = ["systemSettings", "default"];
 const MAINTENANCE_NOTICE_KEY = "recovibeMaintenanceNotice";
+const PORTAL_ROLE_NOTICE_KEY = "recovibePortalRoleNotice";
+const PORTAL_PROFILE_CACHE_KEYS = [
+  "recovibeCurrentUser",
+  "recovibeCurrentTeacher",
+  "recovibeTeacher",
+  "recovibeTeacherId",
+  "recovibeCurrentOrganizer",
+  "recovibeOrganizer",
+  "recovibeOrganizerProfile",
+  "recovibeOrganizerId",
+  "recovibeAdminProfile",
+  "recovibeAdminId",
+  "recovibeSuperAdminProfile",
+];
 const DEFAULT_MAINTENANCE_MESSAGE =
   "System maintenance is in progress. Sign-in is temporarily unavailable. Please try again later.";
 export const EVENT_REGISTRATION_CLOSED_MESSAGE =
@@ -83,6 +97,35 @@ export function takeMaintenanceNotice() {
   }
 }
 
+export function takePortalRoleNotice() {
+  try {
+    const message = sessionStorage.getItem(PORTAL_ROLE_NOTICE_KEY);
+    if (message) sessionStorage.removeItem(PORTAL_ROLE_NOTICE_KEY);
+    return message || "";
+  } catch (error) {
+    console.warn("[PortalRole] Could not read the portal notice:", {
+      code: error?.code || "unknown",
+      message: error?.message || String(error),
+    });
+    return "";
+  }
+}
+
+export function clearPortalProfileCaches() {
+  for (const storageName of ["localStorage", "sessionStorage"]) {
+    try {
+      const storage = window[storageName];
+      PORTAL_PROFILE_CACHE_KEYS.forEach((key) => storage.removeItem(key));
+    } catch (error) {
+      console.warn("[PortalRole] Could not clear cached portal profiles:", {
+        storage: storageName,
+        code: error?.code || "unknown",
+        message: error?.message || String(error),
+      });
+    }
+  }
+}
+
 function normalizeRole(profile) {
   return String(profile?.role || profile?.userRole || "")
     .trim()
@@ -94,39 +137,45 @@ async function getAccountRole(db, uid) {
   const reads = await Promise.allSettled([
     getDoc(doc(db, "adminUser", uid)),
     getDoc(doc(db, "users", uid)),
+    getDoc(doc(db, "students", uid)),
     getDoc(doc(db, "eventOrganizations", uid)),
   ]);
   const snapshots = reads.map((result) =>
     result.status === "fulfilled" ? result.value : null,
   );
-  const profiles = snapshots.slice(0, 2)
+  const profiles = snapshots.slice(0, 3)
     .filter((snapshot) => snapshot?.exists())
     .map((snapshot) => snapshot.data());
   const roles = profiles.map(normalizeRole).filter(Boolean);
   if (roles.some((role) => ["superadmin", "superadministrator"].includes(role))) {
     return "superadmin";
   }
-
-  const role = roles.find((value) =>
-    [
-      "admin",
-      "eventorganizer",
-      "organizer",
-      "eo",
-      "student",
-      "teacher",
-      "faculty",
-      "adviser",
-    ].includes(value),
-  );
-  if (role) {
-    if (role === "organizer" || role === "eo") return "eventorganizer";
-    if (role === "faculty" || role === "adviser") return "teacher";
-    return role;
+  const rolePriorities = [
+    { role: "admin", aliases: ["admin", "osas"] },
+    { role: "eventorganizer", aliases: ["eventorganizer", "organizer", "eo"] },
+    { role: "teacher", aliases: ["teacher", "teacheradviser", "faculty", "adviser"] },
+    { role: "student", aliases: ["student"] },
+  ];
+  for (const priority of rolePriorities) {
+    if (roles.some((role) => priority.aliases.includes(role))) return priority.role;
+  }
+  const userProfile = snapshots[1]?.exists() ? snapshots[1].data() : {};
+  const userHasStudentNumber = [
+    userProfile.studentNumber,
+    userProfile.student_number,
+    userProfile.studentNo,
+    userProfile.student_no,
+    userProfile.studentId,
+  ].some((value) => String(value || "").trim());
+  if (
+    (snapshots[2]?.exists() && !normalizeRole(snapshots[2].data())) ||
+    (userHasStudentNumber && !normalizeRole(userProfile))
+  ) {
+    return "student";
   }
   if (
-    snapshots[2]?.exists() &&
-    String(snapshots[2].data()?.organizationCode || "").trim()
+    snapshots[3]?.exists() &&
+    String(snapshots[3].data()?.organizationCode || "").trim()
   ) {
     return "eventorganizer";
   }
@@ -135,12 +184,18 @@ async function getAccountRole(db, uid) {
   return "";
 }
 
+export function resolvePortalRole(db, uid) {
+  if (!db || !uid) return Promise.resolve("");
+  return getAccountRole(db, uid);
+}
+
 function loginPath(role) {
   const routes = {
     student: "UserStudent/StudentLogin.html",
     eventorganizer: "UserEventOrganizer/EventOrganizerLogin.html",
     admin: "UserAdmin/AdminLogin.html",
     teacher: "UserTeacher/TeacherLogin.html",
+    superadmin: "UserSuperAdmin/SuperAdminLogin.html",
   };
   const route = routes[role] || routes.student;
   const pagePath = window.location.pathname;
@@ -149,6 +204,224 @@ function loginPath(role) {
   );
   const appRoot = sectionMatch ? pagePath.slice(0, sectionMatch.index) : "";
   return `${appRoot}/${route}`;
+}
+
+const PORTAL_CONTEXTS = [
+  {
+    directory: "UserStudent",
+    role: "student",
+    label: "Student",
+    home: "Dashboard.html",
+    login: "StudentLogin.html",
+  },
+  {
+    directory: "UserEventOrganizer",
+    role: "eventorganizer",
+    label: "Event Organizer",
+    home: "EventOrganizerDashBoard.html",
+    login: "EventOrganizerLogin.html",
+  },
+  {
+    directory: "UserTeacher",
+    role: "teacher",
+    label: "Teacher",
+    home: "TeacherDashBoard.html",
+    login: "TeacherLogin.html",
+  },
+  {
+    directory: "UserAdmin",
+    role: "admin",
+    label: "Admin",
+    home: "AdminDashboard.html",
+    login: "AdminLogin.html",
+  },
+  {
+    directory: "UserSuperAdmin",
+    role: "superadmin",
+    label: "Super Admin",
+    home: "SuperAdminDashboard.html",
+    login: "SuperAdminLogin.html",
+  },
+];
+
+function currentPortalContext() {
+  const pathname = window.location.pathname;
+  const match = pathname.match(
+    /\/(UserStudent|UserEventOrganizer|UserTeacher|UserAdmin|UserSuperAdmin)\//i,
+  );
+  if (!match) return null;
+  const context = PORTAL_CONTEXTS.find(
+    (item) => item.directory.toLowerCase() === match[1].toLowerCase(),
+  );
+  const filename = pathname.slice(pathname.lastIndexOf("/") + 1);
+  if (
+    !context ||
+    /(?:Login|ForgetPassword|PasswordReset|Password-Reset|password-reset-request|Registration)\.html$/i.test(filename)
+  ) {
+    return null;
+  }
+  return {
+    ...context,
+    appRoot: pathname.slice(0, match.index),
+  };
+}
+
+function roleLabel(role) {
+  return PORTAL_CONTEXTS.find((context) => context.role === role)?.label || "another";
+}
+
+function showPortalRoleNotice(message) {
+  if (!message || !document.body) return;
+  const notice = document.createElement("div");
+  notice.setAttribute("role", "status");
+  notice.textContent = message;
+  Object.assign(notice.style, {
+    position: "fixed",
+    top: "16px",
+    left: "50%",
+    transform: "translateX(-50%)",
+    zIndex: "2147483647",
+    maxWidth: "min(92vw, 680px)",
+    padding: "12px 18px",
+    borderRadius: "10px",
+    background: "#fff8e6",
+    color: "#342500",
+    boxShadow: "0 6px 24px rgba(0,0,0,.2)",
+    font: "500 14px/1.45 system-ui, sans-serif",
+  });
+  document.body.append(notice);
+  window.setTimeout(() => notice.remove(), 8000);
+}
+
+function createPortalRoleGate() {
+  const gate = document.createElement("div");
+  gate.setAttribute("role", "status");
+  gate.textContent = "Verifying your portal account...";
+  Object.assign(gate.style, {
+    position: "fixed",
+    inset: "0",
+    zIndex: "2147483646",
+    display: "grid",
+    placeItems: "center",
+    padding: "24px",
+    background: "#f8f6f2",
+    color: "#342500",
+    font: "600 16px/1.5 system-ui, sans-serif",
+    textAlign: "center",
+  });
+  (document.body || document.documentElement).append(gate);
+  return gate;
+}
+
+function portalDestination(context, page) {
+  return `${context.appRoot}/${context.directory}/${page}`;
+}
+
+export function startPortalRoleGuard(auth, db) {
+  if (!auth || !db || typeof window === "undefined") return;
+  const context = currentPortalContext();
+  if (!context) return;
+
+  const gate = createPortalRoleGate();
+  let active = true;
+  let redirecting = false;
+
+  const redirectForRole = async (
+    user,
+    actualRole,
+    message,
+    destination,
+    signOutUnverified = true,
+  ) => {
+    if (redirecting || !active) return;
+    redirecting = true;
+    try {
+      sessionStorage.setItem(PORTAL_ROLE_NOTICE_KEY, message);
+    } catch (error) {
+      console.warn("[PortalRole] Could not save the portal notice:", {
+        code: error?.code || "unknown",
+        message: error?.message || String(error),
+      });
+    }
+    if (
+      signOutUnverified &&
+      !actualRole &&
+      user &&
+      auth.currentUser?.uid === user.uid
+    ) {
+      try {
+        await signOut(auth);
+      } catch (error) {
+        console.error("[PortalRole] Could not sign out an unverified session:", {
+          code: error?.code || "unknown",
+          message: error?.message || String(error),
+        });
+      }
+    }
+    if (active) window.location.replace(destination);
+  };
+
+  const unsubscribe = onAuthStateChanged(auth, async (user) => {
+    if (!active || redirecting) return;
+    if (!user) {
+      await redirectForRole(
+        null,
+        "",
+        `Sign in to access the ${context.label} Portal.`,
+        portalDestination(context, context.login),
+      );
+      return;
+    }
+
+    try {
+      const actualRole = await getAccountRole(db, user.uid);
+      if (!active || auth.currentUser?.uid !== user.uid) return;
+      if (actualRole !== context.role) {
+        if (actualRole) {
+          const destinationContext = PORTAL_CONTEXTS.find(
+            (item) => item.role === actualRole,
+          );
+          const message = `You are signed in as ${roleLabel(actualRole)}. The ${context.label} Portal was blocked; opening your ${roleLabel(actualRole)} Portal instead.`;
+          await redirectForRole(
+            user,
+            actualRole,
+            message,
+            destinationContext
+              ? portalDestination(destinationContext, destinationContext.home)
+              : loginPath(actualRole),
+          );
+        } else {
+          await redirectForRole(
+            user,
+            "",
+            "This account does not have a recognized portal role. Sign in with an authorized account.",
+            portalDestination(context, context.login),
+          );
+        }
+        return;
+      }
+
+      gate.remove();
+      showPortalRoleNotice(takePortalRoleNotice());
+    } catch (error) {
+      console.error("[PortalRole] Could not verify the active account role:", {
+        code: error?.code || "unknown",
+        message: error?.message || String(error),
+      });
+      await redirectForRole(
+        user,
+        "",
+        "Your portal role could not be verified. The page was blocked; please try again.",
+        portalDestination(context, context.login),
+        false,
+      );
+    }
+  });
+
+  window.addEventListener("pagehide", () => {
+    active = false;
+    unsubscribe();
+  }, { once: true });
 }
 
 function cacheSettings(settings) {

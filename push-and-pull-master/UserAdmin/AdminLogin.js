@@ -2,7 +2,6 @@ import {
   browserLocalPersistence,
   browserSessionPersistence,
   setPersistence,
-  signInWithEmailAndPassword,
   signOut,
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
 import {
@@ -11,9 +10,16 @@ import {
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 import { auth, authReady, db, isFirebaseConfigured } from "../UserStudent/firebaseConfig.js";
 import {
+  profileCollectionsForRole,
+  signInWithPendingEmailFallback,
+  syncVerifiedProfileEmail,
+} from "../portalProfileAccount.js";
+import {
+  clearPortalProfileCaches,
   maintenanceMessage,
   readSystemAccessSettings,
   takeMaintenanceNotice,
+  takePortalRoleNotice,
 } from "../systemAccess.js";
 
 (() => {
@@ -67,13 +73,7 @@ import {
     document.getElementById(id).classList.toggle("invalid", invalid);
 
   function clearStoredProfiles() {
-    [
-      "recovibeAdminProfile",
-      "recovibeAdminId",
-      "recovibeOrganizerProfile",
-      "recovibeOrganizerId",
-      "recovibeCurrentUser",
-    ].forEach((key) => localStorage.removeItem(key));
+    clearPortalProfileCaches();
   }
 
   function showError(message) {
@@ -83,6 +83,8 @@ import {
 
   const maintenanceNotice = takeMaintenanceNotice();
   if (maintenanceNotice) showError(maintenanceNotice);
+  const portalRoleNotice = takePortalRoleNotice();
+  if (portalRoleNotice) showError(portalRoleNotice);
 
   function authErrorMessage(error) {
     switch (error?.code) {
@@ -93,6 +95,8 @@ import {
         return "Incorrect email or password.";
       case "auth/too-many-requests":
         return "Too many sign-in attempts. Please try again later.";
+      case "portal/email-change-pending":
+        return "If your email change is still pending, verify the new address and sign in with your current email until then.";
       default:
         return "Unable to sign in right now. Please try again.";
     }
@@ -109,6 +113,7 @@ import {
     const priorities = [
       { role: "Super Admin", normalized: "superadmin" },
       { role: "Admin", normalized: "admin" },
+      { role: "Admin", normalized: "osas" },
       { role: "Event Organizer", normalized: "eventorganizer" },
       { role: "Student", normalized: "student" },
     ];
@@ -224,16 +229,21 @@ import {
           persistenceError?.code || "unknown",
         );
       }
-      const credential = await signInWithEmailAndPassword(
+      const credential = await signInWithPendingEmailFallback(
         auth,
+        db,
         normalizedEmail,
         password,
+        "all",
+        profileCollectionsForRole("all"),
       );
       authenticated = true;
       const profileRecord = await findProfile(credential.user.uid);
 
       if (!profileRecord) {
         await signOut(auth);
+        authenticated = false;
+        clearPortalProfileCaches();
         showError(
           `Your account signed in, but no profile was found for UID ${credential.user.uid}. Contact an administrator.`,
         );
@@ -241,20 +251,39 @@ import {
       }
 
       const profile = profileRecord.data;
+      const role = profileRecord.resolvedRole;
+      const normalizedRole = normalizeRole(role);
+      if (!["admin", "osas"].includes(normalizedRole)) {
+        await signOut(auth);
+        authenticated = false;
+        clearPortalProfileCaches();
+        showError(
+          `This account belongs to the ${role || "another"} portal. Use the matching portal sign-in page.`,
+        );
+        return;
+      }
       if (String(profile.status || "").trim().toLowerCase() === "suspended") {
         await signOut(auth);
+        authenticated = false;
+        clearPortalProfileCaches();
         showError("This account is suspended. Contact an administrator for help.");
         return;
       }
 
-      const role = profileRecord.resolvedRole;
-      const normalizedRole = normalizeRole(role);
-      const name = profileName(profile, normalizedEmail);
+      await syncVerifiedProfileEmail(
+        auth,
+        db,
+        credential.user,
+        "admin",
+        profileCollectionsForRole("admin"),
+      );
+      const authenticatedEmail = credential.user.email || normalizedEmail;
+      const name = profileName(profile, authenticatedEmail);
       const authenticatedProfile = {
         ...profile,
         uid: credential.user.uid,
         name,
-        email: normalizedEmail,
+        email: authenticatedEmail,
       };
 
       if (normalizedRole !== "superadmin") {
@@ -279,57 +308,15 @@ import {
         }
       }
 
-      if (normalizedRole === "superadmin") {
-        localStorage.setItem(
-          "recovibeAdminProfile",
-          JSON.stringify({ ...authenticatedProfile, role: "Super Admin" }),
-        );
-        localStorage.setItem("recovibeAdminId", normalizedEmail);
-        saveRememberedEmail(normalizedEmail);
-        signInVerified = true;
-        window.location.assign("../UserSuperAdmin/SuperAdminDashboard.html");
-        return;
-      }
-
-      if (normalizedRole === "admin") {
-        localStorage.setItem(
-          "recovibeAdminProfile",
-          JSON.stringify({ ...authenticatedProfile, role: "Admin" }),
-        );
-        localStorage.setItem("recovibeAdminId", normalizedEmail);
-        saveRememberedEmail(normalizedEmail);
-        signInVerified = true;
-        window.location.assign("AdminDashboard.html");
-        return;
-      }
-
-      if (normalizedRole === "eventorganizer") {
-        localStorage.setItem(
-          "recovibeOrganizerProfile",
-          JSON.stringify({ ...authenticatedProfile, role: "Event Organizer" }),
-        );
-        localStorage.setItem("recovibeOrganizerId", normalizedEmail);
-        saveRememberedEmail(normalizedEmail);
-        signInVerified = true;
-        window.location.assign("../UserEventOrganizer/EventOrganizerDashBoard.html");
-        return;
-      }
-
-      if (normalizedRole === "student") {
-        localStorage.setItem(
-          "recovibeCurrentUser",
-          JSON.stringify({ ...authenticatedProfile, role: "Student" }),
-        );
-        saveRememberedEmail(normalizedEmail);
-        signInVerified = true;
-        window.location.assign("../UserStudent/Dashboard.html");
-        return;
-      }
-
-      await signOut(auth);
-      showError(
-        `This account is authenticated but its role (${role || "not set"}) cannot access this portal.`,
+      clearPortalProfileCaches();
+      localStorage.setItem(
+        "recovibeAdminProfile",
+        JSON.stringify({ ...authenticatedProfile, role: "Admin" }),
       );
+      localStorage.setItem("recovibeAdminId", authenticatedEmail);
+      saveRememberedEmail(authenticatedEmail);
+      signInVerified = true;
+      window.location.assign("AdminDashboard.html");
     } catch (error) {
       if (authenticated) {
         try {
@@ -342,7 +329,9 @@ import {
         code: error?.code || "unknown",
         message: error?.message || String(error),
       });
-      if (error?.code?.startsWith("auth/")) {
+      if (error?.code === "portal/email-change-pending") {
+        showError(authErrorMessage(error));
+      } else if (error?.code?.startsWith("auth/")) {
         showError(authErrorMessage(error));
       } else {
         showError(

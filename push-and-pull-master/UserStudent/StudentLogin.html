@@ -206,16 +206,16 @@
 
             <form id="student-login-form" novalidate>
               <div class="field" id="field-student-number">
-                <label for="student-number">Student number</label>
+                <label for="student-number">Student number or email</label>
                 <input
                   type="text"
                   id="student-number"
                   name="studentNumber"
-                  placeholder="2025-12345-BN-0"
+                  placeholder="2025-12345-BN-0 or name@example.com"
                   autocomplete="username"
-                  autocapitalize="characters"
+                  autocapitalize="none"
                   spellcheck="false"
-                  maxlength="16"
+                  maxlength="254"
                   aria-describedby="student-number-error"
                 />
                 <div class="error-msg" id="student-number-error" role="alert"></div>

@@ -2,15 +2,21 @@ import {
   browserLocalPersistence,
   browserSessionPersistence,
   setPersistence,
-  signInWithEmailAndPassword,
   signOut,
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
 import { doc, getDoc } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 import { auth, authReady, db, isFirebaseConfigured } from "../UserStudent/firebaseConfig.js";
 import {
+  profileCollectionsForRole,
+  signInWithPendingEmailFallback,
+  syncVerifiedProfileEmail,
+} from "../portalProfileAccount.js";
+import {
+  clearPortalProfileCaches,
   maintenanceMessage,
   readSystemAccessSettings,
   takeMaintenanceNotice,
+  takePortalRoleNotice,
 } from "../systemAccess.js";
 
 (() => {
@@ -24,6 +30,11 @@ import {
   const maintenanceNotice = takeMaintenanceNotice();
   if (maintenanceNotice) {
     banner.textContent = maintenanceNotice;
+    banner.classList.add("show");
+  }
+  const portalRoleNotice = takePortalRoleNotice();
+  if (portalRoleNotice) {
+    banner.textContent = portalRoleNotice;
     banner.classList.add("show");
   }
   const setInvalid = (id, invalid) =>
@@ -115,8 +126,16 @@ import {
           persistenceError?.code || "unknown",
         );
       }
-      const credential = await signInWithEmailAndPassword(auth, email, password);
+      const credential = await signInWithPendingEmailFallback(
+        auth,
+        db,
+        email,
+        password,
+        "teacher",
+        profileCollectionsForRole("teacher"),
+      );
       authenticated = true;
+      clearPortalProfileCaches();
       const profileSnapshot = await getDoc(
         doc(db, "adminUser", credential.user.uid),
       );
@@ -127,15 +146,22 @@ import {
       }
 
       const profile = profileSnapshot.data();
-      if (
-        String(profile.role || profile.userRole || "")
-          .trim()
-          .toLowerCase() !== "teacher"
-      ) {
+      const profileRole = String(profile.role || profile.userRole || "")
+        .trim()
+        .toLowerCase()
+        .replace(/[^a-z0-9]/g, "");
+      if (!["teacher", "teacheradviser", "faculty", "adviser"].includes(profileRole)) {
         throw Object.assign(new Error("Account is not a teacher account."), {
           code: "profile/role-mismatch",
         });
       }
+      await syncVerifiedProfileEmail(
+        auth,
+        db,
+        credential.user,
+        "teacher",
+        profileCollectionsForRole("teacher"),
+      );
       accessSettings = await readSystemAccessSettings(db);
       if (!accessSettings.userLoginEnabled) {
         await signOut(auth);
@@ -156,8 +182,8 @@ import {
           email.split("@")[0],
       };
       localStorage.setItem("recovibeCurrentTeacher", JSON.stringify(teacher));
-      localStorage.setItem("recovibeTeacherId", email);
-      saveRememberedEmail(email);
+      localStorage.setItem("recovibeTeacherId", credential.user.email || email);
+      saveRememberedEmail(credential.user.email || email);
       signInVerified = true;
       window.location.assign("TeacherDashBoard.html");
     } catch (error) {
@@ -171,12 +197,17 @@ import {
           });
         }
       }
+      clearPortalProfileCaches();
       console.error("[TeacherLogin] Sign-in/profile verification failed:", {
         code: error?.code || "unknown",
         message: error?.message || String(error),
       });
       banner.textContent =
-        error?.code?.startsWith("auth/")
+        error?.code === "portal/email-change-pending"
+          ? "If your email change is still pending, verify the new address and sign in with your current email until then."
+          : error?.code === "profile/role-mismatch"
+          ? "This account belongs to a different portal. Sign in through the correct portal."
+          : error?.code?.startsWith("auth/")
           ? ["auth/invalid-credential", "auth/wrong-password", "auth/user-not-found"].includes(error.code)
             ? "Incorrect email or password."
             : "Unable to sign in right now. Please try again."

@@ -1,5 +1,7 @@
 import { onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
 import {
+  arrayRemove,
+  arrayUnion,
   collection,
   collectionGroup,
   deleteDoc,
@@ -7,6 +9,7 @@ import {
   getDoc,
   onSnapshot,
   query,
+  setDoc,
   updateDoc,
   where,
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
@@ -28,13 +31,24 @@ import {
 } from "./studentIdentity.js";
 
 const DEBUG = false;
-const TWO_WEEKS = 14 * 24 * 60 * 60 * 1000;
 const ONE_DAY = 24 * 60 * 60 * 1000;
+const NOTIFICATION_RETENTION = 30 * ONE_DAY;
 const TRASH_LIFETIME = 30 * ONE_DAY;
 const STORAGE_PREFIX = "recovibeStudentNotifications:";
 const STUDENT_EVENT_STATUS_QUERY_VALUES = STUDENT_EVENT_STATUSES.filter(
   (status) => status !== "cancelled" && status !== "canceled",
-);
+).concat([
+  "registration closed",
+  "Registration Closed",
+  "registration_closed",
+  "registration ended",
+  "Registration Ended",
+  "closed",
+  "Closed",
+  "ended",
+  "finished",
+  "complete",
+]);
 const notificationRoot = document.getElementById("notificationMain");
 
 let currentUid = "";
@@ -49,7 +63,7 @@ let toastTimer = null;
 let undoDelete = null;
 let statusMessage = "";
 let pendingNotificationWrites = new Set();
-let state = { read: {}, deleted: {}, restored: {}, purged: {} };
+let state = { read: {}, deleted: {}, restored: {}, dismissed: {}, purged: {} };
 let unsubscribeAuth = null;
 let unsubscribeFirestore = [];
 let unsubscribeEvents = [];
@@ -175,14 +189,23 @@ function readState(uid) {
         toMillis(value?.deletedAt ?? value) >= cutoff,
       ),
     );
+    const savedDismissed = parsed?.dismissed && typeof parsed.dismissed === "object"
+      ? parsed.dismissed
+      : {};
     const savedPurged = parsed?.purged && typeof parsed.purged === "object"
       ? parsed.purged
       : {};
-    state = { read: savedRead, deleted, restored: savedRestored, purged: savedPurged };
+    state = {
+      read: savedRead,
+      deleted,
+      restored: savedRestored,
+      dismissed: savedDismissed,
+      purged: savedPurged,
+    };
     if (Object.keys(deleted).length !== Object.keys(savedDeleted).length) saveState();
   } catch (error) {
     debug("Could not read notification state:", error);
-    state = { read: {}, deleted: {}, restored: {}, purged: {} };
+    state = { read: {}, deleted: {}, restored: {}, dismissed: {}, purged: {} };
   }
 }
 
@@ -225,6 +248,63 @@ function saveState() {
   }
 }
 
+async function loadDismissedNotificationIds(uid) {
+  const profileRefs = ["users", "students"].map((collectionName) =>
+    doc(db, collectionName, uid),
+  );
+  const reads = await Promise.allSettled(profileRefs.map((profileRef) => getDoc(profileRef)));
+  const dismissedIds = new Set();
+  let successfulRead = false;
+  let foundProfileRecord = false;
+  reads.forEach((result) => {
+    if (result.status !== "fulfilled") {
+      console.warn("[Student Notifications] Could not load dismissed IDs from a profile record:", {
+        code: result.reason?.code || "unknown",
+      });
+      return;
+    }
+    successfulRead = true;
+    if (!result.value.exists()) return;
+    foundProfileRecord = true;
+    const ids = result.value.data()?.dismissedNotificationIds;
+    if (Array.isArray(ids)) ids.forEach((id) => dismissedIds.add(String(id)));
+  });
+  if (!successfulRead && reads.some((result) => result.status === "rejected")) {
+    throw reads.find((result) => result.status === "rejected").reason;
+  }
+  if (currentUid !== uid) return;
+  if (foundProfileRecord) state.dismissed = {};
+  dismissedIds.forEach((id) => {
+    state.dismissed[id] = true;
+  });
+  saveState();
+}
+
+async function persistDismissedNotificationId(id, dismissed) {
+  const profileRefs = ["users", "students"].map((collectionName) =>
+    doc(db, collectionName, currentUid),
+  );
+  const reads = await Promise.allSettled(profileRefs.map((profileRef) => getDoc(profileRef)));
+  const existingRefs = reads
+    .filter((result) => result.status === "fulfilled" && result.value.exists())
+    .map((result) => result.value.ref);
+  if (!existingRefs.length) {
+    const readError = reads.find((result) => result.status === "rejected");
+    throw readError?.reason || new Error("The Student profile record was not found.");
+  }
+  const transform = dismissed ? arrayUnion(id) : arrayRemove(id);
+  const writes = await Promise.allSettled(existingRefs.map((profileRef) =>
+    updateDoc(profileRef, { dismissedNotificationIds: transform }),
+  ));
+  const successfulWrites = writes.filter((result) => result.status === "fulfilled").length;
+  if (!successfulWrites) {
+    throw writes.find((result) => result.status === "rejected").reason;
+  }
+  if (successfulWrites !== writes.length) {
+    console.warn("[Student Notifications] Dismissal sync only succeeded for some profile records.");
+  }
+}
+
 function normalizedType(value, data = {}) {
   const type = `${value || ""} ${data.title || ""} ${data.status || ""} ${data.action || ""}`
     .trim()
@@ -248,6 +328,7 @@ function normalizeItem(id, data, source) {
     : undefined;
   return {
     ...data,
+    sourceData: data.sourceData || data,
     id: String(id),
     eventId: String(data.eventId || ""),
     title: String(data.title || data.eventTitle || data.eventName || "Notification"),
@@ -275,7 +356,12 @@ function isPublishedEvent(event) {
   );
   return statuses.includes("published") ||
     event?.published === true ||
-    event?.isPublished === true;
+    event?.isPublished === true ||
+    toMillis(event?.publishedAt) > 0 &&
+      statuses.some((status) =>
+        ["completed", "complete", "ended", "finished", "registrationclosed", "registrationended", "closed"]
+          .includes(status),
+      );
 }
 
 function eventTitle(event) {
@@ -336,11 +422,16 @@ function derivedItems() {
     const publishedAt = toMillis(event.publishedAt) ||
       toMillis(event.updatedAt) ||
       toMillis(event.createdAt);
+    const hasRecentPublishOrEventDate = [publishedAt, eventStartMillis(event)].some(
+      (timestamp) =>
+        timestamp > 0 &&
+        timestamp <= now &&
+        now - timestamp <= NOTIFICATION_RETENTION,
+    );
     if (
       isPublishedEvent(event) &&
       publishedAt &&
-      publishedAt <= now &&
-      now - publishedAt <= TWO_WEEKS &&
+      hasRecentPublishOrEventDate &&
       isEventVisibleToStudent({ ...event, id: eventId }, studentProfile)
     ) {
       const title = eventTitle(event);
@@ -446,7 +537,10 @@ function mergedItems() {
     }
   });
   return [...merged.values()]
-    .filter((item) => !state.purged?.[item.id])
+    .filter((item) =>
+      !state.purged?.[item.id] &&
+      (!state.dismissed?.[item.id] || item.deletedAt),
+    )
     .sort((a, b) => b.createdAtMillis - a.createdAtMillis);
 }
 
@@ -517,8 +611,7 @@ function renderNotifications() {
   const search = searchQuery.trim().toLowerCase();
   const visible = (showingTrash ? trashItems : activeItems).filter((item) =>
     (!search || `${item.title} ${item.message}`.toLowerCase().includes(search)) &&
-    (showingTrash || activeFilter === "all" ||
-      (activeFilter === "unread" ? !item.read : item.read)),
+    (showingTrash || activeFilter === "all" || !item.read),
   );
   const groups = ["Today", "This week", "Earlier"].map((name) => [
     name,
@@ -528,9 +621,7 @@ function renderNotifications() {
     ? "Recently Deleted is empty"
     : activeFilter === "unread"
       ? "No unread notifications"
-      : activeFilter === "read"
-        ? "You have no notifications"
-        : "You have no notifications";
+      : "You have no notifications";
   const emptyMessage = showingTrash
     ? "Notifications you delete will wait here for 30 days before they are removed."
     : activeFilter === "unread"
@@ -560,7 +651,6 @@ function renderNotifications() {
           <button type="button" data-filter="all" aria-pressed="${!showingTrash && activeFilter !== "unread"}" class="${!showingTrash && activeFilter !== "unread" ? "is-active" : ""}">All</button>
           <button type="button" data-filter="unread" aria-pressed="${!showingTrash && activeFilter === "unread"}" class="${!showingTrash && activeFilter === "unread" ? "is-active" : ""}">Unread <span>${unreadCount}</span></button>
         </nav>
-        <label class="notification-read-filter">Show <select data-read-filter aria-label="Filter read notifications">${activeFilter === "read" ? '<option value="all">All</option><option value="read" selected>Read</option>' : '<option value="all" selected>All</option><option value="read">Read</option>'}</select></label>
       </div>
       <div class="notification-toolbar-actions">
         ${showingTrash ? `<button type="button" class="notification-empty-trash" ${trashItems.length ? "" : "disabled"}>Empty trash</button>` : `<button type="button" class="mark-all-read" ${unreadCount ? "" : "disabled"}>Mark all as read</button>`}
@@ -571,7 +661,7 @@ function renderNotifications() {
     ${searchQuery ? "" : ""}
     <label class="notification-search"><span class="visually-hidden">Search notifications</span><input type="search" data-search value="${escapeHTML(searchQuery)}" placeholder="Search notifications" aria-label="Search notifications"></label>
     <div class="notification-feed" aria-live="polite">${content}</div>
-    <div class="notification-toast" role="status" aria-live="polite">${undoDelete ? 'Moved to Recently Deleted <button type="button" data-action="undo-delete">Undo</button>' : escapeHTML(statusMessage)}</div>
+    <div class="notification-toast" role="status" aria-live="polite">${undoDelete ? `Moved to Recently Deleted <button type="button" data-action="undo-delete" ${pendingNotificationWrites.has(undoDelete) ? "disabled" : ""}>Undo</button>` : escapeHTML(statusMessage)}</div>
   </section>`;
   const searchInput = notificationRoot.querySelector("[data-search]");
   searchInput.addEventListener("input", (event) => {
@@ -641,13 +731,80 @@ async function deleteForever(item) {
   }
 }
 
+async function persistNotificationDelete(item) {
+  if (item.source === "firestore") {
+    await deleteDoc(doc(db, "notifications", item.id));
+  } else if (item.source === "rtdb") {
+    await removeRtdbValue(databaseRef(rtdb, `notifications/${currentUid}/${item.id}`));
+  } else {
+    await persistDismissedNotificationId(item.id, true);
+  }
+}
+
+async function restoreNotification(id) {
+  const savedItem = state.deleted[id]?.item;
+  if (!savedItem || pendingNotificationWrites.has(id)) return;
+  pendingNotificationWrites.add(id);
+  renderNotifications();
+  try {
+    if (savedItem.source === "firestore") {
+      if (!savedItem.sourceData) throw new Error("The notification data needed for restore is missing.");
+      await setDoc(doc(db, "notifications", id), savedItem.sourceData);
+    } else if (savedItem.source === "rtdb") {
+      if (!savedItem.sourceData) throw new Error("The notification data needed for restore is missing.");
+      await updateRtdbValue(
+        databaseRef(rtdb, `notifications/${currentUid}/${id}`),
+        savedItem.sourceData,
+      );
+    } else {
+      await persistDismissedNotificationId(id, false);
+      delete state.dismissed[id];
+    }
+    state.restored[id] = savedItem;
+    delete state.deleted[id];
+    if (undoDelete === id) {
+      undoDelete = null;
+      clearTimeout(toastTimer);
+    }
+    saveState();
+  } catch (error) {
+    statusMessage = "Could not restore this notification. Please try again.";
+    console.error("[Student Notifications] Could not restore notification:", error);
+  } finally {
+    pendingNotificationWrites.delete(id);
+    renderNotifications();
+  }
+}
+
+async function deleteNotification(item) {
+  try {
+    await persistNotificationDelete(item);
+  } catch (error) {
+    delete state.deleted[item.id];
+    if (item.source !== "firestore" && item.source !== "rtdb") {
+      delete state.dismissed[item.id];
+    }
+    undoDelete = null;
+    clearTimeout(toastTimer);
+    statusMessage = "Could not delete this notification. Please try again.";
+    console.error("[Student Notifications] Could not delete notification:", error);
+  } finally {
+    pendingNotificationWrites.delete(item.id);
+    saveState();
+    renderNotifications();
+  }
+}
+
 function handleItemAction(action, id) {
   const item = notificationItems.find((candidate) => candidate.id === id);
   if (!item) return;
   if (action === "read" || action === "unread") {
     void persistRead(item, action === "read");
-  } else if (action === "delete") {
+  } else if (action === "delete" && !pendingNotificationWrites.has(id)) {
     delete state.restored[id];
+    if (item.source !== "firestore" && item.source !== "rtdb") {
+      state.dismissed[id] = true;
+    }
     state.deleted[id] = {
       deletedAt: Date.now(),
       item: {
@@ -660,8 +817,10 @@ function handleItemAction(action, id) {
         read: item.read,
         source: item.source,
         target: item.target || "",
+        sourceData: item.sourceData,
       },
     };
+    pendingNotificationWrites.add(id);
     saveState();
     undoDelete = id;
     clearTimeout(toastTimer);
@@ -670,12 +829,9 @@ function handleItemAction(action, id) {
       renderNotifications();
     }, 6000);
     renderNotifications();
+    void deleteNotification(item);
   } else if (action === "restore") {
-    const savedItem = state.deleted[id]?.item;
-    if (savedItem) state.restored[id] = savedItem;
-    delete state.deleted[id];
-    saveState();
-    renderNotifications();
+    void restoreNotification(id);
   } else if (action === "delete-forever") {
     void deleteForever(item);
   }
@@ -729,14 +885,7 @@ function bindPageInteractions() {
     }
     if (target.closest("[data-action='undo-delete']")) {
       event.stopPropagation();
-      if (undoDelete && state.deleted[undoDelete]) {
-        state.restored[undoDelete] = state.deleted[undoDelete].item;
-        delete state.deleted[undoDelete];
-        saveState();
-      }
-      undoDelete = null;
-      clearTimeout(toastTimer);
-      renderNotifications();
+      if (undoDelete && state.deleted[undoDelete]) void restoreNotification(undoDelete);
       return;
     }
     if (target.closest(".notification-retry")) {
@@ -765,6 +914,7 @@ function bindPageInteractions() {
     }
     const action = target.closest("[data-action]");
     if (action) {
+      event.preventDefault();
       event.stopPropagation();
       handleItemAction(action.dataset.action, action.dataset.id);
       return;
@@ -778,11 +928,6 @@ function bindPageInteractions() {
       event.preventDefault();
       openItem(notificationItems.find((item) => item.id === event.target.dataset.notificationId));
     }
-  });
-  notificationRoot?.addEventListener("change", (event) => {
-    if (!event.target.matches("[data-read-filter]")) return;
-    activeFilter = event.target.value === "read" ? "read" : "all";
-    renderNotifications();
   });
 }
 
@@ -1130,6 +1275,14 @@ async function initializeStudent(user) {
   } catch (error) {
     debug("Could not read cached student profile:", error);
   }
+  try {
+    await loadDismissedNotificationIds(user.uid);
+  } catch (error) {
+    console.warn("[Student Notifications] Could not load dismissed notification IDs:", {
+      code: error?.code || "unknown",
+    });
+  }
+  if (auth?.currentUser?.uid !== user.uid) return;
   const version = startSubscriptions(currentUid, false);
   try {
     studentProfile = await loadStudentProfile(user);

@@ -516,15 +516,6 @@ body {
   color: #382b16;
 }
 
-.notification-read-filter {
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  color: var(--ink-700);
-  font-size: 13px;
-}
-
-.notification-read-filter select,
 .notification-search input {
   min-height: 40px;
   padding: 8px 12px;
@@ -545,7 +536,6 @@ body {
 }
 
 .notification-search input:focus-visible,
-.notification-read-filter select:focus-visible,
 .notification-toolbar button:focus-visible,
 .notification-card-actions button:focus-visible,
 .notification-trash-actions button:focus-visible,
@@ -901,7 +891,6 @@ body {
 .notification-toolbar,
 .notification-toolbar-left,
 .notification-toolbar-actions,
-.notification-read-filter,
 .notification-search,
 .notification-list,
 .notification-card-item,
@@ -912,11 +901,6 @@ body {
   min-width: 0;
 }
 
-.notification-read-filter {
-  flex-wrap: wrap;
-}
-
-.notification-read-filter select,
 .notification-search input {
   max-width: 100%;
 }

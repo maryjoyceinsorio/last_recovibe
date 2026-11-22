@@ -524,6 +524,10 @@ a {
   display: none !important;
 }
 
+#btnRetryProfileFetch[hidden] {
+  display: none !important;
+}
+
 .profile-feedback-alert .alert-content {
   display: flex;
   align-items: center;
@@ -578,6 +582,18 @@ a {
 
 .profile-cards-grid .full-width-card {
   grid-column: 1 / -1;
+}
+
+.profile-cards-grid > #studentQrCard {
+  order: 1;
+}
+
+.profile-cards-grid > #preferencesPanel {
+  order: 2;
+}
+
+.profile-cards-grid > #correctionRequestsCard {
+  order: 3;
 }
 
 /* White Card Base Style */

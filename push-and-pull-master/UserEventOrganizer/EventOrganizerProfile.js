@@ -1,10 +1,22 @@
-import { onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
+import {
+  onAuthStateChanged,
+  verifyBeforeUpdateEmail,
+} from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
 import {
   auth,
   authReady,
   db,
   isFirebaseConfigured,
 } from "../UserStudent/firebaseConfig.js";
+import {
+  formatPhilippineMobile,
+  isValidPhilippineMobile,
+  mobileDigits,
+  profileCollectionsForRole,
+  savePendingProfileEmail,
+  saveProfileFields,
+  syncVerifiedProfileEmail,
+} from "../portalProfileAccount.js";
 import {
   CORRECTION_FIELDS_BY_ROLE,
   submitCorrectionRequest,
@@ -23,17 +35,7 @@ import {
   }
 
   function formatPhilippinePhone(raw) {
-    const digits = String(raw || "").replace(/\D/g, "");
-    let clean = digits;
-    if (digits.startsWith("639")) {
-      clean = "0" + digits.slice(2);
-    } else if (digits.startsWith("9")) {
-      clean = "0" + digits;
-    }
-    clean = clean.slice(0, 11);
-    if (clean.length <= 4) return clean;
-    if (clean.length <= 7) return `${clean.slice(0, 4)} ${clean.slice(4)}`;
-    return `${clean.slice(0, 4)} ${clean.slice(4, 7)} ${clean.slice(7, 11)}`;
+    return formatPhilippineMobile(raw);
   }
 
   const DEFAULT_ORGANIZER = {
@@ -168,6 +170,27 @@ import {
     if (viewRole) viewRole.textContent = profile.role || "Event Organizer";
     const viewCampus = document.getElementById("viewCampus");
     if (viewCampus) viewCampus.textContent = profile.campus || "Not set";
+  }
+
+  function syncProfileEmail(authUser) {
+    void syncVerifiedProfileEmail(
+      auth,
+      db,
+      authUser,
+      "eventorganizer",
+      profileCollectionsForRole("eventorganizer"),
+    ).then((result) => {
+      if (!result || auth?.currentUser?.uid !== authUser.uid) return;
+      profile.uid = authUser.uid;
+      profile.email = result.email;
+      if (result.pendingEmail) profile.pendingEmail = result.pendingEmail;
+      else delete profile.pendingEmail;
+      localStorage.setItem(profileStorageKey, JSON.stringify(profile));
+      updateDisplay();
+      if (result.changed) showFeedback("Email address verified and updated.");
+    }).catch((error) => {
+      console.warn("[EventOrganizerProfile] Could not sync verified email:", error);
+    });
   }
 
   /* -------------------------------------------------------------
@@ -315,16 +338,16 @@ import {
 
   function checkContactDirty() {
     const origEmail = (profile.email || "").trim().toLowerCase();
-    const origPhone = (profile.contactNumber || "").replace(/\D/g, "");
+    const origPhone = mobileDigits(profile.contactNumber);
     const curEmail = inputContactEmail.value.trim().toLowerCase();
-    const curPhone = inputContactPhone.value.replace(/\D/g, "");
+    const curPhone = mobileDigits(inputContactPhone.value);
 
     let changes = 0;
     if (curEmail !== origEmail) changes++;
     if (curPhone !== origPhone) changes++;
 
     const isEmailValid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(curEmail);
-    const isPhoneValid = curPhone.length === 11 && curPhone.startsWith("09");
+    const isPhoneValid = isValidPhilippineMobile(curPhone);
     const isValid = isEmailValid && (curPhone.length === 0 || isPhoneValid);
     const isDirty = changes > 0;
 
@@ -353,10 +376,12 @@ import {
   }
 
   if (contactCardEdit) {
-    contactCardEdit.addEventListener("submit", (e) => {
+    contactCardEdit.addEventListener("submit", async (e) => {
       e.preventDefault();
       const emailVal = inputContactEmail.value.trim().toLowerCase();
-      const rawPhone = inputContactPhone.value.replace(/\D/g, "");
+      const rawPhone = mobileDigits(inputContactPhone.value);
+      const emailChanged = emailVal !== String(profile.email || "").trim().toLowerCase();
+      const phoneChanged = rawPhone !== mobileDigits(profile.contactNumber);
 
       let hasError = false;
       if (!emailVal || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(emailVal)) {
@@ -368,9 +393,12 @@ import {
         if (errContactEmail) errContactEmail.classList.remove("is-visible");
       }
 
-      if (rawPhone && (rawPhone.length !== 11 || !rawPhone.startsWith("09"))) {
+      if (!isValidPhilippineMobile(rawPhone)) {
         inputContactPhone.classList.add("is-invalid");
-        if (errContactPhone) errContactPhone.classList.add("is-visible");
+        if (errContactPhone) {
+          errContactPhone.textContent = "Enter a valid 11-digit mobile number starting with 09.";
+          errContactPhone.classList.add("is-visible");
+        }
         hasError = true;
       } else {
         inputContactPhone.classList.remove("is-invalid");
@@ -379,15 +407,54 @@ import {
 
       if (hasError) return;
 
-      profile.email = emailVal;
-      profile.contactNumber = rawPhone ? formatPhilippinePhone(rawPhone) : "";
+      const authUser = auth?.currentUser;
+      if (!authUser?.uid || authUser.uid !== profile.uid || !db) {
+        showFeedback("Sign in again before updating your contact details.", true);
+        return;
+      }
 
-      localStorage.setItem(profileStorageKey, JSON.stringify(profile));
-      localStorage.setItem(organizerIdKey, emailVal);
-
-      updateDisplay();
-      setContactEditMode(false);
-      showFeedback("Contact details updated successfully.");
+      contactSaveBtn.disabled = true;
+      contactSaveBtn.textContent = "Saving...";
+      try {
+        if (phoneChanged) {
+          await saveProfileFields(
+            db,
+            authUser.uid,
+            "eventorganizer",
+            { contactNumber: rawPhone },
+            profileCollectionsForRole("eventorganizer"),
+          );
+          profile.contactNumber = rawPhone;
+        }
+        if (emailChanged) {
+          await verifyBeforeUpdateEmail(authUser, emailVal);
+          profile.pendingEmail = emailVal;
+          localStorage.setItem(
+            `recovibe_pending_email_${authUser.uid}`,
+            JSON.stringify({ pendingEmail: emailVal, oldEmail: profile.email, timestamp: Date.now() }),
+          );
+          await savePendingProfileEmail(
+            db,
+            authUser.uid,
+            "eventorganizer",
+            emailVal,
+            profileCollectionsForRole("eventorganizer"),
+          );
+        }
+        localStorage.setItem(profileStorageKey, JSON.stringify(profile));
+        updateDisplay();
+        setContactEditMode(false);
+        showFeedback(emailChanged
+          ? "Verification was sent. Keep using your current email until you confirm the new address."
+          : "Contact details updated successfully.");
+      } catch (error) {
+        console.error("[EventOrganizerProfile] Could not update contact details:", error);
+        showFeedback(error?.message || "Could not update contact details.", true);
+      } finally {
+        contactSaveBtn.disabled = false;
+        contactSaveBtn.textContent = "Save";
+        checkContactDirty();
+      }
     });
   }
 
@@ -684,6 +751,7 @@ import {
           return;
         }
         correctionAuthUser = user;
+        syncProfileEmail(user);
         startCorrectionRequests(user);
       });
     } catch (error) {
@@ -845,6 +913,9 @@ import {
   });
 
   window.addEventListener("pagehide", stopCorrectionAuth);
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden && auth?.currentUser) syncProfileEmail(auth.currentUser);
+  });
   window.addEventListener("pageshow", (event) => {
     if (!event.persisted) return;
     correctionActive = true;
@@ -879,4 +950,7 @@ import {
   });
 
   updateDisplay();
+  if (profile.pendingEmail) {
+    showFeedback(`Email change pending verification at ${profile.pendingEmail}. Keep using your current email until confirmed.`);
+  }
 })();

@@ -1,7 +1,7 @@
 (function () {
   const DEBUG = false;
-  const TWO_WEEKS = 14 * 24 * 60 * 60 * 1000;
   const ONE_DAY = 24 * 60 * 60 * 1000;
+  const NOTIFICATION_RETENTION = 30 * ONE_DAY;
   const STORAGE_PREFIX = "recovibeStudentNotifications:";
   const badge = document.getElementById("navNotifBadge");
   let authUnsubscribe = null;
@@ -15,6 +15,7 @@
   let badgeRefreshInterval = null;
   let currentUid = "";
   let currentProfile = {};
+  let profileDismissedIds = new Set();
   let isEventVisibleToStudent = null;
   let loadStudentProfile = null;
   let sources = new Map();
@@ -24,7 +25,7 @@
   let registrations = new Map();
   let detailLoads = new Set();
   let generation = 0;
-  let state = { read: {}, deleted: {}, restored: {} };
+  let state = { read: {}, deleted: {}, restored: {}, dismissed: {} };
 
   function debug(...args) {
     if (DEBUG) console.debug("[Student notification badge]", ...args);
@@ -56,11 +57,35 @@
         read: saved?.read && typeof saved.read === "object" ? saved.read : {},
         deleted: saved?.deleted && typeof saved.deleted === "object" ? saved.deleted : {},
         restored: saved?.restored && typeof saved.restored === "object" ? saved.restored : {},
+        dismissed: saved?.dismissed && typeof saved.dismissed === "object" ? saved.dismissed : {},
       };
     } catch (error) {
-      state = { read: {}, deleted: {}, restored: {} };
+      state = { read: {}, deleted: {}, restored: {}, dismissed: {} };
       debug("Could not read local notification state:", error);
     }
+  }
+
+  function loadDismissedProfileIds(firebase, firestoreSdk, version) {
+    const profileRefs = ["users", "students"].map((collectionName) =>
+      firestoreSdk.doc(firebase.db, collectionName, currentUid),
+    );
+    Promise.allSettled(profileRefs.map((profileRef) => firestoreSdk.getDoc(profileRef)))
+      .then((results) => {
+        if (version !== generation) return;
+        const ids = new Set();
+        results.forEach((result) => {
+          if (result.status !== "fulfilled") {
+            debug("Could not load dismissed IDs for badge:", result.reason?.code || "unknown");
+            return;
+          }
+          const dismissed = result.value.exists()
+            ? result.value.data()?.dismissedNotificationIds
+            : [];
+          if (Array.isArray(dismissed)) dismissed.forEach((id) => ids.add(String(id)));
+        });
+        profileDismissedIds = ids;
+        updateBadge();
+      });
   }
 
   function statusOf(event) {
@@ -121,10 +146,21 @@
     const items = [];
     events.forEach((event, eventId) => {
       const status = statusOf(event);
-      const published = status === "published" || event.published === true || event.isPublished === true;
+      const published = status === "published" ||
+        event.published === true ||
+        event.isPublished === true ||
+        toMillis(event.publishedAt) > 0 &&
+          ["completed", "complete", "ended", "finished", "registrationclosed", "registrationended", "closed"]
+            .includes(status);
       const stamp = toMillis(event.publishedAt) || toMillis(event.updatedAt) || toMillis(event.createdAt);
+      const recentPublishOrEventDate = [stamp, startAtOf(event)].some(
+        (timestamp) =>
+          timestamp > 0 &&
+          timestamp <= now &&
+          now - timestamp <= NOTIFICATION_RETENTION,
+      );
       if (
-        published && stamp && stamp <= now && now - stamp <= TWO_WEEKS &&
+        published && stamp && recentPublishOrEventDate &&
         isEventVisibleToStudent?.({ ...event, id: eventId }, currentProfile)
       ) {
         items.push({ id: `published-${eventId}-${stamp}`, read: false, createdAt: stamp });
@@ -173,10 +209,14 @@
       if (!merged.has(id)) merged.set(id, item);
     });
     let unread = 0;
+    const dismissedIds = new Set(profileDismissedIds);
+    if (Array.isArray(currentProfile.dismissedNotificationIds)) {
+      currentProfile.dismissedNotificationIds.forEach((id) => dismissedIds.add(String(id)));
+    }
     merged.forEach((item, id) => {
       const deletedAt = toMillis(state.deleted[id]?.deletedAt ?? state.deleted[id]);
       if (deletedAt && Date.now() - deletedAt >= 30 * ONE_DAY) delete state.deleted[id];
-      if (state.deleted[id]) return;
+      if (state.deleted[id] || state.dismissed[id] || dismissedIds.has(id)) return;
       const read = Object.prototype.hasOwnProperty.call(state.read, id)
         ? state.read[id] === true
         : item.read === true || item.isRead === true;
@@ -209,6 +249,7 @@
     events.clear();
     registrations.clear();
     detailLoads.clear();
+    profileDismissedIds = new Set();
     if (badgeRefreshInterval) {
       clearInterval(badgeRefreshInterval);
       badgeRefreshInterval = null;
@@ -220,6 +261,7 @@
     const version = ++generation;
     currentUid = user.uid;
     loadState();
+    loadDismissedProfileIds(firebase, firestoreSdk, version);
     currentProfile = {};
     loadStudentProfile(user).then((profile) => {
       if (version !== generation) return;
