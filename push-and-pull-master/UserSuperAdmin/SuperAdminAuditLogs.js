@@ -20,6 +20,7 @@ import {
   "use strict";
 
   const PAGE_SIZE = 25;
+  const EVENT_PAGE_SIZE = 100;
   const DEBUG = false;
   const CORE_CATEGORIES = ["Account created", "Account edited", "Settings", "Events"];
   const KNOWN_ACTOR_ROLES = [
@@ -49,6 +50,9 @@ import {
   let uidFilter = (params.get("uid") || "").trim();
   let loadedRecords = [];
   let publishedEventRecords = [];
+  let publishedEventCursor = null;
+  let hasMorePublishedEvents = false;
+  let isLoadingEventPage = false;
   let lastDocument = null;
   let hasMore = true;
   let isLoading = false;
@@ -198,17 +202,53 @@ import {
     }
     eventLoadInProgress = true;
     eventLoadError = "";
+    publishedEventRecords = [];
+    publishedEventCursor = null;
+    hasMorePublishedEvents = false;
     try {
-      const snapshot = await withReadTimeout(getDocs(collection(db, "events")));
+      const snapshot = await withReadTimeout(getDocs(query(
+        collection(db, "events"),
+        orderBy(documentId()),
+        limit(EVENT_PAGE_SIZE),
+      )));
       publishedEventRecords = snapshot.docs
         .map(normalizePublishedEvent)
         .filter(Boolean);
+      publishedEventCursor = snapshot.docs.at(-1) || null;
+      hasMorePublishedEvents = snapshot.size === EVENT_PAGE_SIZE;
       eventLoadError = "";
     } catch (error) {
       if (DEBUG) console.error("Could not load published events.", error);
       eventLoadError = "Could not load Published Events. Check your connection and retry.";
     } finally {
       eventLoadInProgress = false;
+      render();
+    }
+  }
+
+  async function loadNextPublishedEvents() {
+    if (isLoadingEventPage || !hasMorePublishedEvents || !publishedEventCursor) return;
+    isLoadingEventPage = true;
+    eventLoadError = "";
+    render();
+    try {
+      const snapshot = await withReadTimeout(getDocs(query(
+        collection(db, "events"),
+        orderBy(documentId()),
+        startAfter(publishedEventCursor),
+        limit(EVENT_PAGE_SIZE),
+      )));
+      publishedEventRecords = [
+        ...publishedEventRecords,
+        ...snapshot.docs.map(normalizePublishedEvent).filter(Boolean),
+      ];
+      publishedEventCursor = snapshot.docs.at(-1) || publishedEventCursor;
+      hasMorePublishedEvents = snapshot.size === EVENT_PAGE_SIZE;
+    } catch (error) {
+      console.error("Could not load another page of published events:", error);
+      eventLoadError = "More published events could not be loaded. Retry to continue.";
+    } finally {
+      isLoadingEventPage = false;
       render();
     }
   }
@@ -1161,13 +1201,20 @@ import {
     renderUserFilterChip();
     const matches = filteredRecords();
     const allRecordsCount = loadedRecords.length + publishedEventRecords.length;
-    setText(resultCount, `${matches.length} of ${allRecordsCount} entries`);
+    const hasUnloadedRecords = hasMore || hasMorePublishedEvents;
+    setText(
+      resultCount,
+      `${matches.length} of ${allRecordsCount}${hasUnloadedRecords ? "+" : ""} entries`,
+    );
     errorState.hidden = !loadError;
     if (loadError) setText(errorText, loadError);
     eventWarning.hidden = !eventLoadError;
     if (eventLoadError) setText(eventWarningText, eventLoadError);
-    retryEventsButton.disabled = eventLoadInProgress;
-    setText(retryEventsButton, eventLoadInProgress ? "Loading..." : "Retry Published Events");
+    retryEventsButton.disabled = eventLoadInProgress || isLoadingEventPage;
+    setText(
+      retryEventsButton,
+      eventLoadInProgress || isLoadingEventPage ? "Loading..." : "Retry Published Events",
+    );
     if (!initialLoadComplete && isLoading) {
       renderSkeleton();
       loadMoreButton.hidden = true;
@@ -1178,9 +1225,13 @@ import {
     } else {
       renderRecords(matches);
     }
-    loadMoreButton.hidden = !hasMore || !loadedRecords.length;
-    loadMoreButton.disabled = isLoading;
-    setText(loadMoreButton, isLoading ? "Loading..." : "Load more");
+    loadMoreButton.hidden =
+      !(hasMore && loadedRecords.length) && !hasMorePublishedEvents;
+    loadMoreButton.disabled = isLoading || isLoadingEventPage || eventLoadInProgress;
+    setText(
+      loadMoreButton,
+      isLoading || isLoadingEventPage || eventLoadInProgress ? "Loading..." : "Load more",
+    );
     exportButton.disabled = matches.length === 0;
   }
 
@@ -1351,7 +1402,12 @@ import {
     void loadPublishedEvents();
     render();
   });
-  loadMoreButton.addEventListener("click", () => loadPage(false));
+  loadMoreButton.addEventListener("click", async () => {
+    const pendingLoads = [];
+    if (hasMore && loadedRecords.length) pendingLoads.push(loadPage(false));
+    if (hasMorePublishedEvents) pendingLoads.push(loadNextPublishedEvents());
+    await Promise.all(pendingLoads);
+  });
   exportButton.addEventListener("click", exportCsv);
 
   renderUserFilterChip();

@@ -6,7 +6,7 @@
   const badge = document.getElementById("navNotifBadge");
   let authUnsubscribe = null;
   let firestoreUnsubscribes = [];
-  let eventsUnsubscribe = null;
+  let eventsUnsubscribes = [];
   let registrationsUnsubscribe = null;
   let rtdbUnsubscribe = null;
   let rtdbNotificationsRef = null;
@@ -65,11 +65,13 @@
     }
   }
 
-  function loadDismissedProfileIds(firebase, firestoreSdk, version) {
+  function loadDismissedProfileIds(firebase, firestoreSdk, readCache, version) {
     const profileRefs = ["users", "students"].map((collectionName) =>
       firestoreSdk.doc(firebase.db, collectionName, currentUid),
     );
-    Promise.allSettled(profileRefs.map((profileRef) => firestoreSdk.getDoc(profileRef)))
+    Promise.allSettled(profileRefs.map((profileRef) =>
+      readCache.getDocCached(firestoreSdk.getDoc, profileRef, currentUid),
+    ))
       .then((results) => {
         if (version !== generation) return;
         const ids = new Set();
@@ -229,8 +231,8 @@
   function stopListeners() {
     firestoreUnsubscribes.forEach((unsubscribe) => unsubscribe());
     firestoreUnsubscribes = [];
-    eventsUnsubscribe?.();
-    eventsUnsubscribe = null;
+    eventsUnsubscribes.forEach((unsubscribe) => unsubscribe());
+    eventsUnsubscribes = [];
     registrationsUnsubscribe?.();
     registrationsUnsubscribe = null;
     if (rtdbNotificationsRef && rtdbUnsubscribe) {
@@ -256,12 +258,12 @@
     }
   }
 
-  function attachListeners(user, firebase, firestoreSdk, databaseSdk) {
+  function attachListeners(user, firebase, firestoreSdk, databaseSdk, readCache) {
     stopListeners();
     const version = ++generation;
     currentUid = user.uid;
     loadState();
-    loadDismissedProfileIds(firebase, firestoreSdk, version);
+    loadDismissedProfileIds(firebase, firestoreSdk, readCache, version);
     currentProfile = {};
     loadStudentProfile(user).then((profile) => {
       if (version !== generation) return;
@@ -332,14 +334,58 @@
       firestoreUnsubscribes.push(unsubscribe);
     });
 
-    eventsUnsubscribe = firestoreSdk.onSnapshot(
-      firestoreSdk.collection(firebase.db, "events"),
-      (snapshot) => {
-        if (version !== generation) return;
-        events = new Map(snapshot.docs.map((item) => [item.id, item.data()]));
-        updateBadge();
-      },
-      (error) => debug("Published event badge listener failed:", error),
+    const notificationEventStatuses = [
+      "published", "Published", "PUBLISHED",
+      "completed", "Completed", "COMPLETED",
+      "complete", "Complete", "ended", "Ended", "finished", "Finished",
+      "registrationclosed", "RegistrationClosed",
+      "registrationended", "RegistrationEnded", "closed", "Closed",
+      "rescheduled", "Rescheduled", "RESCHEDULED",
+      "cancelled", "Cancelled", "CANCELLED",
+      "canceled", "Canceled", "CANCELED",
+    ];
+    const eventSources = new Map([
+      ["status", new Map()],
+      ["publicationStatus", new Map()],
+    ]);
+    const eventQueries = [
+      [
+        "status",
+        firestoreSdk.query(
+          firestoreSdk.collection(firebase.db, "events"),
+          firestoreSdk.or(
+            firestoreSdk.where("status", "in", notificationEventStatuses),
+            firestoreSdk.where("published", "==", true),
+            firestoreSdk.where("isPublished", "==", true),
+          ),
+          firestoreSdk.limit(150),
+        ),
+      ],
+      [
+        "publicationStatus",
+        firestoreSdk.query(
+          firestoreSdk.collection(firebase.db, "events"),
+          firestoreSdk.where("publicationStatus", "in", notificationEventStatuses),
+          firestoreSdk.limit(150),
+        ),
+      ],
+    ];
+    eventsUnsubscribes = eventQueries.map(([source, eventQuery]) =>
+      firestoreSdk.onSnapshot(
+        eventQuery,
+        (snapshot) => {
+          if (version !== generation) return;
+          const sourceEvents = eventSources.get(source);
+          sourceEvents.clear();
+          snapshot.docs.forEach((item) => sourceEvents.set(item.id, item.data()));
+          events.clear();
+          eventSources.forEach((sourceDocuments) =>
+            sourceDocuments.forEach((event, eventId) => events.set(eventId, event)),
+          );
+          updateBadge();
+        },
+        (error) => debug(`Published event badge query (${source}) failed:`, error),
+      ),
     );
     registrationsUnsubscribe = firestoreSdk.onSnapshot(
       firestoreSdk.query(
@@ -356,7 +402,11 @@
         registrations.forEach((registration, eventId) => {
           if (events.has(eventId) || detailLoads.has(eventId)) return;
           detailLoads.add(eventId);
-          firestoreSdk.getDoc(firestoreSdk.doc(firebase.db, "events", eventId))
+          readCache.getDocCached(
+            firestoreSdk.getDoc,
+            firestoreSdk.doc(firebase.db, "events", eventId),
+            user.uid,
+          )
             .then((eventSnapshot) => {
               if (version === generation && eventSnapshot.exists()) {
                 events.set(eventId, eventSnapshot.data());
@@ -440,7 +490,8 @@
     import("https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js"),
     import("https://www.gstatic.com/firebasejs/10.12.2/firebase-database.js"),
     import("./eventAudience.js"),
-  ]).then(([firebase, authSdk, firestoreSdk, databaseSdk, eventAudience]) => {
+    import("../firestoreReadCache.js"),
+  ]).then(([firebase, authSdk, firestoreSdk, databaseSdk, eventAudience, readCache]) => {
     if (!firebase.auth || !firebase.db) return;
     authUnsubscribe = authSdk.onAuthStateChanged(firebase.auth, (user) => {
       stopListeners();
@@ -457,7 +508,7 @@
       };
       attachListeners(user, {
         ...firebase,
-      }, firestoreSdk, databaseSdk);
+      }, firestoreSdk, databaseSdk, readCache);
     });
   }).catch((error) => debug("Could not initialize badge listeners:", error));
 

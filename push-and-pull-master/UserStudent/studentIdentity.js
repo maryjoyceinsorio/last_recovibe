@@ -9,6 +9,8 @@ import {
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 import { auth, db, rtdb } from "./firebaseConfig.js";
 import { syncVerifiedProfileEmail } from "../portalProfileAccount.js";
+import { getDocCached, getDocsCached } from "../firestoreReadCache.js";
+import { isResourceExhausted } from "./firestoreRetry.js";
 
 const currentUserStorageKey = "recovibeCurrentUser";
 const studentProfileCollections = ["users", "students"];
@@ -93,29 +95,29 @@ export async function loadStudentProfile(user, { storage, createIfMissing = fals
   }
 
   await syncVerifiedStudentEmail(user);
-  const profileReads = await Promise.allSettled(
-    studentProfileCollections.map(async (collectionName) => ({
-      collectionName,
-      snapshot: await getDoc(doc(db, collectionName, user.uid)),
-    })),
-  );
   const profileRecords = [];
   const profileReadErrors = [];
-  profileReads.forEach((result, index) => {
-    if (result.status === "rejected") {
-      profileReadErrors.push(result.reason);
+  for (const collectionName of studentProfileCollections) {
+    try {
+      const profileRef = doc(db, collectionName, user.uid);
+      const snapshot = await getDocCached(getDoc, profileRef, user.uid);
+      if (snapshot.exists()) {
+        profileRecords.push({
+          collectionName,
+          snapshot,
+          data: snapshot.data(),
+        });
+        break;
+      }
+    } catch (error) {
+      profileReadErrors.push(error);
       console.warn("[Student Identity] Could not read a student profile collection:", {
-        collection: studentProfileCollections[index],
-        code: result.reason?.code || "unknown",
+        collection: collectionName,
+        code: error?.code || "unknown",
       });
-    } else if (result.value.snapshot.exists()) {
-      profileRecords.push({
-        collectionName: result.value.collectionName,
-        snapshot: result.value.snapshot,
-        data: result.value.snapshot.data(),
-      });
+      if (isResourceExhausted(error)) throw error;
     }
-  });
+  }
   if (!profileRecords.length && profileReadErrors.length === studentProfileCollections.length) {
     throw profileReadErrors[0];
   }
@@ -138,11 +140,16 @@ export async function loadStudentProfile(user, { storage, createIfMissing = fals
 
   if (!profile && normalizedEmail(user.email)) {
     const emailReads = await Promise.allSettled(
-      studentProfileCollections.map((collectionName) => getDocs(query(
-        collection(db, collectionName),
-        where("email", "==", normalizedEmail(user.email)),
-        limit(2),
-      ))),
+      studentProfileCollections.map((collectionName) => getDocsCached(
+        getDocs,
+        query(
+          collection(db, collectionName),
+          where("email", "==", normalizedEmail(user.email)),
+          limit(2),
+        ),
+        `${collectionName}:student-email:${normalizedEmail(user.email)}`,
+        user.uid,
+      )),
     );
     const emailMatches = new Map();
     emailReads.forEach((result, index) => {

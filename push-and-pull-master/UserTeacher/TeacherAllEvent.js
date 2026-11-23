@@ -485,17 +485,17 @@ import { teacherEventReadFilters, teacherEventsQuery } from "./TeacherEventQuery
         <small>${escapeHTML(formatDate(event.start, { year: "numeric" }))}</small>
       </div>
       <div class="teacher-event-content">
-        <div class="teacher-event-categories">${event.categories.map((category) => `<span class="teacher-tag">${escapeHTML(category)}</span>`).join("")}</div>
         <h3 class="teacher-event-title">${escapeHTML(event.title)}</h3>
+        <div class="teacher-event-categories">${event.categories.map((category) => `<span class="teacher-tag">${escapeHTML(category)}</span>`).join("")}</div>
         <p class="teacher-event-source">${escapeHTML(event.organization)}</p>
         <div class="teacher-event-meta">
           <span>${escapeHTML(timeRange(event))}</span>
           <span>${escapeHTML(event.venue)}</span>
         </div>
         ${registrationText}
+        <span class="teacher-status-chip status-${status.toLowerCase().replace(/\s+/g, "-")}">${escapeHTML(status)}</span>
       </div>
       <div class="teacher-event-actions">
-        <span class="teacher-status-chip status-${status.toLowerCase().replace(/\s+/g, "-")}">${escapeHTML(status)}</span>
         <button type="button" class="teacher-details-button" data-event-details="${escapeHTML(event.id)}" aria-controls="teacherEventOverlay">Details</button>
       </div>
     </article>`;

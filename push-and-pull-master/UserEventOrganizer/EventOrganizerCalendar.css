@@ -11,10 +11,11 @@
 }
 
 #organizerCalendarMain .cal-nav {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
+  display: flex;
+  justify-content: space-between;
   align-items: center;
-  gap: 12px;
+  gap: 16px;
+  flex-wrap: wrap;
 }
 
 #organizerCalendarMain .cal-left-controls,
@@ -23,10 +24,13 @@
   display: flex;
   align-items: center;
   gap: 8px;
+  min-width: 0;
 }
 
 #organizerCalendarMain .cal-center-controls {
-  justify-content: center;
+  justify-content: flex-end;
+  flex: 0 1 auto;
+  margin-left: auto;
 }
 
 #organizerCalendarMain .cal-right-controls {
@@ -216,17 +220,24 @@
 
 @media (max-width: 520px) {
   #organizerCalendarMain .cal-nav {
-    grid-template-columns: minmax(0, 1fr) auto;
-    gap: 10px;
+    gap: 8px;
   }
 
-  #organizerCalendarMain .cal-left-controls {
-    grid-column: 1 / -1;
+  #organizerCalendarMain .cal-left-controls,
+  #organizerCalendarMain .cal-center-controls {
+    flex: 0 1 100%;
   }
 
   #organizerCalendarMain .cal-center-controls {
-    justify-content: flex-start;
+    justify-content: space-between;
     gap: 6px;
+    margin-left: 0;
+    flex-wrap: wrap;
+  }
+
+  #organizerCalendarMain .cal-current-heading {
+    margin: 0 2px;
+    font-size: 16px;
   }
 
   #organizerCalendarMain .cal-right-controls {

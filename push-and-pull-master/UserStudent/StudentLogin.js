@@ -185,7 +185,7 @@ function loginErrorMessage(error) {
     case "auth/wrong-password":
     case "auth/user-not-found":
     case "auth/invalid-email":
-      return "Incorrect student number or password.";
+      return "Incorrect sign-in email, Student Number, or password.";
     case "student/profile-mismatch":
       return "The student profile does not match this account. Try your email address or contact support.";
     case "student/profile-lookup-failed":
@@ -200,10 +200,22 @@ function loginErrorMessage(error) {
       return "No Student profile was found for this account. Use the correct portal or contact support.";
     case "profile/email-mismatch":
       return "This account's profile does not match its sign-in email. Contact support.";
+    case "permission-denied":
+    case "firestore/permission-denied":
+      return "Your account signed in, but its student profile could not be read. Contact support to verify profile access.";
+    case "unavailable":
+    case "firestore/unavailable":
+    case "deadline-exceeded":
+    case "firestore/deadline-exceeded":
+      return "Your account signed in, but a network or Firestore error prevented profile verification. Check your connection and try again.";
     case "student/email-change-pending":
       return "If your email change is still pending, verify the new address and sign in with your current email until then.";
     case "auth/too-many-requests":
       return "Too many sign-in attempts. Please wait and try again.";
+    case "auth/network-request-failed":
+      return "A network error prevented sign-in. Check your connection and try again.";
+    case "auth/user-disabled":
+      return "This account is disabled. Contact support for help.";
     default:
       return "Unable to sign in right now. Please try again.";
   }

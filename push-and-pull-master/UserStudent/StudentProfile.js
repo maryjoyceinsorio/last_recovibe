@@ -43,6 +43,12 @@ import {
   mobileDigits,
   savePendingProfileEmail,
 } from "../portalProfileAccount.js";
+import {
+  commitAttendanceQrCanvas,
+  createAttendanceQrCanvas,
+  createAttendanceQrPayload,
+  renderAttendanceQr,
+} from "./attendanceQr.js";
 
 const DEFAULT_STUDENT = {};
 
@@ -2315,28 +2321,6 @@ function hydrateUserProfile() {
    Student QR Attendance: Card Component, Full-Screen Modal & renderMyQr
    ========================================================================== */
 
-let qrLibraryLoadPromise = null;
-const STUDENT_NUMBER_QR_PATTERN = /^\d{4}-\d{5}-BN-\d$/;
-
-async function getQRCodeLib() {
-  if (window.QRCode && typeof window.QRCode.toCanvas === "function") {
-    return window.QRCode;
-  }
-  if (!qrLibraryLoadPromise) {
-    qrLibraryLoadPromise = import("https://esm.sh/qrcode@1.5.4").then((mod) => {
-      const library = mod.default || mod;
-      if (typeof library.toCanvas !== "function") {
-        throw new Error("QR code library is unavailable.");
-      }
-      return library;
-    }).catch((error) => {
-      qrLibraryLoadPromise = null;
-      throw error;
-    });
-  }
-  return qrLibraryLoadPromise;
-}
-
 function getStudentQrData(profile = {}, authUser = auth?.currentUser) {
   const registration = profile.registration && typeof profile.registration === "object"
     ? profile.registration
@@ -2352,14 +2336,13 @@ function getStudentQrData(profile = {}, authUser = auth?.currentUser) {
     .map(normalizeStudentNumber)
     .filter(Boolean);
   const studentNumber = studentNumberCandidates[0] || "";
-  const qrStudentNumber = studentNumberCandidates.find((value) =>
-    STUDENT_NUMBER_QR_PATTERN.test(value),
-  );
-  const uid = String(authUser?.uid || profile.uid || "").trim();
-  const payload = qrStudentNumber || uid;
-  if (!payload) {
-    throw new Error("Your student account could not be identified. Please sign in again.");
-  }
+  const qrUser = authUser?.uid
+    ? { uid: authUser.uid, email: authUser.email || profile.email || "" }
+    : null;
+  const payload = createAttendanceQrPayload({
+    user: qrUser,
+    registrationStatus: "profile",
+  });
 
   const organization = studentOrganization(profile);
   const storedName = String(profile.name || profile.fullName || "").trim();
@@ -2370,33 +2353,6 @@ function getStudentQrData(profile = {}, authUser = auth?.currentUser) {
   ].map((part) => String(part || "").trim()).filter(Boolean).join(" ");
 
   return { payload, studentNumber, organization, fullName };
-}
-
-async function createQrCanvas(payload, width) {
-  const cleanPayload = String(payload || "").trim();
-  if (!cleanPayload) throw new Error("Your QR code data is empty. Please try again.");
-  const QRCodeLib = await getQRCodeLib();
-  const stagedCanvas = document.createElement("canvas");
-  await QRCodeLib.toCanvas(stagedCanvas, cleanPayload, {
-    width,
-    margin: 4,
-    color: { dark: "#000000", light: "#ffffff" },
-    errorCorrectionLevel: "H",
-  });
-  if (!stagedCanvas.width || !stagedCanvas.height) {
-    throw new Error("Your QR code could not be generated. Please try again.");
-  }
-  return stagedCanvas;
-}
-
-function commitQrCanvas(canvas, stagedCanvas, displayWidth) {
-  const context = canvas?.getContext("2d");
-  if (!context) throw new Error("Your QR code could not be displayed. Please try again.");
-  canvas.width = stagedCanvas.width;
-  canvas.height = stagedCanvas.height;
-  context.drawImage(stagedCanvas, 0, 0);
-  canvas.style.width = `${displayWidth}px`;
-  canvas.style.height = `${displayWidth}px`;
 }
 
 function formatScannedTime(scannedAt) {
@@ -2466,9 +2422,14 @@ function renderMyQr(canvas, options = {}) {
     setUIState("loading");
 
     try {
-      const stagedCanvas = await createQrCanvas(payload, width);
+      if (!canvas.getContext("2d")) {
+        throw new Error("Your QR code could not be displayed. Please try again.");
+      }
+      await renderAttendanceQr(canvas, payload, {
+        width,
+        displayWidth,
+      });
       if (!active) return;
-      commitQrCanvas(canvas, stagedCanvas, displayWidth);
 
       if (active) setUIState("ready");
     } catch (err) {
@@ -2662,14 +2623,14 @@ function renderMyQr(canvas, options = {}) {
       }
 
       const stagedCanvases = await Promise.all(
-        targets.map((target) => createQrCanvas(qrData.payload, target.width)),
+        targets.map((target) => createAttendanceQrCanvas(qrData.payload, target.width)),
       );
       if (auth?.currentUser?.uid !== authUser.uid) {
         throw new Error("Your account changed. Sign in again before refreshing your QR code.");
       }
       targets.forEach((target, index) => {
         const displayWidth = target.canvas === modalCanvas ? 260 : 180;
-        commitQrCanvas(target.canvas, stagedCanvases[index], displayWidth);
+        commitAttendanceQrCanvas(target.canvas, stagedCanvases[index], displayWidth);
       });
 
       updateStudentCardInfo(refreshedProfile);

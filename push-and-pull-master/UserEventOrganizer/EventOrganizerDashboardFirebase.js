@@ -1,6 +1,7 @@
 import { onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
 import {
   collection,
+  limit,
   onSnapshot,
   or,
   query,
@@ -8,6 +9,12 @@ import {
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 import { app, auth, db, isFirebaseConfigured } from "../UserStudent/firebaseConfig.js";
 import { mountHelpBot } from "../recoVibeHelpBot.js";
+import {
+  eventBoundaryMillis,
+  eventDateISO,
+  getCurrentlyLivePublishedEvents,
+  toEventDate,
+} from "./eventOrganizerDashboardDates.js";
 
 const { toMillis, formatCreatedDate } = window.RecovibeOrganizerDashboardDates;
 const CREATION_DATE_PATHS = [
@@ -74,20 +81,23 @@ const upcomingEventsList = document.getElementById("upcomingEventsList");
 const happeningNowList = document.getElementById("happeningNowList");
 const logoutButton = document.getElementById("organizerLogout");
 const dashboardStatus = document.getElementById("dashboardStatusMessage");
-const notificationsBadge = document.getElementById("navNotifBadge");
 let unsubscribeEvents = null;
-let unsubscribeNotifications = null;
+let unsubscribeHappeningNowEvents = [];
 let unsubscribeAuth = null;
 let organizerEvents = [];
+let happeningNowEvents = [];
+let happeningNowEventsLoading = false;
+let happeningNowEventsError = "";
+let happeningNowEventsLoadingTimer = null;
+let happeningNowEventSnapshotsBySource = new Map();
 let organizerIdentity = null;
 let eventSnapshotsBySource = new Map();
 let academicNotificationItems = [];
 let unsubscribeAcademicNotifications = null;
 let signingOut = false;
 let dashboardPageLoadSignaled = false;
-const pendingInitialDashboardSources = new Set(["events", "notifications"]);
+const pendingInitialDashboardSources = new Set(["events"]);
 const dashboardMessages = new Map();
-if (notificationsBadge) notificationsBadge.hidden = true;
 
 function signalDashboardPageReady() {
   if (dashboardPageLoadSignaled) return;
@@ -251,6 +261,7 @@ function eventBelongsToOrganizer(event, identity = organizerIdentity) {
     event.orgCode,
     event.organizationName,
     event.organization,
+    event.organizerOrganization,
     event.orgName,
     event.councilName,
     event.council,
@@ -395,11 +406,21 @@ function resolveEventCreatedAt(data, documentSnapshot) {
 
 function normalizeEvent(documentSnapshot) {
   const data = documentSnapshot.data();
+  const schedule = data.schedule && typeof data.schedule === "object"
+    ? data.schedule
+    : {};
   const createdAt = resolveEventCreatedAt(data, documentSnapshot);
-  const dateISO = data.eventDate || data.dateISO || data.dateStart || data.date || "";
-  const endDateISO = data.endDateISO || data.dateEnd || data.endDate || dateISO;
-  const startTime = data.timeStart || data.startTime || "";
-  const endTime = data.timeEnd || data.endTime || "";
+  const dateISO = data.eventDate || data.dateISO || data.dateStart || data.date ||
+    data.event_date || data.date_start || data.startDate || data.start_date ||
+    schedule.date || schedule.startDate || schedule.startDateTime ||
+    eventDateISO(schedule.startAt || data.startDateTime || data.startAt) || "";
+  const endDateISO = data.endDateISO || data.dateEnd || data.endDate ||
+    data.end_date || schedule.endDate || schedule.dateEnd || schedule.endDateTime ||
+    eventDateISO(schedule.endAt || data.endDateTime || data.endAt) || dateISO;
+  const startTime = data.timeStart || data.startTime ||
+    schedule.timeStart || schedule.startTime || schedule.start || "";
+  const endTime = data.timeEnd || data.endTime ||
+    schedule.timeEnd || schedule.endTime || schedule.end || "";
   const categories = Array.isArray(data.categories)
     ? data.categories.filter(Boolean).join(", ")
     : data.categories;
@@ -414,7 +435,8 @@ function normalizeEvent(documentSnapshot) {
     endDateISO,
     startTime,
     endTime,
-    time: data.time || [startTime, endTime].filter(Boolean).join(" - "),
+    time: data.time || schedule.time ||
+      [startTime, endTime].filter(Boolean).join(" - "),
     location: data.venue || data.location || "Location TBA",
     venue: data.venue || data.location || "Location TBA",
     description: data.eventDescription || data.description || "",
@@ -427,59 +449,6 @@ function formatDate(value, options = {}) {
   const date = toEventDate(value);
   if (!date) return "Date TBA";
   return date.toLocaleDateString("en-US", options);
-}
-
-function toEventDate(value) {
-  if (!value) return null;
-  const dateValue = value && typeof value.toDate === "function"
-    ? value.toDate()
-    : value;
-  if (dateValue instanceof Date) {
-    return Number.isNaN(dateValue.getTime()) ? null : dateValue;
-  }
-  const dateText = String(dateValue).trim();
-  const dateOnly = /^(\d{4})-(\d{2})-(\d{2})$/.exec(dateText);
-  const date = dateOnly
-    ? new Date(Number(dateOnly[1]), Number(dateOnly[2]) - 1, Number(dateOnly[3]))
-    : new Date(dateText);
-  return Number.isNaN(date.getTime()) ? null : date;
-}
-
-function eventBoundaryMillis(event, isEnd = false) {
-  const rawDate = isEnd
-    ? event.endDateISO || event.dateEnd || event.endDate || event.dateISO || event.date
-    : event.dateISO || event.dateStart || event.date;
-  const date = toEventDate(rawDate);
-  if (!date) return null;
-
-  const timeValue = String(
-    isEnd
-      ? event.endTime || event.timeEnd || ""
-      : event.startTime || event.timeStart || "",
-  ).trim();
-  const timeMatch = /^(\d{1,2}):(\d{2})(?::(\d{2}))?\s*(AM|PM)?$/i.exec(timeValue);
-  if (timeValue && !timeMatch) return null;
-
-  if (timeMatch) {
-    let hours = Number(timeMatch[1]);
-    const minutes = Number(timeMatch[2]);
-    const seconds = Number(timeMatch[3] || 0);
-    const meridiem = String(timeMatch[4] || "").toUpperCase();
-    if (meridiem) {
-      if (hours < 1 || hours > 12) return null;
-      if (hours === 12) hours = 0;
-      if (meridiem === "PM") hours += 12;
-    } else if (hours > 23) {
-      return null;
-    }
-    if (minutes > 59 || seconds > 59) return null;
-    date.setHours(hours, minutes, seconds, 0);
-  } else if (isEnd) {
-    date.setHours(23, 59, 59, 999);
-  } else {
-    date.setHours(0, 0, 0, 0);
-  }
-  return date.getTime();
 }
 
 function statusClass(status) {
@@ -723,17 +692,18 @@ function renderActionRows() {
 
 function renderHappeningNow() {
   if (!happeningNowList) return;
-  const now = Date.now();
-
-  const happeningNow = organizerEvents
-    .filter((event) => {
-      const start = eventBoundaryMillis(event);
-      const end = eventBoundaryMillis(event, true);
-      const status = getDashboardStatus(event);
-      return start !== null && end !== null && now >= start && now <= end &&
-        status !== "rejected" && status !== "cancelled";
-    })
-    .sort((first, second) => eventBoundaryMillis(first) - eventBoundaryMillis(second));
+  const happeningNow = getCurrentlyLivePublishedEvents(
+    getHappeningNowCandidates(),
+    Date.now(),
+  );
+  if (happeningNowEventsError && !happeningNow.length) {
+    happeningNowList.innerHTML = `<div class="dashboard-empty-state compact"><strong>Could not load campus events</strong><span>${escapeHtml(happeningNowEventsError)}</span></div>`;
+    return;
+  }
+  if (happeningNowEventsLoading && !happeningNow.length) {
+    happeningNowList.innerHTML = `<div class="dashboard-empty-state compact"><strong>Loading campus events...</strong></div>`;
+    return;
+  }
 
   if (!happeningNow.length) {
     happeningNowList.innerHTML = `<div class="dashboard-empty-state compact"><strong>No events happening today</strong><span>Events scheduled for today will appear here.</span></div>`;
@@ -751,6 +721,15 @@ function renderHappeningNow() {
       </article>`;
     })
     .join("");
+}
+
+function getHappeningNowCandidates() {
+  const eventsById = new Map();
+  [...happeningNowEvents, ...organizerEvents].forEach((event) => {
+    const eventId = String(event.eventId || event.id || "");
+    if (eventId) eventsById.set(eventId, event);
+  });
+  return [...eventsById.values()];
 }
 
 function renderUpcomingEvents() {
@@ -827,12 +806,15 @@ actionRows?.addEventListener("click", (event) => {
   container?.addEventListener("click", (event) => {
     const item = event.target.closest("[data-firestore-event-id]");
     if (!item) return;
-    const selectedEvent = organizerEvents.find(
+    const sourceEvents = container === happeningNowList
+      ? getHappeningNowCandidates()
+      : organizerEvents;
+    const selectedEvent = sourceEvents.find(
       (eventItem) => eventItem.eventId === item.dataset.firestoreEventId,
     );
     if (selectedEvent) {
       window.RecovibeEventDetails?.open(selectedEvent, {
-        showApprovalDocuments: true,
+        showApprovalDocuments: container !== happeningNowList,
       });
     }
   });
@@ -841,9 +823,15 @@ actionRows?.addEventListener("click", (event) => {
 function stopDashboardListeners() {
   unsubscribeEvents?.forEach((unsubscribe) => unsubscribe());
   unsubscribeEvents = null;
+  unsubscribeHappeningNowEvents.forEach((unsubscribe) => unsubscribe());
+  unsubscribeHappeningNowEvents = [];
+  window.clearTimeout(happeningNowEventsLoadingTimer);
+  happeningNowEventsLoadingTimer = null;
+  happeningNowEvents = [];
+  happeningNowEventsLoading = false;
+  happeningNowEventsError = "";
+  happeningNowEventSnapshotsBySource.clear();
   eventSnapshotsBySource.clear();
-  unsubscribeNotifications?.();
-  unsubscribeNotifications = null;
   unsubscribeAcademicNotifications?.();
   unsubscribeAcademicNotifications = null;
   academicNotificationItems = [];
@@ -908,6 +896,7 @@ function startDashboardListeners(user) {
         "organizationCode",
         "organizationName",
         "organization",
+        "organizerOrganization",
         "orgCode",
         "orgName",
         "councilName",
@@ -923,6 +912,7 @@ function startDashboardListeners(user) {
 
     const pendingEventSources = new Set(eventQueries.map(([source]) => source));
     const failedEventSources = new Set();
+    const eventSourcesAtLimit = new Set();
     const refreshEvents = () => {
       const documentsById = new Map();
       eventSnapshotsBySource.forEach((documents) => {
@@ -946,7 +936,12 @@ function startDashboardListeners(user) {
             "Could not load your events. Check your connection and try again.",
           );
         } else {
-          setDashboardMessage("events", "");
+          setDashboardMessage(
+            "events",
+            eventSourcesAtLimit.size
+              ? "The dashboard event sample reached its 100-event source limit. Use All Events to browse the full paginated list."
+              : "",
+          );
         }
         settleInitialDashboardSource("events");
       }
@@ -954,8 +949,10 @@ function startDashboardListeners(user) {
 
     unsubscribeEvents = eventQueries.map(([source, eventsQuery]) =>
       onSnapshot(
-        eventsQuery,
+        query(eventsQuery, limit(100)),
         (snapshot) => {
+          if (snapshot.size === 100) eventSourcesAtLimit.add(source);
+          else eventSourcesAtLimit.delete(source);
           eventSnapshotsBySource.set(source, new Map(
             snapshot.docs.map((documentSnapshot) => [documentSnapshot.id, documentSnapshot]),
           ));
@@ -971,47 +968,127 @@ function startDashboardListeners(user) {
         },
       ),
     );
+
+    const happeningNowQueries = [
+      [
+        "public-status",
+        query(eventsRef, where("status", "in", [
+          "approved", "Approved", "APPROVED",
+          "published", "Published", "PUBLISHED",
+          "completed", "Completed", "COMPLETED",
+          "ended", "Ended", "ENDED",
+          "rescheduled", "Rescheduled", "RESCHEDULED",
+          "ongoing", "Ongoing", "ONGOING",
+          "upcoming", "Upcoming", "UPCOMING",
+          "active", "Active", "ACTIVE",
+        ])),
+      ],
+      [
+        "public-publication-status",
+        query(eventsRef, where("publicationStatus", "in", [
+          "published", "Published", "PUBLISHED",
+        ])),
+      ],
+      ["public-published", query(eventsRef, where("published", "==", true))],
+      ["public-is-published", query(eventsRef, where("isPublished", "==", true))],
+    ];
+    const pendingHappeningNowSources = new Set(
+      happeningNowQueries.map(([source]) => source),
+    );
+    const failedHappeningNowSources = new Map();
+    happeningNowEventSnapshotsBySource = new Map();
+    happeningNowEventsLoading = true;
+    happeningNowEventsError = "";
+    renderHappeningNow();
+    window.clearTimeout(happeningNowEventsLoadingTimer);
+    happeningNowEventsLoadingTimer = window.setTimeout(() => {
+      happeningNowEventsLoadingTimer = null;
+      if (!happeningNowEventsLoading) return;
+      happeningNowEventsLoading = false;
+      if (happeningNowEventSnapshotsBySource.size === 0) {
+        happeningNowEventsError =
+          "Campus event sources are taking longer than expected. Check your connection and retry.";
+      }
+      renderHappeningNow();
+    }, 8000);
+
+    const refreshHappeningNowEvents = () => {
+      const documentsById = new Map();
+      happeningNowEventSnapshotsBySource.forEach((documents) => {
+        documents.forEach((documentSnapshot, id) => {
+          const current = documentsById.get(id);
+          const currentUpdatedAt = current?.updateTime?.toMillis?.() || 0;
+          const nextUpdatedAt = documentSnapshot.updateTime?.toMillis?.() || 0;
+          if (!current || nextUpdatedAt >= currentUpdatedAt) {
+            documentsById.set(id, documentSnapshot);
+          }
+        });
+      });
+      happeningNowEvents = [...documentsById.values()]
+        .map(normalizeEvent)
+        .filter(isStudentEventPublished);
+      if (pendingHappeningNowSources.size === 0) {
+        happeningNowEventsLoading = false;
+        window.clearTimeout(happeningNowEventsLoadingTimer);
+        happeningNowEventsLoadingTimer = null;
+        if (failedHappeningNowSources.size === happeningNowQueries.length) {
+          const failures = [...failedHappeningNowSources.values()];
+          happeningNowEventsError = failures.every(
+            (error) => error?.code === "permission-denied",
+          )
+            ? "Your account cannot read published campus events."
+            : "Check your connection and try again.";
+        } else {
+          happeningNowEventsError = "";
+        }
+      }
+      renderHappeningNow();
+    };
+
+    try {
+      unsubscribeHappeningNowEvents = happeningNowQueries.map(([source, eventsQuery]) =>
+        onSnapshot(
+          query(eventsQuery, limit(100)),
+          (snapshot) => {
+            happeningNowEventSnapshotsBySource.set(source, new Map(
+              snapshot.docs.map((documentSnapshot) => [
+                documentSnapshot.id,
+                documentSnapshot,
+              ]),
+            ));
+            pendingHappeningNowSources.delete(source);
+            failedHappeningNowSources.delete(source);
+            refreshHappeningNowEvents();
+          },
+          (error) => {
+            console.warn(
+              `Unable to load EO dashboard Happening Now source (${source}):`,
+              { code: error?.code || "unknown" },
+            );
+            pendingHappeningNowSources.delete(source);
+            failedHappeningNowSources.set(source, error);
+            refreshHappeningNowEvents();
+          },
+        ),
+      );
+    } catch (error) {
+      console.error("Unable to start EO dashboard Happening Now sources:", error);
+      pendingHappeningNowSources.clear();
+      failedHappeningNowSources.set("startup", error);
+      happeningNowEventsLoading = false;
+      window.clearTimeout(happeningNowEventsLoadingTimer);
+      happeningNowEventsLoadingTimer = null;
+      happeningNowEventsError = error?.code === "permission-denied"
+        ? "Your account cannot read published campus events."
+        : "Check your connection and try again.";
+      renderHappeningNow();
+    }
   } catch (error) {
     console.error("Unable to start organizer event listener:", error.code, error.message);
     setDashboardMessage("events", "Could not start loading your events. Please try again.");
     settleInitialDashboardSource("events");
   }
 
-  try {
-    const notificationsQuery = query(
-      collection(db, "notifications"),
-      where("recipientUid", "==", user.uid),
-    );
-    unsubscribeNotifications = onSnapshot(
-      notificationsQuery,
-      (snapshot) => {
-        const unreadCount = snapshot.docs.filter((notification) => {
-          const data = notification.data();
-          return data.read !== true && data.isRead !== true;
-        }).length + academicNotificationItems.filter((item) => !item.read).length;
-        if (notificationsBadge) {
-          notificationsBadge.textContent = unreadCount > 9 ? "9+" : unreadCount ? String(unreadCount) : "";
-          notificationsBadge.hidden = unreadCount === 0;
-        }
-        setDashboardMessage("notifications", "");
-        settleInitialDashboardSource("notifications");
-      },
-      (error) => {
-        console.error("Unable to load organizer notifications:", error.code, error.message);
-        setDashboardMessage(
-          "notifications",
-          error.code === "permission-denied"
-            ? "You don't have permission to view your notification count."
-            : "Could not update your notification count.",
-        );
-        settleInitialDashboardSource("notifications");
-      },
-    );
-  } catch (error) {
-    console.error("Unable to start organizer notification listener:", error.code, error.message);
-    setDashboardMessage("notifications", "Could not update your notification count.");
-    settleInitialDashboardSource("notifications");
-  }
 }
 
 if (!isFirebaseConfigured || !auth || !db) {

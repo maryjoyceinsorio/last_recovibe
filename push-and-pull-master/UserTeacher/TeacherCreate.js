@@ -8,7 +8,18 @@ import { app, auth, db, rtdb, functions, isFirebaseConfigured } from "../UserStu
 import { onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
 import { httpsCallable } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-functions.js";
 import { ref, onValue, off, update, get } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-database.js";
-import { addDoc, collection, doc, getDocs, onSnapshot, serverTimestamp, updateDoc } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+import {
+  addDoc,
+  collection,
+  doc,
+  getDocs,
+  onSnapshot,
+  or,
+  query,
+  serverTimestamp,
+  updateDoc,
+  where,
+} from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 import { deleteObject, getDownloadURL, getStorage, ref as storageRef, uploadBytes } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-storage.js";
 
 const FAVORITES_LIMIT = 5;
@@ -582,6 +593,15 @@ loadCachedOrganizations();
   // 8. Load Faculty Pool from Database (Firestore adminUser / users & RTDB)
   let dbFacultyPool = [];
   let isFacultyDbInitialized = false;
+  const facultyRoleLookupValues = [
+    "teacher", "Teacher",
+    "faculty", "Faculty",
+    "professor", "Professor",
+    "instructor", "Instructor",
+    "adviser", "Adviser",
+    "teacher adviser", "Teacher Adviser",
+    "faculty adviser", "Faculty Adviser",
+  ];
 
   function loadFacultyPool() {
     if (!isFacultyDbInitialized) {
@@ -607,7 +627,15 @@ loadCachedOrganizations();
 
     if (isFirebaseConfigured && db) {
       try {
-        onSnapshot(collection(db, "adminUser"), (snapshot) => {
+        onSnapshot(
+          query(
+            collection(db, "adminUser"),
+            or(
+              where("role", "in", facultyRoleLookupValues),
+              where("userRole", "in", facultyRoleLookupValues),
+            ),
+          ),
+          (snapshot) => {
           const loaded = [];
           snapshot.docs.forEach((docSnap) => {
             const data = docSnap.data() || {};
@@ -638,10 +666,12 @@ loadCachedOrganizations();
               localStorage.setItem("recovibe_faculty_cache", JSON.stringify(dbFacultyPool));
             } catch {}
           }
-        }, (err) => {
-          console.warn("[CreateEvent] adminUser listener failed, trying getDocs fallback:", err);
-          fetchDatabaseFacultyOnce();
-        });
+          },
+          (err) => {
+            console.warn("[CreateEvent] adminUser listener failed, trying getDocs fallback:", err);
+            fetchDatabaseFacultyOnce();
+          },
+        );
       } catch (err) {
         console.warn("[CreateEvent] Failed to listen to adminUser:", err);
         fetchDatabaseFacultyOnce();
@@ -703,7 +733,14 @@ loadCachedOrganizations();
   async function fetchDatabaseFacultyOnce() {
     if (!isFirebaseConfigured || !db) return;
     try {
-      const usersSnap = await getDocs(collection(db, "users"));
+      const usersRef = collection(db, "users");
+      const usersSnap = await getDocs(query(
+        usersRef,
+        or(
+          where("role", "in", facultyRoleLookupValues),
+          where("userRole", "in", facultyRoleLookupValues),
+        ),
+      ));
       usersSnap.forEach((docSnap) => {
         const data = docSnap.data() || {};
         const role = String(data.role || data.userRole || "").toLowerCase();
@@ -724,7 +761,9 @@ loadCachedOrganizations();
           }
         }
       });
-    } catch (e) {}
+    } catch (error) {
+      console.warn("[CreateEvent] Could not load the scoped faculty fallback:", error);
+    }
   }
 
   // 9. Render Unauthorized Message

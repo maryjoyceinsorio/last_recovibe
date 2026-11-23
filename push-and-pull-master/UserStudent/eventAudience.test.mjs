@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { isEventVisibleToStudent } from "./eventAudience.js";
+import {
+  isEventVisibleToStudent,
+  isStudentEventPublished,
+} from "./eventAudience.js";
 
 test("warns for every mixed-audience event without targets", () => {
   const originalEnvironment = process.env.NODE_ENV;
@@ -34,4 +37,48 @@ test("warns for every mixed-audience event without targets", () => {
     if (originalEnvironment === undefined) delete process.env.NODE_ENV;
     else process.env.NODE_ENV = originalEnvironment;
   }
+});
+
+test("approved but unpublished events remain hidden", () => {
+  assert.equal(isStudentEventPublished({ status: "approved" }), false);
+  assert.equal(
+    isStudentEventPublished({ status: "approved", approvalStatus: "approved" }),
+    false,
+  );
+});
+
+test("published events and approved events with a publish marker are visible", () => {
+  assert.equal(isStudentEventPublished({ status: "published" }), true);
+  assert.equal(
+    isStudentEventPublished({ status: "approved", published: true }),
+    true,
+  );
+  assert.equal(
+    isStudentEventPublished({ publicationStatus: "Published" }),
+    true,
+  );
+  assert.equal(isStudentEventPublished({ status: "rescheduled" }), true);
+});
+
+test("unpublished lifecycle states override publication markers", () => {
+  assert.equal(
+    isStudentEventPublished({ status: "pending", published: true }),
+    false,
+  );
+  assert.equal(
+    isStudentEventPublished({ status: "draft", publicationStatus: "published" }),
+    false,
+  );
+  assert.equal(
+    isStudentEventPublished({ status: "published", approvalStatus: "pending" }),
+    false,
+  );
+  assert.equal(
+    isStudentEventPublished({ status: "published", published: false }),
+    false,
+  );
+  assert.equal(
+    isStudentEventPublished({ status: "published", approved: false }),
+    false,
+  );
 });

@@ -355,9 +355,44 @@ service cloud.firestore {
 
         allow delete: if false;
       }
+
+      match /attendance/{userId} {
+        function canManageAttendance() {
+          let eventPath = /databases/$(database)/documents/events/$(eventId);
+          return signedIn()
+            && exists(eventPath)
+            && canManageEvent(get(eventPath).data);
+        }
+
+        allow read: if signedIn()
+          && (
+            request.auth.uid == userId
+            || canReadManagedEventRegistrations(eventId)
+          );
+        allow create, update: if canManageAttendance()
+          && request.resource.data.uid == userId
+          && request.resource.data.keys().hasAll([
+            "uid", "scannedAt", "scannedBy", "walkIn", "name", "studentNo", "organization"
+          ])
+          && request.resource.data.keys().hasOnly([
+            "uid", "scannedAt", "scannedBy", "walkIn", "name", "studentNo", "organization"
+          ])
+          && request.resource.data.scannedAt is number
+          && request.resource.data.scannedBy is string
+          && request.resource.data.walkIn is bool
+          && request.resource.data.name is string
+          && request.resource.data.studentNo is string
+          && request.resource.data.organization is string;
+        allow delete: if false;
+      }
     }
 
     match /{path=**}/registrations/{registrationId} {
+      allow read: if signedIn()
+        && resource.data.uid == request.auth.uid;
+    }
+
+    match /{path=**}/attendance/{attendanceId} {
       allow read: if signedIn()
         && resource.data.uid == request.auth.uid;
     }

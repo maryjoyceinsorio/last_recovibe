@@ -1374,6 +1374,9 @@ body {
   font-weight: 700;
   white-space: nowrap;
 }
+.teacher-event-content > .teacher-status-chip {
+  margin-top: 8px;
+}
 .status-live-now {
   background: #e1f1e8;
   color: #26734a;

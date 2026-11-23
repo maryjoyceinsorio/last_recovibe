@@ -1581,3 +1581,25 @@ body {
     width: 100%;
   }
 }
+
+.notification-actions,
+.notification-card-actions,
+.notification-trash-actions {
+  position: relative;
+  z-index: 30;
+  pointer-events: auto;
+}
+
+.notification-actions > button,
+.notification-card-actions > button,
+.notification-trash-actions > button {
+  position: relative;
+  z-index: 1;
+  pointer-events: auto;
+  touch-action: manipulation;
+}
+
+.admin-notification-card::before,
+.admin-notification-card::after {
+  pointer-events: none;
+}

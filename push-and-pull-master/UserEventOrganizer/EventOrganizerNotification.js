@@ -351,18 +351,31 @@ async function updateOrganizerFirestoreRead(item, read) {
 }
 
 async function permanentlyDeleteOrganizerNotification(item) {
-  if (item.source !== "firestore") return;
-  const [config, firestoreModule] = await Promise.all([
-    import("../UserStudent/firebaseConfig.js"),
-    import("https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js"),
-  ]);
+  const config = await import("../UserStudent/firebaseConfig.js");
   const user = config.auth?.currentUser;
   if (!user || user.uid !== currentOrganizerUid) {
     throw new Error("The signed-in organizer could not be verified.");
   }
-  await firestoreModule.deleteDoc(
-    firestoreModule.doc(config.db, "notifications", item.id),
-  );
+  if (item.source === "firestore") {
+    const firestoreModule = await import("https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js");
+    await firestoreModule.deleteDoc(
+      firestoreModule.doc(config.db, "notifications", item.id),
+    );
+  } else if (item.source === "rtdb") {
+    if (!config.rtdb || !config.isRtdbConfigured) {
+      throw new Error("Realtime Database is not configured.");
+    }
+    const databaseModule = await import("https://www.gstatic.com/firebasejs/10.12.2/firebase-database.js");
+    await databaseModule.remove(
+      databaseModule.ref(config.rtdb, `notifications/${user.uid}/${item.id}`),
+    );
+  } else if (item.source !== "derived") {
+    throw new Error("This notification source cannot be deleted.");
+  }
+  if (!window.OrganizerNotificationData?.markPermanentlyDeleted) {
+    throw new Error("The notification state service is unavailable.");
+  }
+  window.OrganizerNotificationData.markPermanentlyDeleted(item.id);
 }
 
 async function setOrganizerNotificationRead(item, read) {
@@ -797,17 +810,19 @@ document.addEventListener("DOMContentLoaded", () => {
 
   if (list)
     list.addEventListener("click", (event) => {
-      if (event.target.closest("[data-retry-notifications]")) {
+      const clickTarget = event.target instanceof Element ? event.target : null;
+      if (!clickTarget) return;
+      if (clickTarget.closest("[data-retry-notifications]")) {
         firestoreNotificationError = "";
         renderNotifications();
         serviceRetryNotifications();
         return;
       }
-      const card = event.target.closest("[data-notification-id]");
+      const card = clickTarget.closest("[data-notification-id]");
       if (!card) return;
 
-      const menuToggle = event.target.closest(".notification-menu-toggle");
-      const menuAction = event.target.closest("[data-notification-action]");
+      const menuToggle = clickTarget.closest(".notification-menu-toggle");
+      const menuAction = clickTarget.closest("button[data-notification-action]");
       const item = notifications.find(
         (notification) => notification.id === card.dataset.notificationId,
       );
@@ -851,7 +866,7 @@ document.addEventListener("DOMContentLoaded", () => {
           }
         });
       }
-    });
+    }, { capture: true });
   if (list)
     list.addEventListener("keydown", (event) => {
       if (!["Enter", " "].includes(event.key) || event.target.closest("button, a, input, select")) return;
@@ -869,8 +884,10 @@ document.addEventListener("DOMContentLoaded", () => {
 
   if (deletedList)
     deletedList.addEventListener("click", (event) => {
-      const action = event.target.closest("[data-deleted-action]");
-      const card = event.target.closest("[data-deleted-notification-id]");
+      const clickTarget = event.target instanceof Element ? event.target : null;
+      if (!clickTarget) return;
+      const action = clickTarget.closest("button[data-deleted-action]");
+      const card = clickTarget.closest("[data-deleted-notification-id]");
       if (!action || !card) return;
 
       const item = deletedNotifications.find(
@@ -911,7 +928,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
       saveDeletedNotifications();
       renderNotifications();
-    });
+    }, { capture: true });
 
   if (closeButton)
     closeButton.addEventListener("click", closeNotificationDetails);

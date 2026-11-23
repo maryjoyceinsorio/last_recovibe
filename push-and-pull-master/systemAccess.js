@@ -4,6 +4,7 @@ import {
   getDoc,
   onSnapshot,
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+import { getDocCached } from "./firestoreReadCache.js";
 
 const ACCESS_SETTINGS_PATH = ["systemSettings", "default"];
 const MAINTENANCE_NOTICE_KEY = "recovibeMaintenanceNotice";
@@ -23,6 +24,10 @@ const PORTAL_PROFILE_CACHE_KEYS = [
 ];
 const DEFAULT_MAINTENANCE_MESSAGE =
   "System maintenance is in progress. Sign-in is temporarily unavailable. Please try again later.";
+const ACCESS_SETTINGS_CACHE_MS = 15000;
+let cachedAccessSettings = null;
+let cachedAccessSettingsExpiresAt = 0;
+let accessSettingsReadPromise = null;
 export const EVENT_REGISTRATION_CLOSED_MESSAGE =
   "Event registration is currently closed by the administrator.";
 
@@ -53,6 +58,9 @@ function normalizeSettings(data = {}) {
 }
 
 export function getCachedSystemAccessSettings() {
+  if (cachedAccessSettings && Date.now() < cachedAccessSettingsExpiresAt) {
+    return { ...cachedAccessSettings };
+  }
   try {
     const stored = JSON.parse(localStorage.getItem("recovibeSystemSettings") || "{}");
     return normalizeSettings(stored);
@@ -67,15 +75,33 @@ export function getCachedSystemAccessSettings() {
 
 export async function readSystemAccessSettings(db) {
   if (!db) throw new Error("Firestore is not configured.");
-  const snapshot = await getDoc(doc(db, ...ACCESS_SETTINGS_PATH));
-  const settings = normalizeSettings(snapshot.exists() ? snapshot.data() : {});
-  cacheSettings(settings);
-  if (typeof window !== "undefined") {
-    window.dispatchEvent(new CustomEvent("system-access-settings-changed", {
-      detail: settings,
-    }));
+  if (cachedAccessSettings && Date.now() < cachedAccessSettingsExpiresAt) {
+    return { ...cachedAccessSettings };
   }
-  return settings;
+  if (accessSettingsReadPromise) return accessSettingsReadPromise;
+
+  const request = (async () => {
+    const snapshot = await getDocCached(
+      getDoc,
+      doc(db, ...ACCESS_SETTINGS_PATH),
+      "system-settings",
+      ACCESS_SETTINGS_CACHE_MS,
+    );
+    const settings = normalizeSettings(snapshot.exists() ? snapshot.data() : {});
+    cacheSettings(settings);
+    if (typeof window !== "undefined") {
+      window.dispatchEvent(new CustomEvent("system-access-settings-changed", {
+        detail: settings,
+      }));
+    }
+    return settings;
+  })();
+  accessSettingsReadPromise = request;
+  try {
+    return await request;
+  } finally {
+    if (accessSettingsReadPromise === request) accessSettingsReadPromise = null;
+  }
 }
 
 export function maintenanceMessage(settings) {
@@ -133,19 +159,37 @@ function normalizeRole(profile) {
     .replace(/[^a-z0-9]/g, "");
 }
 
+function profileIsInactive(profile) {
+  const status = String(profile?.status || "").trim().toLowerCase();
+  return profile?.isActive === false ||
+    ["disabled", "inactive", "suspended"].includes(status);
+}
+
 async function getAccountRole(db, uid) {
   const reads = await Promise.allSettled([
-    getDoc(doc(db, "adminUser", uid)),
-    getDoc(doc(db, "users", uid)),
-    getDoc(doc(db, "students", uid)),
-    getDoc(doc(db, "eventOrganizations", uid)),
+    getDocCached(getDoc, doc(db, "adminUser", uid), uid),
+    getDocCached(getDoc, doc(db, "users", uid), uid),
+    getDocCached(getDoc, doc(db, "students", uid), uid),
+    getDocCached(getDoc, doc(db, "eventOrganizations", uid), uid),
   ]);
   const snapshots = reads.map((result) =>
     result.status === "fulfilled" ? result.value : null,
   );
+  const adminProfile = snapshots[0]?.exists() ? snapshots[0].data() : null;
+  const disabledAdminProfile = adminProfile && profileIsInactive(adminProfile);
   const profiles = snapshots.slice(0, 3)
     .filter((snapshot) => snapshot?.exists())
-    .map((snapshot) => snapshot.data());
+    .map((snapshot) => snapshot.data())
+    .filter((profile) => {
+      if (profileIsInactive(profile)) return false;
+      if (
+        disabledAdminProfile &&
+        ["admin", "osas", "superadmin"].includes(normalizeRole(profile))
+      ) {
+        return false;
+      }
+      return true;
+    });
   const roles = profiles.map(normalizeRole).filter(Boolean);
   if (roles.some((role) => ["superadmin", "superadministrator"].includes(role))) {
     return "superadmin";
@@ -425,6 +469,8 @@ export function startPortalRoleGuard(auth, db) {
 }
 
 function cacheSettings(settings) {
+  cachedAccessSettings = normalizeSettings(settings);
+  cachedAccessSettingsExpiresAt = Date.now() + ACCESS_SETTINGS_CACHE_MS;
   try {
     const cached = JSON.parse(
       localStorage.getItem("recovibeSystemSettings") || "{}",
@@ -543,6 +589,7 @@ export function startActiveSessionAccessGuard(auth, db) {
         code: error?.code || "unknown",
         message: error?.message || String(error),
       });
+      cachedAccessSettingsExpiresAt = 0;
       settingsReady = true;
       window.dispatchEvent(new CustomEvent("system-access-settings-changed", {
         detail: { ...settings, error },

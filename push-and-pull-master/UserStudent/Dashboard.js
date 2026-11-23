@@ -18,7 +18,6 @@ import {
   auth,
   db,
   rtdb,
-  functions,
   isFirebaseConfigured,
   isRtdbConfigured,
 } from "./firebaseConfig.js";
@@ -27,23 +26,33 @@ import {
   signOut,
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
 import {
+  collectionGroup,
   collection,
   doc,
+  limit,
   onSnapshot,
   query,
-  runTransaction,
   where,
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 import {
   ref,
   onValue,
   off,
-  set,
-  remove,
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-database.js";
-import { httpsCallable } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-functions.js";
 import { fetchMonthHolidays } from "../holidayService.js";
-import { isEventVisibleToStudent } from "./eventAudience.js";
+import {
+  createAttendanceQrPayload,
+  renderAttendanceQr,
+} from "./attendanceQr.js";
+import { writeEventRegistration } from "./eventRtdb.js";
+import {
+  isRegistrationActive,
+  mergeUserRegistrationMaps,
+} from "./eventRegistrationData.js";
+import {
+  isEventVisibleToStudent,
+  isStudentEventPublished,
+} from "./eventAudience.js";
 import {
   clearCachedStudentProfile,
   loadStudentProfile,
@@ -55,6 +64,7 @@ import {
   getCachedSystemAccessSettings,
   readSystemAccessSettings,
 } from "../systemAccess.js";
+import { isResourceExhausted } from "./firestoreRetry.js";
 
 /* ---------------------------------------------------------
    STATE
@@ -62,7 +72,8 @@ import {
 let currentUid = null;
 let academicCalendarItems = [];
 let serverTimeOffset = 0;
-let permanentQrToken = "";
+const attendanceQrPayloads = new Map();
+let qrRenderGeneration = 0;
 let systemAccessSettings = getCachedSystemAccessSettings();
 
 function renderAcademicCalendarAlerts() {
@@ -141,11 +152,13 @@ function signalPageLoadReady() {
   window.dispatchEvent(new Event("page-data-ready"));
 }
 let registeredEventIds = new Set();
-const firestoreRegistrationListeners = new Map();
-let firestoreRegistrationListenerUid = null;
+const firestoreRegistrationRecords = new Map();
+const rtdbRegistrationRecords = new Map();
+let firestoreRegistrationUnsubscribe = null;
+let rtdbRegistrationUnsubscribe = null;
+let registrationListenerUid = null;
 const attendanceMap = new Map(); // eventId -> { scannedAt, scannedBy, walkIn }
 const attendanceListeners = new Map(); // eventId -> unsub function
-const registrationSyncIds = new Set();
 const pendingRegistrationIds = new Set();
 const eventDetailsDataMap = new Map();
 let openQrEventId = null; // Event ID whose inline QR is displayed
@@ -986,26 +999,9 @@ function rebuildStudentEvents() {
   renderCalendar();
 }
 
-function isFirestorePublishedEvent(data) {
-  const status = String(data.status || "")
-    .trim()
-    .toLowerCase()
-    .replace(/[ _-]+/g, " ");
-  const publicationStatus = String(data.publicationStatus || "")
-    .trim()
-    .toLowerCase()
-    .replace(/[ _-]+/g, " ");
-  return (
-    ["approved", "published", "completed", "rescheduled"].includes(status) ||
-    publicationStatus === "published" ||
-    data.isPublished === true ||
-    data.published === true
-  );
-}
-
 function normalizeFirestoreStudentEvent(documentSnapshot) {
   const data = documentSnapshot.data();
-  if (!isFirestorePublishedEvent(data)) return null;
+  if (!isStudentEventPublished(data)) return null;
   const rawStatus = String(data.status || "").trim().toLowerCase();
   const preserveStatus =
     ["approved", "published", "completed", "rescheduled"].includes(rawStatus) ||
@@ -1151,7 +1147,7 @@ function loadFallbackEvents() {
       const list = JSON.parse(cached);
       if (Array.isArray(list) && list.length > 0) {
         list.forEach((item) => {
-          if (!isFirestorePublishedEvent(item)) return;
+          if (!isStudentEventPublished(item)) return;
           const ev = normalizeEvent(item.id || item.eventId, item);
           realtimeEventsMap.set(ev.id, ev);
         });
@@ -1163,7 +1159,7 @@ function loadFallbackEvents() {
 
   if (Array.isArray(window.RECOVIBE_EVENTS) && window.RECOVIBE_EVENTS.length > 0) {
     window.RECOVIBE_EVENTS.forEach((item) => {
-      if (!isFirestorePublishedEvent(item)) return;
+      if (!isStudentEventPublished(item)) return;
       const ev = normalizeEvent(item.id || item.eventId, item);
       realtimeEventsMap.set(ev.id, ev);
     });
@@ -1172,61 +1168,36 @@ function loadFallbackEvents() {
 }
 
 /* ---------------------------------------------------------
-   QR GENERATION (Offline Fallback & Cloud Functions)
+   CLIENT-SIDE QR GENERATION
 --------------------------------------------------------- */
-async function getQRCodeLib() {
-  if (window.QRCode) return window.QRCode;
-  try {
-    const mod = await import("https://esm.sh/qrcode@1.5.4");
-    return mod.default || mod;
-  } catch (err) {
-    if (window.QRCode) return window.QRCode;
-    throw err;
+function getDashboardQrPayload(eventId) {
+  const user = auth?.currentUser;
+  if (!currentUid || user?.uid !== currentUid) {
+    throw new Error("Sign in again to load your attendance QR code.");
   }
-}
+  const cacheKey = `${currentUid}:${eventId}`;
+  if (attendanceQrPayloads.has(cacheKey)) return attendanceQrPayloads.get(cacheKey);
 
-async function getStudentQrToken() {
-  if (!currentUid || auth?.currentUser?.uid !== currentUid) {
-    throw new Error("Sign in to load your attendance QR code.");
-  }
-  const tokenStorageKey = `recovibe_permanent_qr_token:${currentUid}`;
-  if (permanentQrToken) return permanentQrToken;
-  const cached = localStorage.getItem(tokenStorageKey);
-  if (cached) {
-    permanentQrToken = cached;
-    return cached;
-  }
-
-  if (!functions || !isFirebaseConfigured || !navigator.onLine) {
-    throw new Error("Attendance QR code is unavailable. Check your connection and try again.");
-  }
-  const getMyQrTokenCallable = httpsCallable(functions, "getMyQrToken");
-  const res = await getMyQrTokenCallable();
-  const token = String(res?.data?.token || "");
-  if (!token) throw new Error("Attendance QR code could not be loaded. Please try again.");
-  if (auth?.currentUser?.uid !== currentUid) {
-    throw new Error("The signed-in account changed. Please retry.");
-  }
-  permanentQrToken = token;
-  localStorage.setItem(tokenStorageKey, token);
-  return token;
+  const event = rawEventsMap.get(eventId);
+  const payload = createAttendanceQrPayload({
+    user,
+    eventId,
+    eventName: event?.name || "",
+    registrationStatus: "registered",
+  });
+  attendanceQrPayloads.set(cacheKey, payload);
+  return payload;
 }
 
 async function renderQrToCanvas(canvas, token) {
-  if (!canvas || !token) return;
   try {
-    const QRCodeLib = await getQRCodeLib();
-    await QRCodeLib.toCanvas(canvas, token, {
+    await renderAttendanceQr(canvas, token, {
       width: 150,
-      margin: 2,
-      color: {
-        dark: "#000000",
-        light: "#ffffff",
-      },
-      errorCorrectionLevel: "M",
+      displayWidth: 150,
     });
   } catch (err) {
     console.error("renderQrToCanvas error:", err);
+    throw err;
   }
 }
 
@@ -1276,28 +1247,44 @@ function syncAttendanceListeners(liveEvents) {
   // Attach listeners for registered live events
   activeLiveIds.forEach((eventId) => {
     if (!attendanceListeners.has(eventId)) {
-      const attRef = ref(rtdb, `attendance/${eventId}/${currentUid}`);
-      const onValCallback = (snap) => {
-        if (snap.exists()) {
-          const val = snap.val();
-          if (val && val.scannedAt) {
-            attendanceMap.set(eventId, val);
-            // Auto-close QR if currently open
-            if (openQrEventId === eventId) {
-              openQrEventId = null;
-            }
-            const ev = rawEventsMap.get(eventId);
-            const evName = ev ? ev.name : "Event";
-            const timeStr = formatTime(val.scannedAt);
-            announce(`Checked in to ${evName} at ${timeStr}.`);
-            showToast(`Checked in to ${evName}!`);
-            renderHappeningNow();
-            renderCalendarDayEvents();
+      const attendanceRefs = [
+        ref(rtdb, `attendance/${eventId}/${currentUid}`),
+        ref(rtdb, `events/${eventId}/attendance/${currentUid}`),
+        ref(rtdb, `eventAttendance/${eventId}/${currentUid}`),
+      ];
+      const attendanceValues = [null, null, null];
+      const listeners = attendanceRefs.map((attRef, index) => {
+        const onValCallback = (snap) => {
+          attendanceValues[index] = snap.val();
+          const val = attendanceValues
+            .filter(Boolean)
+            .reduce((latest, candidate) =>
+              !latest || Number(candidate.scannedAt) >= Number(latest.scannedAt)
+                ? candidate
+                : latest,
+            null);
+          if (!val?.scannedAt) {
+            attendanceMap.delete(eventId);
+            return;
           }
-        }
-      };
-      onValue(attRef, onValCallback);
-      attendanceListeners.set(eventId, () => off(attRef, "value", onValCallback));
+          const previous = attendanceMap.get(eventId);
+          attendanceMap.set(eventId, val);
+          if (previous?.scannedAt === val.scannedAt) return;
+          if (openQrEventId === eventId) openQrEventId = null;
+          const ev = rawEventsMap.get(eventId);
+          const evName = ev ? ev.name : "Event";
+          const timeStr = formatTime(val.scannedAt);
+          announce(`Checked in to ${evName} at ${timeStr}.`);
+          showToast(`Checked in to ${evName}!`);
+          renderHappeningNow();
+          renderCalendarDayEvents();
+        };
+        onValue(attRef, onValCallback);
+        return () => off(attRef, "value", onValCallback);
+      });
+      attendanceListeners.set(eventId, () => {
+        listeners.forEach((unsubscribe) => unsubscribe());
+      });
     }
   });
 }
@@ -1418,6 +1405,7 @@ function renderHappeningNow() {
   const container = document.getElementById("happeningNowList");
   const badge = document.getElementById("happeningLiveBadge");
   if (!container) return;
+  const qrRenderRequestId = ++qrRenderGeneration;
   if (renderEventFetchState(container)) {
     if (badge) badge.hidden = true;
     return;
@@ -1521,7 +1509,10 @@ function renderHappeningNow() {
             <div class="inline-qr-name">${escapeHtml(studentProfile.fullName)}</div>
             <div class="inline-qr-sub">${escapeHtml([studentProfile.studentNo, studentProfile.organization].filter(Boolean).join(" · "))}</div>
             <div class="inline-qr-note">Show this at the entrance.</div>
-            <button type="button" class="btn-hide-qr btn-toggle-qr" data-event-id="${ev.id}">Hide QR</button>
+            <div class="inline-qr-actions">
+              <button type="button" class="btn-refresh-qr" data-event-id="${ev.id}">Refresh code</button>
+              <button type="button" class="btn-hide-qr btn-toggle-qr" data-event-id="${ev.id}">Hide QR</button>
+            </div>
           </div>
         `;
       }
@@ -1550,6 +1541,7 @@ function renderHappeningNow() {
       return `
         <article class="event-card event-card--live" id="live-card-${ev.id}" data-event-id="${ev.id}">
           <div class="event-body">
+            <h3 class="event-title">${highlightMatch(ev.name, state.query)}</h3>
             <div class="event-top-row">
               <div class="event-card-categories">
                 <span class="category category-${categoryClass(primaryCategory)}">${escapeHtml(primaryCategory)}</span>
@@ -1559,7 +1551,6 @@ function renderHappeningNow() {
               <span class="live-ends-in">${formatRemainingTime(ev.endMs - now)}</span>
               ${isRegistered && !isCheckedIn ? '<span class="tag-registered-small">Registered</span>' : ''}
             </div>
-            <h3 class="event-title">${highlightMatch(ev.name, state.query)}</h3>
             <div class="event-meta">
               <span>${eventMetaIconClock()} ${formatTime(ev.startMs)}</span>
               <span>${eventMetaIconPin()} ${highlightMatch(ev.venue, state.query)}</span>
@@ -1587,16 +1578,28 @@ function renderHappeningNow() {
 
   // Trigger canvas drawing for active QR panel
   if (openQrEventId) {
-    const canvas = document.getElementById(`inlineQrCanvas_${openQrEventId}`);
-    if (canvas) {
-      getStudentQrToken()
-        .then((token) => renderQrToCanvas(canvas, token))
-        .catch((error) => {
-          console.error("Could not load the Dashboard attendance QR code:", error);
-          const note = document.querySelector(`#inlineQrPanel_${openQrEventId} .inline-qr-note`);
-          if (note) note.textContent = "Attendance QR could not be loaded. Please try again.";
-        });
-    }
+    const eventId = openQrEventId;
+    requestAnimationFrame(async () => {
+      if (qrRenderRequestId !== qrRenderGeneration || eventId !== openQrEventId) return;
+      const canvas = document.getElementById(`inlineQrCanvas_${eventId}`);
+      const panel = document.getElementById(`inlineQrPanel_${eventId}`);
+      if (!canvas || !canvas.isConnected || !panel) return;
+
+      const note = panel.querySelector(".inline-qr-note");
+      if (note) note.textContent = "Preparing QR code...";
+      try {
+        const payload = getDashboardQrPayload(eventId);
+        await renderQrToCanvas(canvas, payload);
+        if (qrRenderRequestId !== qrRenderGeneration || !canvas.isConnected) return;
+        if (note) note.textContent = "Show this at the entrance.";
+      } catch (error) {
+        if (qrRenderRequestId !== qrRenderGeneration || !canvas.isConnected) return;
+        console.error("Could not load the Dashboard attendance QR code:", error);
+        if (note) {
+          note.textContent = `Attendance QR could not be generated: ${error?.message || "Please try again."}`;
+        }
+      }
+    });
   }
 }
 
@@ -1692,6 +1695,7 @@ function renderUpcoming() {
             <span class="year">${dateParts.year}</span>
           </div>
           <div class="event-body">
+            <h3 class="event-title">${highlightMatch(ev.name, state.query)}</h3>
             <div class="event-top-row">
               <div class="event-card-categories">
                 <span class="category category-${categoryClass(primaryCategory)}">${escapeHtml(primaryCategory)}</span>
@@ -1699,7 +1703,6 @@ function renderUpcoming() {
               </div>
               ${isRegistered ? '<span class="tag-registered-small">Registered</span>' : ''}
             </div>
-            <h3 class="event-title">${highlightMatch(ev.name, state.query)}</h3>
             <div class="event-meta">
               <span>${eventMetaIconClock()} ${formatTime(ev.startMs)}</span>
               <span>${eventMetaIconPin()} ${highlightMatch(ev.venue, state.query)}</span>
@@ -1935,18 +1938,34 @@ function renderCalendarDayEvents() {
 /* ---------------------------------------------------------
    USER ACTIONS: Register & Cancel Registration
 --------------------------------------------------------- */
+function registrationFailure(message) {
+  return { success: false, message };
+}
+
 async function handleRegister(eventId) {
-  if (!eventId || pendingRegistrationIds.has(eventId)) return;
+  if (!eventId) return registrationFailure("This event is no longer available.");
+  if (pendingRegistrationIds.has(eventId)) {
+    return registrationFailure("Registration is already in progress.");
+  }
 
   try {
     systemAccessSettings = await readSystemAccessSettings(db);
   } catch (error) {
+    if (isResourceExhausted(error)) {
+    systemAccessSettings = getCachedSystemAccessSettings();
+    const notice = "Firestore is busy. Using your last available registration settings.";
+    console.warn("[StudentDashboard] Using cached registration settings after quota exhaustion.");
+    showToast(notice);
+    announce(notice);
+    } else {
     console.error("[StudentDashboard] Could not verify event registration availability:", {
       code: error?.code || "unknown",
       message: error?.message || String(error),
     });
-    showToast("Could not verify event registration availability. Check your connection and try again.");
-    return false;
+    const message = "Could not verify event registration availability. Check your connection and try again.";
+    showToast(message);
+    return registrationFailure(message);
+    }
   }
   if (!systemAccessSettings.eventRegistrationEnabled) {
     showToast(EVENT_REGISTRATION_CLOSED_MESSAGE);
@@ -1955,36 +1974,39 @@ async function handleRegister(eventId) {
     renderUpcoming();
     renderRecommended();
     renderCalendar();
-    return false;
+    return registrationFailure(EVENT_REGISTRATION_CLOSED_MESSAGE);
   }
 
   const ev = rawEventsMap.get(eventId);
   if (!ev) {
     showToast("This event is no longer available. Refresh and try again.");
-    return;
+    return registrationFailure("This event is no longer available. Refresh and try again.");
   }
   if (!auth?.currentUser) {
-    showToast("Please sign in again before registering.");
+    const message = "Please sign in again before registering.";
+    showToast(message);
     announce("Sign in is required to register for events.");
-    return;
+    return registrationFailure(message);
   }
   const uid = String(auth.currentUser.uid || "").trim();
   if (!uid) {
-    showToast("Your session is not ready. Please try again.");
+    const message = "Your session is not ready. Please try again.";
+    showToast(message);
     announce("Your session is not ready.");
-    return;
+    return registrationFailure(message);
   }
-  if (!isFirebaseConfigured || (!db && !functions)) {
-    showToast("Registration is unavailable right now. Please try again later.");
+  if (!isRtdbConfigured || !rtdb) {
+    const message = "Registration is unavailable right now. Please try again later.";
+    showToast(message);
     announce("Registration is unavailable.");
-    return;
+    return registrationFailure(message);
   }
 
   const registrationBlockReason = getRegistrationBlockReason(ev);
   if (registrationBlockReason) {
     showToast(registrationBlockReason);
     announce(registrationBlockReason);
-    return false;
+    return registrationFailure(registrationBlockReason);
   }
 
   pendingRegistrationIds.add(eventId);
@@ -1995,97 +2017,28 @@ async function handleRegister(eventId) {
   announce(`Registering for ${ev.name}...`);
 
   try {
-    let registeredCount;
-    if (db) {
-      const eventRef = doc(db, "events", eventId);
-      const registrationRef = doc(db, "events", eventId, "registrations", uid);
-      const accessSettingsRef = doc(db, "systemSettings", "default");
-      registeredCount = await runTransaction(db, async (transaction) => {
-        const [eventSnapshot, registrationSnapshot, accessSettingsSnapshot] = await Promise.all([
-          transaction.get(eventRef),
-          transaction.get(registrationRef),
-          transaction.get(accessSettingsRef),
-        ]);
-        const accessData = accessSettingsSnapshot.exists()
-          ? accessSettingsSnapshot.data()
-          : {};
-        const registrationEnabled = typeof accessData.eventRegistrationEnabled === "boolean"
-          ? accessData.eventRegistrationEnabled
-          : accessData.registrationEnabled !== false;
-        if (!registrationEnabled) {
-          throw new Error(EVENT_REGISTRATION_CLOSED_MESSAGE);
-        }
-        if (!eventSnapshot.exists()) {
-          throw new Error("This event is no longer available.");
-        }
-
-        const eventData = eventSnapshot.data();
-        const status = String(eventData.status || eventData.publicationStatus || "")
-          .trim()
-          .toLowerCase()
-          .replace(/[ _-]+/g, " ");
-        if (
-          status !== "published" &&
-          eventData.published !== true &&
-          eventData.isPublished !== true
-        ) {
-          throw new Error("Registration is closed because this event is not published.");
-        }
-        const transactionBlockReason = getRegistrationBlockReason(
-          eventData,
-          getNow(),
-          ev.endMs,
-        );
-        if (transactionBlockReason) {
-          throw new Error(transactionBlockReason);
-        }
-        if (ev.endMs && getNow() >= ev.endMs) {
-          throw new Error("Registration is closed because this event has ended.");
-        }
-        if (
-          registrationSnapshot.exists() &&
-          registrationSnapshot.data().status === "registered"
-        ) {
-          const alreadyRegisteredError = new Error(
-            "You are already registered for this event.",
-          );
-          alreadyRegisteredError.code = "already-registered";
-          throw alreadyRegisteredError;
-        }
-
-        const capacity = Number(eventData.capacity ?? eventData.maxCapacity);
-        const count = Math.max(0, Number(eventData.registeredCount) || 0);
-        if (capacity > 0 && count >= capacity) {
-          throw new Error("This event is full.");
-        }
-
-        const nextCount = count + 1;
-        const now = Date.now();
-        transaction.update(eventRef, {
-          registeredCount: nextCount,
-          updatedAt: now,
-        });
-        transaction.set(registrationRef, {
-          uid,
-          status: "registered",
-          registeredAt: now,
-          at: now,
-        });
-        return nextCount;
-      });
-    } else {
-      const registerFn = httpsCallable(functions, "registerForEvent");
-      const response = await registerFn({ eventId, uid });
-      if (response.data?.success !== true) {
-        throw new Error("The registration could not be completed. Please try again.");
-      }
-      registeredCount = response.data.registeredCount;
-    }
+    const registeredAt = Date.now();
+    await writeEventRegistration({
+      rtdb,
+      db,
+      eventId,
+      uid,
+      status: "registered",
+      registeredAt,
+      cancelledAt: null,
+      at: registeredAt,
+      student: {
+        name: studentProfile.fullName,
+        studentNo: studentProfile.studentNo,
+        organization: studentProfile.organization,
+      },
+    });
 
     registeredEventIds.add(eventId);
-    if (Number.isFinite(Number(registeredCount))) {
-      ev.registeredCount = Number(registeredCount);
-    }
+    const nextRegisteredCount = Math.max(0, Number(ev.registeredCount) || 0) + 1;
+    ev.registeredCount = Number.isFinite(ev.capacity) && ev.capacity > 0
+      ? Math.min(ev.capacity, nextRegisteredCount)
+      : nextRegisteredCount;
     saveParticipationsToStorage();
     const now = getNow();
     if (getEventClassification(ev, now) === "live") {
@@ -2097,28 +2050,37 @@ async function handleRegister(eventId) {
     console.error("registerForEvent failed:", err);
     const errorCode = String(err?.code || "").toLowerCase();
     const errorText = String(err?.message || "").toLowerCase();
-    const message =
-      errorText.includes("currently closed by the administrator")
-        ? EVENT_REGISTRATION_CLOSED_MESSAGE
-        : errorText.includes("registration closed") ||
+    let message = err?.message || "Could not register for this event. Please try again.";
+    if (
+      errorCode.includes("resource-exhausted") ||
+      errorCode === "429" ||
+      errorText.includes("too many requests") ||
+      /\b429\b/.test(errorText)
+    ) {
+      message = "Registration is busy right now. Please wait a moment and try again.";
+    } else if (
+      errorCode === "already-registered" ||
+      errorCode.includes("already-exists") ||
+      errorText.includes("already registered") ||
+      errorCode.includes("permission-denied") && registeredEventIds.has(eventId)
+    ) {
+      message = "You are already registered for this event.";
+    } else if (errorText.includes("currently closed by the administrator")) {
+      message = EVENT_REGISTRATION_CLOSED_MESSAGE;
+    } else if (
+      errorText.includes("registration closed") ||
       errorText.includes("registration is closed") ||
       errorText.includes("deadline")
-        ? "Registration Closed"
-        : errorText.includes("fully booked") ||
-            errorText.includes("full")
-          ? "Fully Booked"
-          : errorCode === "already-registered" ||
-      errorCode.includes("already-exists") ||
-      errorText.includes("already registered")
-        ? "You are already registered for this event."
-        : errorCode.includes("permission-denied")
-          ? "Registration was denied by Firestore security rules. Please contact an administrator."
-          : errorCode.includes("resource-exhausted")
-            ? "Fully Booked"
-            : err?.message || "Could not register for this event. Please try again.";
+    ) {
+      message = "Registration Closed";
+    } else if (errorText.includes("fully booked") || errorText.includes("full")) {
+      message = "Fully Booked";
+    } else if (errorCode.includes("permission-denied")) {
+      message = "Registration was denied by Realtime Database security rules. Please contact an administrator.";
+    }
     showToast(message);
     announce(message);
-    return false;
+    return registrationFailure(message);
   } finally {
     pendingRegistrationIds.delete(eventId);
     renderHappeningNow();
@@ -2132,6 +2094,7 @@ async function handleRegister(eventId) {
 async function handleCancelRegistration(eventId) {
   const ev = rawEventsMap.get(eventId);
   const evName = ev ? ev.name : "event";
+  const wasRegistered = registeredEventIds.has(eventId);
 
   // Optimistic update
   registeredEventIds.delete(eventId);
@@ -2156,72 +2119,57 @@ async function handleCancelRegistration(eventId) {
   announce(`Cancelled registration for ${evName}.`);
   showToast(`Cancelled registration for ${evName}`);
 
-  // Server-enforced cancellation via Cloud Function
-  if (isFirebaseConfigured && (functions || firestoreEventsMap.has(eventId))) {
-    try {
-      if (firestoreEventsMap.has(eventId) && db && auth?.currentUser) {
-        const eventRef = doc(db, "events", eventId);
-        const registrationRef = doc(
-          db,
-          "events",
-          eventId,
-          "registrations",
-          auth.currentUser.uid,
-        );
-        const registeredCount = await runTransaction(db, async (transaction) => {
-          const [eventSnapshot, registrationSnapshot] = await Promise.all([
-            transaction.get(eventRef),
-            transaction.get(registrationRef),
-          ]);
-          if (!eventSnapshot.exists()) {
-            throw new Error("This event is no longer available.");
-          }
-
-          const eventData = eventSnapshot.data();
-          const registrationData = registrationSnapshot.exists()
-            ? registrationSnapshot.data()
-            : null;
-          if (registrationData?.status !== "registered") {
-            return Math.max(0, Number(eventData.registeredCount) || 0);
-          }
-          if (ev?.endMs && getNow() >= ev.endMs) {
-            throw new Error("Registration can't be cancelled after the event ends.");
-          }
-
-          const nextCount = Math.max(0, Number(eventData.registeredCount) || 0) - 1;
-          const now = Date.now();
-          transaction.update(eventRef, {
-            registeredCount: nextCount,
-            updatedAt: now,
-          });
-          transaction.set(registrationRef, {
-            ...registrationData,
-            uid: auth.currentUser.uid,
-            status: "cancelled",
-            cancelledAt: now,
-            at: now,
-          });
-          return nextCount;
-        });
-        if (ev) ev.registeredCount = registeredCount;
-      } else {
-        const cancelFn = httpsCallable(functions, "cancelRegistration");
-        await cancelFn({ eventId });
-      }
-    } catch (err) {
-      console.warn("cancelRegistration notice:", err);
-      // Revert optimistic update
-      registeredEventIds.add(eventId);
-      saveParticipationsToStorage();
-      renderHappeningNow();
-      renderUpcoming();
-      renderRecommended();
-      renderCalendar();
-      const msg = err.message || "Could not cancel registration.";
-      showToast(msg);
-      announce(msg);
-    }
+  if (!isRtdbConfigured || !rtdb || !auth?.currentUser?.uid) {
+    registeredEventIds.add(eventId);
+    saveParticipationsToStorage();
+    renderHappeningNow();
+    renderUpcoming();
+    renderRecommended();
+    renderCalendar();
+    const message = "Registration is unavailable right now. Please try again later.";
+    showToast(message);
+    announce(message);
+    return false;
   }
+
+  try {
+    const uid = String(auth.currentUser.uid);
+    if (ev?.endMs && getNow() >= ev.endMs) {
+      throw new Error("Registration can't be cancelled after the event ends.");
+    }
+    const cancelledAt = Date.now();
+    await writeEventRegistration({
+      rtdb,
+      db,
+      eventId,
+      uid,
+      status: "cancelled",
+      registeredAt: cancelledAt,
+      cancelledAt,
+      at: cancelledAt,
+      student: {
+        name: studentProfile.fullName,
+        studentNo: studentProfile.studentNo,
+        organization: studentProfile.organization,
+      },
+    });
+    if (wasRegistered && ev) {
+      ev.registeredCount = Math.max(0, (Number(ev.registeredCount) || 0) - 1);
+    }
+  } catch (err) {
+    console.warn("cancelRegistration notice:", err);
+    registeredEventIds.add(eventId);
+    saveParticipationsToStorage();
+    renderHappeningNow();
+    renderUpcoming();
+    renderRecommended();
+    renderCalendar();
+    const msg = err.message || "Could not cancel registration.";
+    showToast(msg);
+    announce(msg);
+    return false;
+  }
+  return true;
 }
 
 window.recovibeRegisterForEvent = handleRegister;
@@ -2231,64 +2179,83 @@ window.recovibeCancelRegistration = handleCancelRegistration;
    REALTIME DATABASE LISTENERS & SYNC
 --------------------------------------------------------- */
 function syncRegistrationsFromRtdb(eventsList) {
-  if (!currentUid || !isRtdbConfigured) return;
-  eventsList.forEach((ev) => {
-    if (registrationSyncIds.has(ev.id)) return;
-    registrationSyncIds.add(ev.id);
-    const regRef = ref(rtdb, `registrations/${ev.id}/${currentUid}`);
-    onValue(
-      regRef,
-      (snap) => {
-        if (snap.exists() && snap.val() === true) {
-          if (!registeredEventIds.has(ev.id)) {
-            registeredEventIds.add(ev.id);
-            saveParticipationsToStorage();
-            renderHappeningNow();
-            renderUpcoming();
-            renderRecommended();
-            renderCalendar();
-          }
-        }
-      },
-      { onlyOnce: true }
-    );
-  });
+  if (!currentUid || !isRtdbConfigured || !rtdb) return;
+  if (registrationListenerUid !== currentUid) {
+    firestoreRegistrationUnsubscribe?.();
+    rtdbRegistrationUnsubscribe?.();
+    firestoreRegistrationUnsubscribe = null;
+    rtdbRegistrationUnsubscribe = null;
+    firestoreRegistrationRecords.clear();
+    rtdbRegistrationRecords.clear();
+    registrationListenerUid = currentUid;
+  }
+  if (rtdbRegistrationUnsubscribe) return;
+
+  const listenerUid = currentUid;
+  rtdbRegistrationUnsubscribe = onValue(
+    ref(rtdb, `userRegistrations/${listenerUid}`),
+    (snapshot) => {
+      if (currentUid !== listenerUid) return;
+      rtdbRegistrationRecords.clear();
+      Object.entries(snapshot.val() || {}).forEach(([eventId, registration]) => {
+        rtdbRegistrationRecords.set(eventId, registration);
+      });
+      applyMergedRegistrationStates();
+    },
+    (error) => console.warn("Could not load RTDB student registrations:", {
+      code: error?.code || "unknown",
+      message: error?.message || String(error),
+    }),
+  );
 }
 
 function syncRegistrationsFromFirestore(eventsList) {
-  if (!currentUid || !db || !isFirebaseConfigured) return;
-  if (firestoreRegistrationListenerUid !== currentUid) {
-    firestoreRegistrationListeners.forEach((unsubscribe) => unsubscribe());
-    firestoreRegistrationListeners.clear();
-    firestoreRegistrationListenerUid = currentUid;
-  }
+  if (!currentUid || !db || !isFirebaseConfigured || firestoreRegistrationUnsubscribe) return;
+  const listenerUid = currentUid;
+  firestoreRegistrationUnsubscribe = onSnapshot(
+    query(
+      collectionGroup(db, "registrations"),
+      where("uid", "==", listenerUid),
+    ),
+    (snapshot) => {
+      if (currentUid !== listenerUid) return;
+      firestoreRegistrationRecords.clear();
+      snapshot.forEach((registrationDocument) => {
+        const eventId = registrationDocument.ref.parent.parent?.id;
+        if (!eventId) return;
+        firestoreRegistrationRecords.set(eventId, {
+          ...registrationDocument.data(),
+          uid: registrationDocument.data().uid || listenerUid,
+        });
+      });
+      applyMergedRegistrationStates();
+    },
+    (error) => console.warn("Firestore student registrations are unavailable:", {
+      code: error?.code || "unknown",
+      message: error?.message || String(error),
+    }),
+  );
+}
 
-  eventsList.forEach((ev) => {
-    if (!firestoreEventsMap.has(ev.id)) return;
-    const listenerKey = `${currentUid}:${ev.id}`;
-    if (firestoreRegistrationListeners.has(listenerKey)) return;
-    const registrationRef = doc(db, "events", ev.id, "registrations", currentUid);
-    const unsubscribe = onSnapshot(
-      registrationRef,
-      (snapshot) => {
-        const isRegistered =
-          snapshot.exists() &&
-          String(snapshot.data().status || "").toLowerCase() === "registered";
-        const hadRegistration = registeredEventIds.has(ev.id);
-        if (isRegistered) registeredEventIds.add(ev.id);
-        else registeredEventIds.delete(ev.id);
-        if (hadRegistration !== isRegistered) {
-          saveParticipationsToStorage();
-          renderHappeningNow();
-          renderUpcoming();
-          renderRecommended();
-          renderCalendar();
-        }
-      },
-      (error) => console.error("Registration Lookup Error:", error),
-    );
-    firestoreRegistrationListeners.set(listenerKey, unsubscribe);
+function applyMergedRegistrationStates() {
+  const merged = mergeUserRegistrationMaps(
+    firestoreRegistrationRecords,
+    rtdbRegistrationRecords,
+  );
+  let changed = false;
+  merged.forEach((registration, eventId) => {
+    const wasRegistered = registeredEventIds.has(eventId);
+    const isRegistered = isRegistrationActive(registration);
+    if (isRegistered) registeredEventIds.add(eventId);
+    else registeredEventIds.delete(eventId);
+    changed ||= wasRegistered !== isRegistered;
   });
+  if (!changed) return;
+  saveParticipationsToStorage();
+  renderHappeningNow();
+  renderUpcoming();
+  renderRecommended();
+  renderCalendar();
 }
 
 function initDataListeners(authenticatedUser = auth?.currentUser) {
@@ -2391,6 +2358,7 @@ function initDataListeners(authenticatedUser = auth?.currentUser) {
           "completed",
           "rescheduled",
         ]),
+        limit(150),
       );
     retryEventFetch = () => {
       unsubscribeFirestoreEvents?.();
@@ -2455,7 +2423,7 @@ function initDataListeners(authenticatedUser = auth?.currentUser) {
       const data = snap.val() || {};
       const newMap = new Map();
       Object.entries(data).forEach(([id, item]) => {
-        if (item && isFirestorePublishedEvent(item)) {
+        if (item && isStudentEventPublished(item)) {
           newMap.set(id, normalizeEvent(id, item));
         }
       });
@@ -2589,11 +2557,23 @@ function wireEvents() {
     }
 
     // Toggle Inline QR
+    const refreshQrBtn = e.target.closest(".btn-refresh-qr");
+    if (refreshQrBtn) {
+      e.preventDefault();
+      const eventId = refreshQrBtn.getAttribute("data-event-id");
+      if (eventId && eventId === openQrEventId) {
+        attendanceQrPayloads.delete(`${currentUid}:${eventId}`);
+        renderHappeningNow();
+      }
+      return;
+    }
+
     const qrBtn = e.target.closest(".btn-toggle-qr");
     if (qrBtn) {
       e.preventDefault();
       const eventId = qrBtn.getAttribute("data-event-id");
       if (eventId) {
+        attendanceQrPayloads.delete(`${currentUid}:${eventId}`);
         openQrEventId = openQrEventId === eventId ? null : eventId;
         renderHappeningNow();
       }
@@ -2694,8 +2674,11 @@ function setupCleanup() {
     if (tickInterval) clearInterval(tickInterval);
     attendanceListeners.forEach((unsub) => unsub());
     attendanceListeners.clear();
-    firestoreRegistrationListeners.forEach((unsub) => unsub());
-    firestoreRegistrationListeners.clear();
+    firestoreRegistrationUnsubscribe?.();
+    rtdbRegistrationUnsubscribe?.();
+    firestoreRegistrationUnsubscribe = null;
+    rtdbRegistrationUnsubscribe = null;
+    registrationListenerUid = null;
     activeCleanups.forEach((cleanup) => {
       try {
         cleanup();
@@ -2737,6 +2720,14 @@ function init() {
     onAuthStateChanged(auth, async (user) => {
       if (!user) {
         currentUid = null;
+        firestoreRegistrationUnsubscribe?.();
+        rtdbRegistrationUnsubscribe?.();
+        firestoreRegistrationUnsubscribe = null;
+        rtdbRegistrationUnsubscribe = null;
+        registrationListenerUid = null;
+        firestoreRegistrationRecords.clear();
+        rtdbRegistrationRecords.clear();
+        attendanceQrPayloads.clear();
         registeredEventIds.clear();
         rawEventsMap.clear();
         clearCachedStudentProfile();
@@ -2745,7 +2736,14 @@ function init() {
       }
 
       if (currentUid && currentUid !== user.uid) {
-        permanentQrToken = "";
+        firestoreRegistrationUnsubscribe?.();
+        rtdbRegistrationUnsubscribe?.();
+        firestoreRegistrationUnsubscribe = null;
+        rtdbRegistrationUnsubscribe = null;
+        registrationListenerUid = null;
+        firestoreRegistrationRecords.clear();
+        rtdbRegistrationRecords.clear();
+        attendanceQrPayloads.clear();
         registeredEventIds.clear();
         rawEventsMap.clear();
         firestoreEventsMap.clear();

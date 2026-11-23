@@ -207,13 +207,23 @@ import {
           ? "If your email change is still pending, verify the new address and sign in with your current email until then."
           : error?.code === "profile/role-mismatch"
           ? "This account belongs to a different portal. Sign in through the correct portal."
+          : error?.code === "profile/not-found"
+          ? "Your account signed in, but no teacher profile was found. Ask an administrator to verify your account."
+          : ["permission-denied", "firestore/permission-denied"].includes(error?.code)
+          ? "Your account signed in, but its teacher profile could not be read. Ask an administrator to verify profile access."
+          : ["unavailable", "firestore/unavailable", "deadline-exceeded", "firestore/deadline-exceeded"].includes(error?.code)
+          ? "A network or Firestore error prevented account verification. Check your connection and try again."
           : error?.code?.startsWith("auth/")
-          ? ["auth/invalid-credential", "auth/wrong-password", "auth/user-not-found"].includes(error.code)
+          ? ["auth/invalid-credential", "auth/wrong-password", "auth/user-not-found", "auth/invalid-email"].includes(error.code)
             ? "Incorrect email or password."
+            : error.code === "auth/too-many-requests"
+            ? "Too many sign-in attempts. Please wait and try again later."
+            : error.code === "auth/network-request-failed"
+            ? "A network error prevented sign-in. Check your connection and try again."
+            : error.code === "auth/user-disabled"
+            ? "This account is disabled. Contact an administrator for help."
             : "Unable to sign in right now. Please try again."
-          : ["unavailable", "firestore/unavailable", "auth/network-request-failed"].includes(error?.code)
-            ? "A network error prevented account verification. Check your connection and try again."
-            : "Your account could not be verified for the teacher portal. Contact an administrator.";
+          : "Your account could not be verified for the teacher portal. Contact an administrator.";
       banner.classList.add("show");
     } finally {
       if (!signInVerified) clearRememberedEmail();

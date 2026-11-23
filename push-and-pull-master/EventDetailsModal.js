@@ -679,11 +679,11 @@
       ])) || "N/A")}</p></section>`,
       `<section class="student-event-section"><h3>Objectives</h3>${listMarkup(asList(objectives).length ? asList(objectives) : ["N/A"])}</section>`,
       `<section class="student-event-section"><h3>Rules &amp; Reminders</h3>${listMarkup(rules.length ? rules : ["N/A"])}</section>`,
-      approvalReasonMarkup,
       `<div class="student-event-bottom-grid">
         <section class="student-event-section student-event-contact"><h3>Contact Person</h3><p><strong>Name:</strong> ${escapeHTML(contactName || "N/A")}</p><p><strong>Email:</strong> ${contactEmail ? `<a href="mailto:${escapeHTML(contactEmail)}">${escapeHTML(contactEmail)}</a>` : "N/A"}</p><p><strong>Number:</strong> ${escapeHTML(contactPhone || "N/A")}</p><p><strong>Faculty In Charge:</strong> ${escapeHTML(facultyInChargeName || "N/A")}</p></section>
         <section class="student-event-section student-event-documents"><h3>Participant Documents</h3><p>Open the participant document links in a new tab.</p><div class="student-event-attachments">${participantDocuments.length ? documentMarkup(participantDocuments) : '<p class="student-event-no-documents">No files attached.</p>'}</div><small>(Make sure to download and fill up these files. Its needed for participation)</small>${approvalDocuments.length ? `<div class="student-event-approval-documents"><p><strong>Approval Documents</strong></p><div class="student-event-attachments">${documentMarkup(approvalDocuments)}</div></div>` : ""}</section>
       </div>`,
+      approvalReasonMarkup,
     ].join("");
     modal.querySelector('[data-field="content"]').innerHTML = detailContent;
 
@@ -723,6 +723,9 @@
 
   function close() {
     if (!overlay || overlay.getAttribute("aria-hidden") === "true") return;
+    if (overlay.contains(document.activeElement)) {
+      document.activeElement.blur();
+    }
     overlay.classList.remove("is-open");
     overlay.setAttribute("aria-hidden", "true");
     document.body.classList.remove("event-details-page-locked");
@@ -1336,11 +1339,11 @@
         ]), "N/A", event))}</p></section>
         <section class="student-event-section"><h3>Objectives</h3>${bullets(objectives)}</section>
         <section class="student-event-section"><h3>Rules &amp; Reminders</h3>${bullets(rules)}</section>
-        ${approvalReasonMarkup}
         <div class="student-event-bottom-grid">
           <section class="student-event-section student-event-contact"><h3>Contact Person</h3><p><strong>Name:</strong> ${escapeHTML(displayText(person || "N/A", "N/A", event))}</p><p><strong>Email:</strong> ${email ? `<a href="mailto:${escapeHTML(displayText(email, "N/A", event))}">${escapeHTML(displayText(email, "N/A", event))}</a>` : "N/A"}</p><p><strong>Number:</strong> ${escapeHTML(displayText(phone || "N/A", "N/A", event))}</p><p><strong>Faculty In Charge:</strong> ${escapeHTML(displayText(facultyInChargeName || "N/A", "N/A", event))}</p></section>
           <section class="student-event-section student-event-documents"><h3>Participant Documents</h3><p>Open the participant document links in a new tab.</p><div class="student-event-attachments">${attachmentsMarkup(event)}</div><small>(Make sure to download and fill up these files. Its needed for participation)</small></section>
-        </div>`;
+        </div>
+        ${approvalReasonMarkup}`;
     }
 
     function updateAction() {
@@ -1384,15 +1387,23 @@
     }, { once: true });
 
     function closeConfirmation(restore = true) {
+      if (confirmOverlay.contains(document.activeElement)) {
+        if (restore && detailOverlay.classList.contains("is-open")) {
+          actionButton.focus();
+        } else {
+          document.activeElement.blur();
+        }
+      }
       confirmOverlay.classList.remove("is-open");
       confirmOverlay.setAttribute("aria-hidden", "true");
       errorElement.textContent = "";
-      if (restore && detailOverlay.classList.contains("is-open"))
-        actionButton.focus();
     }
 
     function closeDetails() {
       closeConfirmation(false);
+      if (detailOverlay.contains(document.activeElement)) {
+        document.activeElement.blur();
+      }
       detailOverlay.classList.remove("is-open");
       detailOverlay.setAttribute("aria-hidden", "true");
       document.body.style.overflow = bodyOverflow;
@@ -1458,9 +1469,14 @@
           if (selectedEvent.capacityMode !== "N/A" && available <= 0)
             throw new Error("No slots are available for this event.");
           if (typeof window.recovibeRegisterForEvent === "function") {
-            if ((await window.recovibeRegisterForEvent(id)) === false) {
+            const registrationResult = await window.recovibeRegisterForEvent(id);
+            if (
+              registrationResult === false ||
+              registrationResult?.success === false
+            ) {
               throw new Error(
-                blockReason(selectedEvent, "join") ||
+                registrationResult?.message ||
+                  blockReason(selectedEvent, "join") ||
                   "The registration could not be completed.",
               );
             }
@@ -1473,8 +1489,15 @@
           if (!registrations.has(id))
             throw new Error("You are not registered for this event.");
           if (typeof window.recovibeCancelRegistration === "function") {
-            if ((await window.recovibeCancelRegistration(id)) === false) {
-              throw new Error("The registration could not be cancelled.");
+            const cancellationResult = await window.recovibeCancelRegistration(id);
+            if (
+              cancellationResult === false ||
+              cancellationResult?.success === false
+            ) {
+              throw new Error(
+                cancellationResult?.message ||
+                  "The registration could not be cancelled.",
+              );
             }
           }
           registrations.delete(id);
@@ -1538,8 +1561,16 @@
           errorElement.textContent = "Fully Booked";
         } else if (/no longer open|started or ended|event has ended/i.test(message)) {
           errorElement.textContent = "This event is no longer open for registration.";
+        } else if (/permission-denied|security rules|insufficient permissions/i.test(message)) {
+          errorElement.textContent =
+            "Registration was denied by Firestore security rules. Please contact an administrator.";
+        } else if (/resource-exhausted|too many requests|registration is busy/i.test(message)) {
+          errorElement.textContent =
+            "Registration is busy right now. Please wait a moment and try again.";
         } else {
-          errorElement.textContent = "Could Not Register for this Event. Please try again.";
+          errorElement.textContent = message
+            ? `Registration failed: ${message}`
+            : "Could Not Register for this Event. Please try again.";
         }
       } finally {
         pending = false;

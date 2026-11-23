@@ -1,6 +1,5 @@
 import {
   EmailAuthProvider,
-  fetchSignInMethodsForEmail,
   onAuthStateChanged,
   reauthenticateWithCredential,
   updatePassword,
@@ -192,57 +191,21 @@ import {
     if (viewRole) viewRole.textContent = profile.role || "Event Organizer";
   }
 
-  const profileSourceCollections = new Set(["adminUser", "users", "eventOrganizations"]);
-  const nestedProfileFields = new Set(["profile", "userProfile", "organizerProfile"]);
-
-  function getOrganizerProfileTarget(uid) {
-    const source = profile.profileSource;
-    const collectionName = profileSourceCollections.has(source?.collectionName)
-      ? source.collectionName
-      : "adminUser";
-    const documentId = typeof source?.documentId === "string" && source.documentId
-      ? source.documentId
-      : uid;
-    const nestedField = nestedProfileFields.has(source?.nestedField)
-      ? source.nestedField
-      : "";
-    return {
-      profileRef: doc(db, collectionName, documentId),
-      nestedField,
-    };
-  }
-
-  function profileWritePayload(fields, nestedField) {
-    return nestedField ? { [nestedField]: fields } : fields;
-  }
-
-  function readProfileFields(data, nestedField) {
-    const profileData = nestedField ? data?.[nestedField] : data;
-    return profileData && typeof profileData === "object" ? profileData : {};
-  }
-
   async function persistOrganizerProfileFields(uid, fields) {
     if (!db || !isFirebaseConfigured) throw new Error("Profile storage is unavailable.");
-    const target = getOrganizerProfileTarget(uid);
-    await setDoc(
-      target.profileRef,
-      profileWritePayload(fields, target.nestedField),
-      { merge: true },
-    );
-    const snapshot = await getDoc(target.profileRef);
+    const profileRef = doc(db, "users", uid);
+    await setDoc(profileRef, fields, { merge: true });
+    const snapshot = await getDoc(profileRef);
     if (!snapshot.exists()) {
       throw new Error("The updated organizer profile could not be verified.");
     }
-    return {
-      ...target,
-      data: readProfileFields(snapshot.data(), target.nestedField),
-    };
+    return snapshot.data();
   }
 
   async function saveOrganizerProfileFields(uid, fields) {
     const persisted = await persistOrganizerProfileFields(uid, fields);
     for (const [field, expectedValue] of Object.entries(fields)) {
-      if (persisted.data[field] !== expectedValue) {
+      if (persisted[field] !== expectedValue) {
         throw new Error("The organizer profile update could not be verified. Please try again.");
       }
     }
@@ -277,11 +240,9 @@ import {
       return null;
     }
 
-    const target = getOrganizerProfileTarget(authUser.uid);
-    const profileSnapshot = await getDoc(target.profileRef);
-    const data = profileSnapshot.exists()
-      ? readProfileFields(profileSnapshot.data(), target.nestedField)
-      : {};
+    const profileRef = doc(db, "users", authUser.uid);
+    const profileSnapshot = await getDoc(profileRef);
+    const data = profileSnapshot.exists() ? profileSnapshot.data() : {};
     const normalizedEmail = email.toLowerCase();
     const updates = {};
     if (String(data.email || "").trim().toLowerCase() !== normalizedEmail) {
@@ -292,12 +253,12 @@ import {
     }
     if (Object.keys(updates).length) {
       const persisted = await persistOrganizerProfileFields(authUser.uid, updates);
-      if (String(persisted.data.email || "").trim().toLowerCase() !== normalizedEmail) {
+      if (String(persisted.email || "").trim().toLowerCase() !== normalizedEmail) {
         throw new Error("The verified email could not be confirmed in the organizer profile.");
       }
       if (
         updates.pendingEmail &&
-        String(persisted.data.pendingEmail || "").trim().toLowerCase() === normalizedEmail
+        String(persisted.pendingEmail || "").trim().toLowerCase() === normalizedEmail
       ) {
         throw new Error("The verified email is still marked as pending in the organizer profile.");
       }
@@ -325,6 +286,32 @@ import {
     return Object.keys(updates).length || localPendingConfirmed
       ? { email, changed: true, pendingEmail: stillPendingEmail }
       : null;
+  }
+
+  async function loadOrganizerSelfProfile(authUser) {
+    if (!db || !isFirebaseConfigured || !authUser?.uid) return;
+    const snapshot = await getDoc(doc(db, "users", authUser.uid));
+    if (!snapshot.exists() || auth?.currentUser?.uid !== authUser.uid) return;
+    const savedProfile = snapshot.data();
+    const editableFields = [
+      "firstName",
+      "middleName",
+      "lastName",
+      "fullName",
+      "name",
+      "contactNumber",
+    ];
+    const savedFields = Object.fromEntries(editableFields
+      .filter((field) => typeof savedProfile[field] === "string")
+      .map((field) => [field, savedProfile[field]]));
+    profile = {
+      ...profile,
+      ...savedFields,
+      uid: authUser.uid,
+      email: authUser.email || profile.email,
+    };
+    localStorage.setItem(profileStorageKey, JSON.stringify(profile));
+    updateDisplay();
   }
 
   /* -------------------------------------------------------------
@@ -490,6 +477,7 @@ import {
         middleName: mid,
         lastName: last,
         fullName: [first, mid, last].filter(Boolean).join(" "),
+        name: [first, mid, last].filter(Boolean).join(" "),
       };
       nameSaveBtn.disabled = true;
       nameSaveBtn.textContent = "Saving...";
@@ -659,18 +647,9 @@ import {
       contactSaveBtn.disabled = true;
       contactSaveBtn.textContent = "Saving...";
       let phoneSaved = false;
-      let verificationSent = false;
+      let pendingEmailSyncWarning = false;
+      let verificationAuthErrorCode = "";
       try {
-        if (emailChanged) {
-          const signInMethods = await fetchSignInMethodsForEmail(auth, emailVal);
-          if (signInMethods.length) {
-            const duplicateError = Object.assign(
-              new Error("That email address is already registered. Use a different email."),
-              { code: "auth/email-already-in-use" },
-            );
-            throw duplicateError;
-          }
-        }
         if (phoneChanged) {
           const savedContactFields = await saveOrganizerProfileFields(
             authUser.uid,
@@ -680,27 +659,40 @@ import {
           phoneSaved = true;
         }
         if (emailChanged) {
-          await verifyBeforeUpdateEmail(authUser, emailVal);
-          verificationSent = true;
+          try {
+            await verifyBeforeUpdateEmail(authUser, emailVal);
+          } catch (authError) {
+            verificationAuthErrorCode = authError?.code || "unknown";
+            console.error("[EventOrganizerProfile] Firebase Auth email verification failed:", {
+              code: verificationAuthErrorCode,
+              error: authError,
+            });
+            throw authError;
+          }
           profile.pendingEmail = emailVal;
           localStorage.setItem(
             `recovibe_pending_email_${authUser.uid}`,
             JSON.stringify({ pendingEmail: emailVal, oldEmail: profile.email, timestamp: Date.now() }),
           );
-          const savedEmailFields = await saveOrganizerProfileFields(
-            authUser.uid,
-            { pendingEmail: emailVal },
-          );
-          profile = { ...profile, ...savedEmailFields };
+          try {
+            await saveOrganizerProfileFields(authUser.uid, { pendingEmail: emailVal });
+          } catch (pendingEmailError) {
+            pendingEmailSyncWarning = true;
+            console.warn("[EventOrganizerProfile] Could not save pending email for sign-in fallback:", pendingEmailError);
+          }
         }
         localStorage.setItem(profileStorageKey, JSON.stringify(profile));
         updateDisplay();
         setContactEditMode(false);
         showFeedback(emailChanged
-          ? `Verification was sent to ${emailVal}. Keep using ${currentEmail} to sign in until you confirm the new address.`
-          : "Contact details updated successfully.");
+          ? `Verification was sent. Sign in with your current email until the new address is confirmed. If it does not arrive in Gmail (including Spam), delivery may be delayed or blocked at Firebase or mail provider level.`
+          : "Contact details updated successfully.",
+        pendingEmailSyncWarning);
       } catch (error) {
-        console.error("[EventOrganizerProfile] Could not update contact details:", error);
+        console.error("[EventOrganizerProfile] Could not update contact details:", {
+          code: error?.code || "unknown",
+          error,
+        });
         if (phoneSaved) {
           localStorage.setItem(profileStorageKey, JSON.stringify(profile));
           updateDisplay();
@@ -716,9 +708,10 @@ import {
         } else if (error?.code === "auth/invalid-email") {
           message = "Enter a valid email address.";
         } else if (error?.code === "auth/requires-recent-login") {
-          message = "Sign in again before changing your email address.";
-        } else if (verificationSent) {
-          message = `A verification email was sent to ${emailVal}, but the pending change could not be saved. Your sign-in email is still ${currentEmail}.`;
+          message = "Please sign in again before changing your email address.";
+        }
+        if (verificationAuthErrorCode) {
+          message = `${message} (Firebase Auth error: ${verificationAuthErrorCode})`;
         }
         if (phoneSaved) message = `Contact number saved. ${message}`;
         showFeedback(message, true);
@@ -1103,6 +1096,9 @@ import {
         }
         correctionAuthUser = user;
         syncProfileEmail(user);
+        void loadOrganizerSelfProfile(user).catch((error) => {
+          console.warn("[EventOrganizerProfile] Could not load saved profile fields:", error);
+        });
         startCorrectionRequests(user);
       });
     } catch (error) {

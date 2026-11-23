@@ -139,7 +139,7 @@ onAuthStateChanged(auth, async (user) => {
   const adminProfile = results[1].status === "fulfilled" && results[1].value.exists()
     ? results[1].value.data()
     : {};
-  const latestProfile = { ...cachedProfile, ...userProfile, ...adminProfile };
+  const latestProfile = { ...cachedProfile, ...adminProfile, ...userProfile };
   localStorage.setItem("recovibeOrganizerProfile", JSON.stringify(latestProfile));
   renderOrganizerProfile(user, latestProfile);
 });

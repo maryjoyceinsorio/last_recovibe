@@ -1,8 +1,34 @@
-import { auth, authReady, db, functions, rtdb, isFirebaseConfigured } from "../UserStudent/firebaseConfig.js";
+import { auth, authReady, db, rtdb, isFirebaseConfigured } from "../UserStudent/firebaseConfig.js";
 import { onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
-import { ref, onValue, off, get, set } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-database.js";
-import { collection, getDocs, doc, getDoc, query, serverTimestamp, updateDoc, where } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
-import { syncOrganizerOrganization } from "../organizationScope.js";
+import { ref, onValue, off, get } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-database.js";
+import {
+  collection,
+  endAt,
+  getDocs,
+  doc,
+  getDoc,
+  limit,
+  orderBy,
+  query,
+  serverTimestamp,
+  startAt,
+  updateDoc,
+  where,
+} from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+import {
+  buildManualAttendeeIndex,
+  searchManualAttendees,
+} from "./scanAttendanceManualLookup.js";
+import { writeEventAttendance } from "../UserStudent/eventRtdb.js";
+import {
+  isRegistrationActive,
+  mergeRegistrationMapsByUid,
+} from "../UserStudent/eventRegistrationData.js";
+import { parseAttendanceQrPayload } from "../UserStudent/attendanceQr.js";
+import {
+  getDocCached,
+  getDocsCached,
+} from "../firestoreReadCache.js";
 
 // DOM Element References
 const organizerTodayDate = document.getElementById("organizerTodayDate");
@@ -134,6 +160,7 @@ const requestedEventId = scanUrlParams.get("eventId")?.trim() || "";
 console.log("[Scan Attendance] URL eventId:", requestedEventId || "(none)");
 let activeAttendanceRef = null;
 let activeEventAttendanceRef = null;
+let activeEventAttendanceV2Ref = null;
 let currentAttendanceRows = [];
 let currentAbsentRows = [];
 let currentRosterTab = "checkedIn"; // "checkedIn" | "absent"
@@ -168,6 +195,59 @@ function normalizeEventTime(value) {
 function eventIsOwnedByOrganizer(data) {
   return [data.createdBy, data.organizerId, data.organizerUid]
     .some((id) => String(id || "") === String(organizerUid));
+}
+
+function normalizeOrganizationCode(value) {
+  return String(value || "").trim().replace(/\s+/g, " ").toUpperCase();
+}
+
+function isOrganizerRole(value) {
+  return ["eventorganizer", "organizer", "eo"].includes(
+    String(value || "").trim().toLowerCase().replace(/[^a-z0-9]/g, ""),
+  );
+}
+
+async function getOrganizerOrganizationFromProfile(user) {
+  if (!db || !user?.uid) throw new Error("Sign in before loading organization events.");
+  const reads = await Promise.allSettled([
+    getDocCached(getDoc, doc(db, "adminUser", user.uid), user.uid),
+    getDocCached(getDoc, doc(db, "users", user.uid), user.uid),
+    getDocCached(getDoc, doc(db, "eventOrganizations", user.uid), user.uid),
+  ]);
+  const profiles = reads.slice(0, 2)
+    .filter((result) => result.status === "fulfilled" && result.value.exists())
+    .map((result) => result.value.data());
+  const organizerProfile = profiles.find((profile) =>
+    isOrganizerRole(profile.role || profile.userRole),
+  );
+  const organizationResult = reads[2];
+  const organizationRecord = organizationResult.status === "fulfilled" &&
+    organizationResult.value.exists()
+    ? organizationResult.value.data()
+    : {};
+  const hasConflictingRole = profiles.some((profile) =>
+    String(profile.role || profile.userRole || "").trim(),
+  );
+
+  if (!organizerProfile && (hasConflictingRole || !organizationRecord.organizationCode)) {
+    const readError = reads.find((result) => result.status === "rejected")?.reason;
+    if (readError) throw readError;
+    throw new Error("Your organizer account does not have a verified organization.");
+  }
+
+  const profile = organizerProfile || organizationRecord;
+  const organizationCode = normalizeOrganizationCode(
+    organizationRecord.organizationCode ||
+    profile.organizationCode ||
+    profile.orgCode ||
+    profile.organization ||
+    profile.organizationName ||
+    profile.orgName,
+  );
+  if (!organizationCode) {
+    throw new Error("Your organizer profile must have an organization assigned.");
+  }
+  return organizationCode;
 }
 
 function eventIsScanReady(data) {
@@ -227,13 +307,15 @@ let isScanThrottled = false;
 let isWalkInAllowed = false;
 let pendingWalkInToken = null;
 let pendingWalkInState = null;
-let pendingManualStudentNo = null;
 let manualCheckInInProgress = false;
 let manualSearchTimer = null;
 let manualSearchRequestId = 0;
 let manualSearchMatches = [];
 let manualSearchTerm = "";
 let manualSearchEventId = null;
+let manualSelectedStudentUid = "";
+const manualRegistrationCache = new Map();
+const manualProfileSearchCache = new Map();
 
 // Initialize Date & Profile
 if (false) (() => {
@@ -331,7 +413,7 @@ withTimeout(authReady, 15000, "Timed out waiting for authentication to initializ
   organizerOrganizationCode = "";
   try {
     organizerOrganizationCode = await withTimeout(
-      syncOrganizerOrganization(functions),
+      getOrganizerOrganizationFromProfile(user),
       15000,
       "Timed out verifying your organization.",
     );
@@ -341,8 +423,10 @@ withTimeout(authReady, 15000, "Timed out waiting for authentication to initializ
     await stopCameraScanner();
     if (activeAttendanceRef) off(activeAttendanceRef);
     if (activeEventAttendanceRef) off(activeEventAttendanceRef);
+    if (activeEventAttendanceV2Ref) off(activeEventAttendanceV2Ref);
     activeAttendanceRef = null;
     activeEventAttendanceRef = null;
+    activeEventAttendanceV2Ref = null;
     currentEvents = [];
     currentEventId = null;
     currentAttendanceRows = [];
@@ -592,18 +676,24 @@ async function loadEventsList() {
       throw new Error("Firestore is not configured.");
     }
     loadOrganizationCode = await withTimeout(
-      syncOrganizerOrganization(functions),
+      getOrganizerOrganizationFromProfile(auth.currentUser),
       15000,
       "Timed out verifying your organization.",
     );
     if (!isCurrentLoad()) return;
     organizerOrganizationCode = loadOrganizationCode;
     const eventsMap = new Map();
+    const organizerEventsQuery = query(
+      collection(db, "events"),
+      where("organizationCode", "==", loadOrganizationCode),
+    );
     const eventSnapshot = await withTimeout(
-      getDocs(query(
-        collection(db, "events"),
-        where("organizationCode", "==", loadOrganizationCode),
-      )),
+      getDocsCached(
+        getDocs,
+        organizerEventsQuery,
+        `scan-events:${loadOrganizationCode}`,
+        loadOrganizerUid,
+      ),
       15000,
       "Timed out loading your events.",
     );
@@ -874,7 +964,11 @@ async function showEventDetails(eventId) {
   await stopCameraScanner();
   dismissBanner();
   const eventSnapshot = await withTimeout(
-    getDoc(doc(db, "events", String(eventId))),
+    getDocCached(
+      getDoc,
+      doc(db, "events", String(eventId)),
+      auth?.currentUser?.uid,
+    ),
     15000,
     "Timed out loading the selected event.",
   );
@@ -983,6 +1077,10 @@ function subscribeAttendance(eventId, isCompleted) {
     off(activeEventAttendanceRef);
     activeEventAttendanceRef = null;
   }
+  if (activeEventAttendanceV2Ref) {
+    off(activeEventAttendanceV2Ref);
+    activeEventAttendanceV2Ref = null;
+  }
 
   currentAttendanceRows = [];
   currentAbsentRows = [];
@@ -997,42 +1095,80 @@ function subscribeAttendance(eventId, isCompleted) {
     return;
   }
 
-  let legacyRows = [];
-  let eventRows = [];
-  const applyAttendanceSnapshot = async (snapshot, source) => {
+  const attendanceRowsBySource = new Map([
+    ["firestore", []],
+    ["legacy", []],
+    ["event", []],
+    ["eventAttendance", []],
+  ]);
+  const updateMergedAttendanceRows = () => {
     if (String(currentEventId) !== String(eventId)) return;
-    const data = snapshot.val();
-    const rows = [];
-    if (data && typeof data === "object") {
-      Object.entries(data).forEach(([uid, row]) => {
-        if (row && typeof row === "object") {
-          rows.push({
-            uid,
-            scannedAt: row.scannedAt || Date.now(),
-            scannedBy: row.scannedBy || "Event Organizer",
-            walkIn: Boolean(row.walkIn),
-            name: row.name || row.studentName || row.student?.name || "Student",
-            studentNo: row.studentNo || row.studentNumber || row.student?.studentNo || uid,
-            organization: row.organization || row.student?.organization || "PUP Biñan",
-          });
+    const mergedRows = new Map();
+    ["firestore", "legacy", "event", "eventAttendance"].forEach((sourceName) => {
+      attendanceRowsBySource.get(sourceName).forEach((row) => {
+        const key = String(row.uid);
+        const previous = mergedRows.get(key);
+        if (!previous || Number(row.scannedAt) >= Number(previous.scannedAt)) {
+          mergedRows.set(key, { ...previous, ...row });
         }
       });
-    }
-
-    if (source === "event") eventRows = rows;
-    else legacyRows = rows;
-
-    const mergedRows = new Map(eventRows.map((row) => [String(row.uid), row]));
-    legacyRows.forEach((row) => {
-      mergedRows.set(String(row.uid), { ...mergedRows.get(String(row.uid)), ...row });
     });
     const checkedInRows = [...mergedRows.values()]
       .sort((a, b) => Number(b.scannedAt) - Number(a.scannedAt));
     currentAttendanceRows = checkedInRows;
 
-    await refreshAbsentRows(eventId, checkedInRows);
     updateRosterDisplay();
+    void refreshAbsentRows(eventId, checkedInRows).then(() => {
+      if (String(currentEventId) === String(eventId)) updateRosterDisplay();
+    });
   };
+  const normalizeAttendanceRecord = (uid, row) => {
+    if (!row || typeof row !== "object") return null;
+    const scannedAtValue = row.scannedAt || row.checkedInAt || row.checkInAt;
+    const scannedAt = typeof scannedAtValue?.toMillis === "function"
+      ? scannedAtValue.toMillis()
+      : Number(scannedAtValue) || Date.parse(scannedAtValue) || Date.now();
+    return {
+      uid,
+      scannedAt,
+      scannedBy: row.scannedBy || "Event Organizer",
+      walkIn: Boolean(row.walkIn),
+      name: row.name || row.studentName || row.student?.name || "Student",
+      studentNo: row.studentNo || row.studentNumber || row.student?.studentNo || uid,
+      organization: row.organization || row.student?.organization || "PUP Biñan",
+    };
+  };
+  const normalizeAttendanceRows = (data) =>
+    Object.entries(data && typeof data === "object" ? data : {})
+      .map(([uid, row]) => normalizeAttendanceRecord(uid, row))
+      .filter(Boolean);
+  const applyAttendanceSnapshot = (snapshot, source) => {
+    attendanceRowsBySource.set(source, normalizeAttendanceRows(snapshot.val()));
+    updateMergedAttendanceRows();
+  };
+  if (db && isFirebaseConfigured) {
+    getDocsCached(
+      getDocs,
+      collection(db, "events", eventId, "attendance"),
+      `scan-attendance:${eventId}`,
+      auth?.currentUser?.uid,
+    )
+      .then((snapshot) => {
+        attendanceRowsBySource.set(
+          "firestore",
+          snapshot.docs
+            .map((attendanceDocument) =>
+              normalizeAttendanceRecord(attendanceDocument.id, attendanceDocument.data()),
+            )
+            .filter(Boolean),
+        );
+        updateMergedAttendanceRows();
+      })
+      .catch((error) => console.warn("[Scan Attendance] Firestore attendance lookup failed:", {
+        eventId,
+        code: error?.code || "unknown",
+      }));
+  }
   const handleAttendanceError = (error) => {
     console.error("[Scan Attendance] Realtime attendance listener failed:", {
       code: error?.code || "unknown",
@@ -1050,12 +1186,18 @@ function subscribeAttendance(eventId, isCompleted) {
   onValue(activeEventAttendanceRef, (snapshot) => {
     applyAttendanceSnapshot(snapshot, "event");
   }, handleAttendanceError);
+
+  activeEventAttendanceV2Ref = ref(rtdb, `eventAttendance/${eventId}`);
+  onValue(activeEventAttendanceV2Ref, (snapshot) => {
+    applyAttendanceSnapshot(snapshot, "eventAttendance");
+  }, handleAttendanceError);
 }
 
 async function refreshAbsentRows(eventId, checkedInRows) {
   if (!rtdb) return;
   try {
     const absSnap = await get(ref(rtdb, `absences/${eventId}`));
+    if (String(currentEventId) !== String(eventId)) return;
     const absData = absSnap.val();
     if (absData && typeof absData === "object" && Object.keys(absData).length > 0) {
       currentAbsentRows = Object.entries(absData).map(([uid, r]) => ({
@@ -1065,20 +1207,17 @@ async function refreshAbsentRows(eventId, checkedInRows) {
         organization: r.organization || "PUP Biñan",
       }));
     } else {
-      const regSnap = await get(ref(rtdb, `registrations/${eventId}`));
-      const regData = regSnap.val() || {};
       const checkedUids = new Set(checkedInRows.map((r) => r.uid));
-      currentAbsentRows = [];
-      Object.entries(regData).forEach(([uid, r]) => {
-        if (!checkedUids.has(uid)) {
-          currentAbsentRows.push({
-            uid,
-            name: r.name || r.studentName || "Student",
-            studentNo: r.studentNo || r.studentNumber || uid,
-            organization: r.organization || "PUP Biñan",
-          });
-        }
-      });
+      const registrationIndex = await loadManualRegistrationIndex(eventId);
+      if (String(currentEventId) !== String(eventId)) return;
+      currentAbsentRows = registrationIndex.attendees
+        .filter((student) => !checkedUids.has(student.uid))
+        .map((student) => ({
+          uid: student.uid,
+          name: student.name || "Student",
+          studentNo: student.studentNo || student.uid,
+          organization: student.organization || "PUP Biñan",
+        }));
     }
   } catch (e) {
     console.warn("Error refreshing absent rows:", e);
@@ -1263,16 +1402,34 @@ if (btnCompleteEvent) {
     btnCompleteEvent.textContent = "Validating...";
 
     try {
-      let regSnap = null;
-      let attSnap = null;
+      let registrationSnapshots = [];
+      let attendanceSnapshots = [];
       if (rtdb) {
-        [regSnap, attSnap] = await Promise.all([
+        const snapshotResults = await Promise.allSettled([
           get(ref(rtdb, `registrations/${currentEventId}`)),
+          get(ref(rtdb, `eventRegistrations/${currentEventId}`)),
           get(ref(rtdb, `attendance/${currentEventId}`)),
+          get(ref(rtdb, `events/${currentEventId}/attendance`)),
+          get(ref(rtdb, `eventAttendance/${currentEventId}`)),
         ]);
+        if (snapshotResults.every((result) => result.status === "rejected")) {
+          throw snapshotResults[0].reason;
+        }
+        registrationSnapshots = snapshotResults
+          .slice(0, 2)
+          .filter((result) => result.status === "fulfilled")
+          .map((result) => result.value);
+        attendanceSnapshots = snapshotResults
+          .slice(2)
+          .filter((result) => result.status === "fulfilled")
+          .map((result) => result.value);
       }
-      const regData = regSnap?.val() || {};
-      const attData = attSnap?.val() || {};
+      const regData = mergeRegistrationMapsByUid(
+        ...registrationSnapshots.map((snapshot) => snapshot.val() || {}),
+      );
+      const attData = mergeRegistrationMapsByUid(
+        ...attendanceSnapshots.map((snapshot) => snapshot.val() || {}),
+      );
 
       let totalCheckedIn = 0;
       let totalWalkIns = 0;
@@ -1284,8 +1441,8 @@ if (btnCompleteEvent) {
       });
 
       let totalAbsent = 0;
-      Object.keys(regData).forEach((uid) => {
-        if (!attData[uid]) totalAbsent++;
+      Object.entries(regData).forEach(([uid, registration]) => {
+        if (isRegistrationActive(registration) && !attData[uid]) totalAbsent++;
       });
 
       // Populate counts in modal
@@ -1807,12 +1964,13 @@ async function processAttendance({ eventId, token, allowWalkIn }) {
 
 // Firestore is used for student lookup; attendance is written directly to RTDB.
 async function handleLocalAttendanceProcessing(eventId, token, allowWalkIn, registeredStudent = null) {
-  if (!db || !rtdb || !auth?.currentUser) {
+  if (!rtdb || !auth?.currentUser) {
     throw new Error("Sign in and connect to Firebase before recording attendance.");
   }
 
   const rawToken = String(token || "").trim();
-  const normalizedStudentNo = formatStudentNo(rawToken);
+  const qrPayload = parseAttendanceQrPayload(rawToken, eventId);
+  const normalizedStudentNo = formatStudentNo(qrPayload ? "" : rawToken);
   const hasStudentNumber = STUDENT_NO_REGEX.test(normalizedStudentNo);
   if (!hasStudentNumber && !rawToken && !registeredStudent?.uid) {
     return { status: "invalid_format", student: { studentNo: "" } };
@@ -1827,22 +1985,56 @@ async function handleLocalAttendanceProcessing(eventId, token, allowWalkIn, regi
       studentNo: formatStudentNo(registeredStudent.studentNo || normalizedStudentNo),
       organization: registeredStudent.organization || registeredStudent.course || "PUP Biñan",
     };
+  } else if (qrPayload) {
+    uid = String(qrPayload.uid);
+    const [legacyResult, eventResult] = await Promise.allSettled([
+      get(ref(rtdb, `registrations/${eventId}/${uid}`)),
+      get(ref(rtdb, `eventRegistrations/${eventId}/${uid}`)),
+    ]);
+    if (legacyResult.status === "rejected" && eventResult.status === "rejected") {
+      throw legacyResult.reason;
+    }
+    const registration = mergeRegistrationMapsByUid(
+      { [uid]: legacyResult.status === "fulfilled" ? legacyResult.value.val() : null },
+      { [uid]: eventResult.status === "fulfilled" ? eventResult.value.val() : null },
+    )[uid] || {};
+    studentData = {
+      name: registration.name ||
+        String(qrPayload.email || "").split("@")[0] ||
+        "Student",
+      studentNo: formatStudentNo(registration.studentNo || registration.studentNumber || uid),
+      organization: registration.organization || "PUP Biñan",
+    };
   } else {
     let studentDocument = null;
     if (hasStudentNumber) {
-      let studentSnapshot = await getDocs(query(
-        collection(db, "users"),
-        where("studentNumber", "==", normalizedStudentNo),
-      ));
-      if (studentSnapshot.empty) {
-        studentSnapshot = await getDocs(query(
+      let studentSnapshot = await getDocsCached(
+        getDocs,
+        query(
           collection(db, "users"),
-          where("studentId", "==", normalizedStudentNo),
-        ));
+          where("studentNumber", "==", normalizedStudentNo),
+        ),
+        `scan-student-number:${normalizedStudentNo}`,
+        auth?.currentUser?.uid,
+      );
+      if (studentSnapshot.empty) {
+        studentSnapshot = await getDocsCached(
+          getDocs,
+          query(
+            collection(db, "users"),
+            where("studentId", "==", normalizedStudentNo),
+          ),
+          `scan-student-id:${normalizedStudentNo}`,
+          auth?.currentUser?.uid,
+        );
       }
       studentDocument = studentSnapshot.docs[0] || null;
     } else {
-      const studentSnapshot = await getDoc(doc(db, "users", rawToken));
+      const studentSnapshot = await getDocCached(
+        getDoc,
+        doc(db, "users", rawToken),
+        auth?.currentUser?.uid,
+      );
       studentDocument = studentSnapshot.exists() ? studentSnapshot : null;
     }
 
@@ -1872,11 +2064,40 @@ async function handleLocalAttendanceProcessing(eventId, token, allowWalkIn, regi
   if (knownAttendance) {
     return { status: "already", student: knownAttendance, scannedAt: knownAttendance.scannedAt };
   }
-  const existingAttendanceSnapshot = await get(
-    ref(rtdb, `events/${eventId}/attendance/${uid}`),
-  );
-  if (existingAttendanceSnapshot.exists()) {
-    const existingAttendance = existingAttendanceSnapshot.val() || {};
+  const [
+    existingAttendanceResult,
+    eventAttendanceResult,
+    legacyEventAttendanceResult,
+  ] = await Promise.allSettled([
+    get(ref(rtdb, `attendance/${eventId}/${uid}`)),
+    get(ref(rtdb, `eventAttendance/${eventId}/${uid}`)),
+    get(ref(rtdb, `events/${eventId}/attendance/${uid}`)),
+  ]);
+  if (
+    existingAttendanceResult.status === "rejected" &&
+    eventAttendanceResult.status === "rejected" &&
+    legacyEventAttendanceResult.status === "rejected"
+  ) {
+    throw existingAttendanceResult.reason;
+  }
+  const existingAttendance = mergeRegistrationMapsByUid(
+    {
+      [uid]: existingAttendanceResult.status === "fulfilled"
+        ? existingAttendanceResult.value.val()
+        : null,
+    },
+    {
+      [uid]: eventAttendanceResult.status === "fulfilled"
+        ? eventAttendanceResult.value.val()
+        : null,
+    },
+    {
+      [uid]: legacyEventAttendanceResult.status === "fulfilled"
+        ? legacyEventAttendanceResult.value.val()
+        : null,
+    },
+  )[uid];
+  if (existingAttendance) {
     return {
       status: "already",
       student: { ...studentData, ...existingAttendance },
@@ -1899,22 +2120,33 @@ async function handleLocalAttendanceProcessing(eventId, token, allowWalkIn, regi
     isRegistered = true;
   }
 
-  // 2. Check RTDB registrations/{eventId}/{uid} or search by studentNo
+  // 2. Check the event-keyed RTDB registrations, including the legacy path.
   if (!isRegistered && rtdb) {
     try {
-      const regSnap = await get(ref(rtdb, `registrations/${eventId}/${uid}`));
-      if (regSnap.exists() && regSnap.val()) {
-        isRegistered = true;
-      } else {
-        const allRegSnap = await get(ref(rtdb, `registrations/${eventId}`));
-        const allReg = allRegSnap.val();
-        if (allReg && typeof allReg === "object") {
-          isRegistered = Object.entries(allReg).some(([rUid, rVal]) => {
-            const s = stripStudentNo(rVal?.studentNo || rVal?.studentNumber);
-            const u = stripStudentNo(rUid);
-            return s === cleanStudentNo || s === cleanUid || u === cleanUid;
-          });
-        }
+      const [legacyResult, eventResult] = await Promise.allSettled([
+        get(ref(rtdb, `registrations/${eventId}`)),
+        get(ref(rtdb, `eventRegistrations/${eventId}`)),
+      ]);
+      if (legacyResult.status === "rejected" && eventResult.status === "rejected") {
+        throw legacyResult.reason;
+      }
+      const registrations = mergeRegistrationMapsByUid(
+        legacyResult.status === "fulfilled" ? legacyResult.value.val() || {} : {},
+        eventResult.status === "fulfilled" ? eventResult.value.val() || {} : {},
+      );
+      const directRegistration = registrations[uid];
+      isRegistered = isRegistrationActive(directRegistration) ||
+        Object.values(registrations).some((registration) =>
+          isRegistrationActive(registration) && (
+            stripStudentNo(registration.studentNo || registration.studentNumber) === cleanStudentNo ||
+            stripStudentNo(registration.uid) === cleanUid
+          ),
+        );
+      if (!isRegistered && cleanStudentNo) {
+        isRegistered = Object.values(registrations).some((registration) =>
+          isRegistrationActive(registration) &&
+          stripStudentNo(registration.studentNo || registration.studentNumber) === cleanStudentNo,
+        );
       }
     } catch (registrationError) {
       console.warn("[Scan Attendance] Registration lookup failed:", registrationError);
@@ -1942,14 +2174,20 @@ async function handleLocalAttendanceProcessing(eventId, token, allowWalkIn, regi
     organization: studentData.organization,
   };
 
-  await set(ref(rtdb, `events/${eventId}/attendance/${uid}`), {
-    scannedAt: now,
-    walkIn: isWalkIn,
+  const attendanceWrite = await writeEventAttendance({
+    rtdb,
+    db,
+    eventId,
+    uid,
+    attendance: attendanceRow,
   });
-  try {
-    await set(ref(rtdb, `attendance/${eventId}/${uid}`), attendanceRow);
-  } catch (mirrorError) {
-    console.warn("[Scan Attendance] Legacy RTDB attendance mirror failed:", mirrorError);
+  if (!attendanceWrite.committed) {
+    const existingAttendance = attendanceWrite.record || {};
+    return {
+      status: "already",
+      student: { ...studentData, ...existingAttendance },
+      scannedAt: existingAttendance.scannedAt,
+    };
   }
 
   // If registered student checked in, remove from absent rows
@@ -2070,6 +2308,7 @@ function clearManualSearch(clearInput = false) {
   manualSearchMatches = [];
   manualSearchTerm = "";
   manualSearchEventId = null;
+  manualSelectedStudentUid = "";
   if (clearInput && manualStudentNo) manualStudentNo.value = "";
   if (manualStudentNo) manualStudentNo.classList.remove("input-error");
   if (manualValidationError) {
@@ -2096,28 +2335,44 @@ function showManualSearchMessage(message, state = "") {
   manualSearchResult.hidden = false;
 }
 
-function renderManualSearchResults(matches, term, eventId) {
+function renderManualSearchResults(matches, term, eventId, preferredUid = "") {
   manualSearchMatches = matches;
   manualSearchTerm = term;
   manualSearchEventId = eventId;
   if (!manualSearchResult) return;
   manualSearchResult.replaceChildren();
   manualSearchResult.className = "manual-search-result";
+  const availableMatches = matches.filter((student) => !student.checkedIn);
+  const selectedStudent = availableMatches.find((student) =>
+    String(student.uid) === String(preferredUid || manualSelectedStudentUid),
+  );
+  manualSelectedStudentUid = selectedStudent?.uid || "";
 
   if (matches.length === 0) {
     showManualSearchMessage("No registered student found. Search by student number or name.");
   } else {
     matches.forEach((student) => {
-      const row = document.createElement("div");
+      const row = document.createElement("button");
+      const isSelected = String(student.uid) === String(manualSelectedStudentUid);
+      row.type = "button";
       row.className = "manual-search-result-row";
+      row.dataset.manualStudentUid = student.uid;
+      row.setAttribute("aria-pressed", String(isSelected));
+      row.disabled = student.checkedIn || manualCheckInInProgress;
       const details = document.createElement("div");
       details.className = "manual-search-result-details";
       const name = document.createElement("span");
       name.className = "manual-search-result-name";
-      name.textContent = student.name;
+      name.textContent = student.name || "Student";
       const meta = document.createElement("span");
       meta.className = "manual-search-result-meta";
-      meta.textContent = [student.studentNo, student.course, student.section, student.organization]
+      meta.textContent = [
+        student.studentNo,
+        student.course,
+        student.section,
+        student.organization,
+        student.studentNo ? "" : student.uid,
+      ]
         .filter(Boolean)
         .join(" · ");
       const status = document.createElement("span");
@@ -2127,11 +2382,15 @@ function renderManualSearchResults(matches, term, eventId) {
       row.append(details, status);
       manualSearchResult.appendChild(row);
     });
-    const availableMatches = matches.filter((student) => !student.checkedIn);
-    if (availableMatches.length > 1) {
+    if (availableMatches.length > 1 && !selectedStudent) {
       const messageRow = document.createElement("p");
       messageRow.className = "manual-search-message";
-      messageRow.textContent = "More than one student matched. Continue typing to narrow your search.";
+      messageRow.textContent = "Select the registered student to check in, or continue typing to narrow your search.";
+      manualSearchResult.appendChild(messageRow);
+    } else if (availableMatches.length === 0) {
+      const messageRow = document.createElement("p");
+      messageRow.className = "manual-search-message";
+      messageRow.textContent = "All matching students are already checked in.";
       manualSearchResult.appendChild(messageRow);
     }
   }
@@ -2141,10 +2400,158 @@ function renderManualSearchResults(matches, term, eventId) {
   if (btnManualSubmit) {
     btnManualSubmit.disabled =
       manualCheckInInProgress ||
-      !currentEventId ||
+      !rtdb ||
+      !auth?.currentUser ||
+      String(currentEventId) !== String(eventId) ||
       currentEvent?.status === "completed" ||
-      matches.filter((student) => !student.checkedIn).length !== 1;
+      !selectedStudent;
   }
+}
+
+async function loadManualRegistrationIndex(eventId) {
+  const key = String(eventId);
+  const cached = manualRegistrationCache.get(key);
+  if (cached?.value && Date.now() - cached.loadedAt < 30000) return cached.value;
+  if (cached?.promise) return cached.promise;
+
+  const promise = (async () => {
+    const [firestoreResult, legacyRealtimeResult, realtimeResult] = await Promise.allSettled([
+      db
+        ? getDocs(collection(db, "events", key, "registrations"))
+        : Promise.reject(new Error("Firestore is unavailable.")),
+      rtdb
+        ? get(ref(rtdb, `registrations/${key}`))
+        : Promise.reject(new Error("Realtime Database is unavailable.")),
+      rtdb
+        ? get(ref(rtdb, `eventRegistrations/${key}`))
+        : Promise.reject(new Error("Realtime Database is unavailable.")),
+    ]);
+    const hasFirestoreData = firestoreResult.status === "fulfilled";
+    const hasRealtimeData =
+      legacyRealtimeResult.status === "fulfilled" ||
+      realtimeResult.status === "fulfilled";
+    if (!hasFirestoreData && !hasRealtimeData) {
+      const failures = [
+        firestoreResult.reason,
+        legacyRealtimeResult.reason,
+        realtimeResult.reason,
+      ]
+        .map((error) => error?.code || error?.message)
+        .filter(Boolean)
+        .join("; ");
+      throw new Error(`Could not read event registrations. ${failures}`.trim());
+    }
+    if (firestoreResult.status === "rejected") {
+      console.warn("[Scan Attendance] Firestore registration lookup failed:", firestoreResult.reason);
+    }
+    if (legacyRealtimeResult.status === "rejected" || realtimeResult.status === "rejected") {
+      console.warn(
+        "[Scan Attendance] One or more RTDB registration paths could not be loaded:",
+        legacyRealtimeResult.status === "rejected"
+          ? legacyRealtimeResult.reason
+          : realtimeResult.reason,
+      );
+    }
+
+    const firestoreRegistrations = firestoreResult.status === "fulfilled"
+      ? firestoreResult.value.docs.map((registrationDocument) => ({
+        ...registrationDocument.data(),
+        id: registrationDocument.id,
+        uid: registrationDocument.id,
+      }))
+      : [];
+    const realtimeRegistrations = mergeRegistrationMapsByUid(
+      legacyRealtimeResult.status === "fulfilled"
+        ? legacyRealtimeResult.value.val() || {}
+        : {},
+      realtimeResult.status === "fulfilled"
+        ? realtimeResult.value.val() || {}
+        : {},
+    );
+    const mergedRegistrations = mergeRegistrationMapsByUid(
+      firestoreRegistrations,
+      realtimeRegistrations,
+    );
+    return {
+      attendees: buildManualAttendeeIndex([], mergedRegistrations),
+      hasPartialSourceFailure:
+        firestoreResult.status === "rejected" ||
+        legacyRealtimeResult.status === "rejected" ||
+        realtimeResult.status === "rejected",
+    };
+  })();
+  manualRegistrationCache.set(key, { promise });
+
+  try {
+    const value = await promise;
+    manualRegistrationCache.set(key, { value, loadedAt: Date.now() });
+    return value;
+  } catch (error) {
+    manualRegistrationCache.delete(key);
+    throw error;
+  }
+}
+
+function titleCaseManualSearchTerm(term) {
+  return String(term || "")
+    .trim()
+    .toLocaleLowerCase()
+    .replace(/(^|\s)(\S)/g, (_, space, character) => `${space}${character.toLocaleUpperCase()}`);
+}
+
+async function findRegisteredProfiles(term, eventId, attendees) {
+  const registeredUids = new Set(attendees.map((student) => String(student.uid)));
+  if (!db || !registeredUids.size || term.length < 3) {
+    return { attendees, hasPartialFailure: false };
+  }
+
+  const cacheKey = `${auth?.currentUser?.uid || ""}:${eventId}:${term}`;
+  let cached = manualProfileSearchCache.get(cacheKey);
+  if (!cached || Date.now() - cached.loadedAt >= 60000) {
+    const isStudentNumberSearch = /\d/.test(term);
+    const searchTerm = isStudentNumberSearch ? term : titleCaseManualSearchTerm(term);
+    const nameTokens = searchTerm.split(/\s+/).filter(Boolean);
+    const searchFields = isStudentNumberSearch
+      ? ["studentNumber", "studentNo", "studentId"].map((field) => ({ field, term: searchTerm }))
+      : [
+          { field: "fullName", term: searchTerm },
+          { field: "name", term: searchTerm },
+          { field: "firstName", term: nameTokens[0] },
+          { field: "lastName", term: nameTokens[nameTokens.length - 1] },
+        ];
+    const results = await Promise.allSettled(searchFields.map(({ field, term: fieldTerm }) => getDocs(query(
+      collection(db, "users"),
+      orderBy(field),
+      startAt(fieldTerm),
+      endAt(`${fieldTerm}\uf8ff`),
+      limit(50),
+    ))));
+    const successfulResults = results.filter((result) => result.status === "fulfilled");
+    if (!successfulResults.length) {
+      throw results[0]?.reason || new Error("Could not search student profiles.");
+    }
+    cached = {
+      profiles: successfulResults.flatMap((result) =>
+        result.value.docs.map((profileDocument) => ({
+          ...profileDocument.data(),
+          uid: profileDocument.id,
+        })),
+      ),
+      hasPartialFailure: successfulResults.length !== results.length,
+      loadedAt: Date.now(),
+    };
+    manualProfileSearchCache.set(cacheKey, cached);
+  }
+
+  const registeredProfiles = cached.profiles.filter((profile) =>
+    registeredUids.has(String(profile.uid)),
+  );
+  return {
+    attendees: registeredProfiles.length
+      ? buildManualAttendeeIndex([...attendees, ...registeredProfiles], {})
+      : attendees,
+    hasPartialFailure: cached.hasPartialFailure,
+  };
 }
 
 async function searchManualStudents(term, eventId, requestId) {
@@ -2154,7 +2561,7 @@ async function searchManualStudents(term, eventId, requestId) {
     formatStudentNo(manualStudentNo?.value) !== term
   ) return;
 
-  if (!eventId || !rtdb) {
+  if (!eventId || (!db && !rtdb)) {
     if (manualValidationError) {
       manualValidationError.textContent = "Could not load this event's registrations. Please try again.";
       manualValidationError.hidden = false;
@@ -2164,67 +2571,42 @@ async function searchManualStudents(term, eventId, requestId) {
   }
 
   try {
-    const [registrationSnapshot, attendanceSnapshot] = await Promise.all([
-      get(ref(rtdb, `registrations/${eventId}`)),
-      get(ref(rtdb, `events/${eventId}/attendance`)),
-    ]);
+    const registrationIndex = await loadManualRegistrationIndex(eventId);
     if (
       requestId !== manualSearchRequestId ||
       String(eventId || "") !== String(currentEventId || "") ||
       formatStudentNo(manualStudentNo?.value) !== term
     ) return;
 
-    const registrationData = registrationSnapshot.val() || {};
-    const attendanceData = attendanceSnapshot.val() || {};
-    const matches = [];
-    if (registrationData && typeof registrationData === "object") {
-      Object.entries(registrationData).forEach(([uid, registration]) => {
-        if (!registration || typeof registration !== "object") return;
-        const student = registration.student && typeof registration.student === "object"
-          ? registration.student
-          : {};
-        const studentNo = formatStudentNo(
-          registration.studentNo ||
-          registration.studentNumber ||
-          student.studentNo ||
-          student.studentNumber ||
-          "",
-        );
-        const name = registration.name ||
-          registration.studentName ||
-          registration.fullName ||
-          student.fullName ||
-          student.name ||
-          `${registration.firstName || student.firstName || ""} ${registration.lastName || student.lastName || ""}`.trim() ||
-          "Student";
-        const normalizedTerm = term.toLocaleLowerCase();
-        const matchesStudentNo = studentNo.includes(term);
-        const matchesName = name.toLocaleLowerCase().includes(normalizedTerm);
-        if (!matchesStudentNo && !matchesName) return;
-        const alreadyCheckedIn = Boolean(attendanceData[uid]) ||
-          currentAttendanceRows.some((row) =>
-            String(row.uid || "") === String(uid) ||
-            stripStudentNo(row.studentNo) === stripStudentNo(studentNo)
-          );
-        matches.push({
-          uid,
-          studentNo,
-          name,
-          course: registration.courseOrganization ||
-            registration.course ||
-            registration.department ||
-            student.courseOrganization ||
-            student.course ||
-            student.department ||
-            "",
-          section: registration.section || student.section || "",
-          organization: registration.organization || student.organization || "",
-          checkedIn: alreadyCheckedIn,
-        });
-      });
+    const checkedInUids = new Set(
+      currentAttendanceRows.map((row) => String(row.uid || "")),
+    );
+    let attendees = registrationIndex.attendees;
+    let profileLookupHadPartialFailure = false;
+    let matches = searchManualAttendees(attendees, term, checkedInUids);
+    if (matches.length === 0 && attendees.length > 0) {
+      const profileSearch = await findRegisteredProfiles(term, eventId, attendees);
+      attendees = profileSearch.attendees;
+      profileLookupHadPartialFailure = profileSearch.hasPartialFailure;
+      if (
+        requestId !== manualSearchRequestId ||
+        String(eventId || "") !== String(currentEventId || "") ||
+        formatStudentNo(manualStudentNo?.value) !== term
+      ) return;
+      matches = searchManualAttendees(attendees, term, checkedInUids);
     }
-    matches.sort((left, right) => left.studentNo.localeCompare(right.studentNo));
     renderManualSearchResults(matches, term, eventId);
+    if (
+      (registrationIndex.hasPartialSourceFailure || profileLookupHadPartialFailure) &&
+      manualValidationError
+    ) {
+      manualValidationError.textContent =
+        "Some registration or profile records could not be loaded. Search results may be incomplete.";
+      manualValidationError.hidden = false;
+    } else if (manualValidationError) {
+      manualValidationError.hidden = true;
+      manualValidationError.textContent = "";
+    }
   } catch (error) {
     if (
       requestId !== manualSearchRequestId ||
@@ -2233,7 +2615,9 @@ async function searchManualStudents(term, eventId, requestId) {
     ) return;
     console.error("[Scan Attendance] Manual registration search failed:", error);
     if (manualValidationError) {
-      manualValidationError.textContent = "Could not search this event's registrations. Please try again.";
+      const code = error?.code ? ` (${error.code})` : "";
+      manualValidationError.textContent =
+        `Could not search this event's registrations${code}. ${error?.message || "Please retry."}`;
       manualValidationError.hidden = false;
     }
     if (manualSearchResult) manualSearchResult.hidden = true;
@@ -2259,7 +2643,8 @@ function runManualSearch(immediate = false) {
 
   manualSearchMatches = [];
   manualSearchTerm = term;
-  manualSearchEventId = currentEventId;
+  manualSearchEventId = String(currentEventId || "");
+  manualSelectedStudentUid = "";
   const requestId = ++manualSearchRequestId;
   const eventId = currentEventId;
   if (btnManualSubmit) btnManualSubmit.disabled = true;
@@ -2274,24 +2659,24 @@ function runManualSearch(immediate = false) {
   }
 }
 
-async function checkInManualSearchResult() {
-  const availableMatches = manualSearchMatches.filter((student) => !student.checkedIn);
+async function checkInManualSearchResult(student) {
   if (
     manualCheckInInProgress ||
-    availableMatches.length !== 1 ||
+    !student ||
     !currentEventId ||
-    String(manualSearchEventId) !== String(currentEventId)
+    String(manualSearchEventId) !== String(currentEventId) ||
+    String(manualSelectedStudentUid) !== String(student.uid) ||
+    student.checkedIn
   ) return;
 
-  const student = availableMatches[0];
   const eventId = currentEventId;
   const currentEvent = currentEvents.find((event) => String(event.id) === String(eventId));
   if (currentEvent?.status === "completed") return;
   manualCheckInInProgress = true;
   if (btnManualSubmit) {
-    btnManualSubmit.disabled = true;
     btnManualSubmit.textContent = "Checking in...";
   }
+  renderManualSearchResults(manualSearchMatches, manualSearchTerm, manualSearchEventId);
   if (manualValidationError) {
     manualValidationError.hidden = true;
     manualValidationError.textContent = "";
@@ -2301,9 +2686,7 @@ async function checkInManualSearchResult() {
     const lookupToken = student.studentNo || student.uid;
     const result = await handleLocalAttendanceProcessing(eventId, lookupToken, false, student);
     handleAttendanceResult(result, lookupToken);
-    if (result.status === "ok") {
-      clearManualSearch(true);
-    } else if (result.status === "already") {
+    if (result.status === "ok" || result.status === "already") {
       renderManualSearchResults(
         manualSearchMatches.map((match) =>
           match.uid === student.uid ? { ...match, checkedIn: true } : match
@@ -2317,6 +2700,12 @@ async function checkInManualSearchResult() {
     }
   } catch (error) {
     console.error("Manual check-in error:", error);
+    if (manualValidationError) {
+      const code = error?.code ? ` (${error.code})` : "";
+      manualValidationError.textContent =
+        `Could not record attendance${code}. ${error?.message || "Please retry."}`;
+      manualValidationError.hidden = false;
+    }
     showResultBanner({
       type: "error",
       title: "Lookup failed",
@@ -2328,13 +2717,34 @@ async function checkInManualSearchResult() {
     manualCheckInInProgress = false;
     if (btnManualSubmit) {
       btnManualSubmit.textContent = "Check In";
-      const currentEvent = currentEvents.find((event) => String(event.id) === String(currentEventId));
-      btnManualSubmit.disabled =
-        !currentEventId ||
-        currentEvent?.status === "completed" ||
-        manualSearchMatches.filter((match) => !match.checkedIn).length !== 1;
     }
+    renderManualSearchResults(
+      manualSearchMatches,
+      manualSearchTerm,
+      manualSearchEventId,
+    );
   }
+}
+
+if (manualSearchResult) {
+  manualSearchResult.addEventListener("click", (event) => {
+    const target = event.target instanceof Element ? event.target : null;
+    const resultButton = target?.closest("button[data-manual-student-uid]");
+    if (!resultButton || resultButton.disabled) return;
+    const student = manualSearchMatches.find((match) =>
+      String(match.uid) === String(resultButton.dataset.manualStudentUid),
+    );
+    if (!student || student.checkedIn || manualCheckInInProgress) return;
+    renderManualSearchResults(
+      manualSearchMatches,
+      manualSearchTerm,
+      manualSearchEventId,
+      student.uid,
+    );
+    Array.from(manualSearchResult.querySelectorAll("button[data-manual-student-uid]"))
+      .find((button) => button.dataset.manualStudentUid === String(student.uid))
+      ?.focus();
+  });
 }
 
 if (manualStudentNo) {
@@ -2345,14 +2755,25 @@ if (manualCheckInForm) {
   manualCheckInForm.addEventListener("submit", (event) => {
     event.preventDefault();
     const term = formatStudentNo(manualStudentNo?.value);
-    const availableMatches = manualSearchMatches.filter((student) => !student.checkedIn);
+    const selectedStudent = manualSearchMatches.find((student) =>
+      String(student.uid) === String(manualSelectedStudentUid) && !student.checkedIn,
+    );
     if (
       term &&
       term === manualSearchTerm &&
       String(manualSearchEventId) === String(currentEventId) &&
-      availableMatches.length === 1
+      selectedStudent
     ) {
-      checkInManualSearchResult();
+      void checkInManualSearchResult(selectedStudent);
+    } else if (
+      term &&
+      term === manualSearchTerm &&
+      manualSearchMatches.some((student) => !student.checkedIn)
+    ) {
+      if (manualValidationError) {
+        manualValidationError.textContent = "Select one registered student from the search results before checking in.";
+        manualValidationError.hidden = false;
+      }
     } else {
       runManualSearch(true);
     }

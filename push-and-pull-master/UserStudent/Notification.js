@@ -29,6 +29,10 @@ import {
   loadStudentProfile,
   renderStudentSidebar,
 } from "./studentIdentity.js";
+import {
+  getDocCached,
+  invalidateDocCache,
+} from "../firestoreReadCache.js";
 
 const DEBUG = false;
 const ONE_DAY = 24 * 60 * 60 * 1000;
@@ -252,7 +256,9 @@ async function loadDismissedNotificationIds(uid) {
   const profileRefs = ["users", "students"].map((collectionName) =>
     doc(db, collectionName, uid),
   );
-  const reads = await Promise.allSettled(profileRefs.map((profileRef) => getDoc(profileRef)));
+  const reads = await Promise.allSettled(profileRefs.map((profileRef) =>
+    getDocCached(getDoc, profileRef, uid),
+  ));
   const dismissedIds = new Set();
   let successfulRead = false;
   let foundProfileRecord = false;
@@ -284,7 +290,9 @@ async function persistDismissedNotificationId(id, dismissed) {
   const profileRefs = ["users", "students"].map((collectionName) =>
     doc(db, collectionName, currentUid),
   );
-  const reads = await Promise.allSettled(profileRefs.map((profileRef) => getDoc(profileRef)));
+  const reads = await Promise.allSettled(profileRefs.map((profileRef) =>
+    getDocCached(getDoc, profileRef, currentUid),
+  ));
   const existingRefs = reads
     .filter((result) => result.status === "fulfilled" && result.value.exists())
     .map((result) => result.value.ref);
@@ -293,9 +301,10 @@ async function persistDismissedNotificationId(id, dismissed) {
     throw readError?.reason || new Error("The Student profile record was not found.");
   }
   const transform = dismissed ? arrayUnion(id) : arrayRemove(id);
-  const writes = await Promise.allSettled(existingRefs.map((profileRef) =>
-    updateDoc(profileRef, { dismissedNotificationIds: transform }),
-  ));
+  const writes = await Promise.allSettled(existingRefs.map(async (profileRef) => {
+    await updateDoc(profileRef, { dismissedNotificationIds: transform });
+    invalidateDocCache(profileRef, currentUid);
+  }));
   const successfulWrites = writes.filter((result) => result.status === "fulfilled").length;
   if (!successfulWrites) {
     throw writes.find((result) => result.status === "rejected").reason;
@@ -1034,7 +1043,7 @@ function loadMissingRegistrationEvents(version) {
       version !== subscriptionVersion
     ) return;
     detailEventLoads.add(eventId);
-    getDoc(doc(db, "events", eventId)).then((snapshot) => {
+    getDocCached(getDoc, doc(db, "events", eventId), currentUid).then((snapshot) => {
       if (version !== subscriptionVersion || !snapshot.exists()) return;
       registrationEventDocuments.set(eventId, snapshot.data());
       rebuildEventDocuments();

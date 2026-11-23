@@ -174,9 +174,21 @@ import {
           : error?.code?.startsWith("auth/")
           ? ["auth/invalid-credential", "auth/wrong-password", "auth/user-not-found"].includes(error.code)
             ? "Incorrect email or password."
+            : error.code === "auth/too-many-requests"
+            ? "Too many sign-in attempts. Please wait and try again later."
+            : error.code === "auth/network-request-failed"
+            ? "A network error prevented sign-in. Check your connection and try again."
+            : error.code === "auth/user-disabled"
+            ? "This account is disabled. Contact an administrator for help."
             : "Unable to sign in right now. Please try again."
           : error?.code === "profile/role-mismatch"
           ? "This account belongs to a different portal. Sign in through the correct portal."
+          : error?.code === "profile/not-found"
+          ? "Your account signed in, but no super administrator profile was found. Contact an administrator."
+          : ["permission-denied", "firestore/permission-denied"].includes(error?.code)
+          ? "Your account signed in, but its profile could not be read. Contact an administrator to verify profile access."
+          : ["unavailable", "firestore/unavailable", "deadline-exceeded", "firestore/deadline-exceeded"].includes(error?.code)
+          ? "Your account signed in, but a network or Firestore error prevented profile verification. Check your connection and try again."
           : "Your account could not be verified for the super administrator portal.";
       banner.classList.add("show");
     } finally {

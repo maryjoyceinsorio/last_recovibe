@@ -370,6 +370,13 @@
             </table>
           </div>
         </section>
+        <p
+          id="myEventsActionStatus"
+          class="my-events-action-status"
+          role="status"
+          aria-live="polite"
+          hidden
+        ></p>
       </main>
     </div>
 
@@ -499,10 +506,86 @@
       </section>
     </div>
 
+    <div class="my-events-dialog-overlay" id="cancelEventConfirmOverlay" hidden>
+      <section
+        class="my-events-dialog"
+        role="alertdialog"
+        aria-modal="true"
+        aria-labelledby="cancelEventConfirmTitle"
+        aria-describedby="cancelEventConfirmMessage"
+      >
+        <h2 id="cancelEventConfirmTitle">Cancel this event?</h2>
+        <p id="cancelEventConfirmMessage">
+          Canceling removes this event from the published schedule. You can also reschedule it instead.
+        </p>
+        <p id="cancelEventFeedback" class="my-events-dialog-feedback" role="alert" hidden></p>
+        <div class="my-events-dialog-actions">
+          <button type="button" class="my-events-dialog-secondary" id="backCancelEvent">
+            Back
+          </button>
+          <button type="button" class="my-events-dialog-danger" id="confirmCancelEvent">
+            Cancel
+          </button>
+          <button type="button" class="my-events-dialog-primary" id="rescheduleFromCancel">
+            Reschedule
+          </button>
+        </div>
+      </section>
+    </div>
+
+    <div class="my-events-dialog-overlay" id="rescheduleEventOverlay" hidden>
+      <section
+        class="my-events-dialog my-events-reschedule-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="rescheduleEventTitle"
+        aria-describedby="rescheduleEventDescription"
+      >
+        <header class="my-events-dialog-header">
+          <h2 id="rescheduleEventTitle">Reschedule Event</h2>
+          <button
+            type="button"
+            class="my-events-dialog-close"
+            id="closeRescheduleEvent"
+            aria-label="Close reschedule form"
+          >
+            &times;
+          </button>
+        </header>
+        <p id="rescheduleEventDescription">
+          Choose a future date later than the current schedule. Your event details will open in Create Event for review and editing.
+        </p>
+        <form id="rescheduleEventForm">
+          <label for="rescheduleEventDate">New Date</label>
+          <input id="rescheduleEventDate" name="date" type="date" required />
+          <div class="my-events-reschedule-time-fields">
+            <div>
+              <label for="rescheduleEventStartTime">Start Time</label>
+              <input id="rescheduleEventStartTime" name="startTime" type="time" step="60" required />
+            </div>
+            <div>
+              <label for="rescheduleEventEndTime">End Time</label>
+              <input id="rescheduleEventEndTime" name="endTime" type="time" step="60" required />
+            </div>
+          </div>
+          <p id="rescheduleEventFeedback" class="my-events-dialog-feedback" role="alert" hidden></p>
+          <div class="my-events-dialog-actions">
+            <button type="button" class="my-events-dialog-secondary" id="backFromReschedule">
+              Back
+            </button>
+            <button type="submit" class="my-events-dialog-primary" id="saveRescheduleEvent">
+              Continue to Create Event
+            </button>
+          </div>
+        </form>
+      </section>
+    </div>
+
     <script src="EventOrganizerData.js"></script>
     <script src="OrganizerNotificationBadge.js"></script>
     <script src="../EventDetailsModal.js"></script>
     <script type="module" src="EventOrganizerMyEvents.js"></script>
+    <script type="module" src="EventOrganizerMyEventsActions.js"></script>
     <script type="module" src="OrganizerSidebarProfile.js"></script>
     <script>
     (() => {

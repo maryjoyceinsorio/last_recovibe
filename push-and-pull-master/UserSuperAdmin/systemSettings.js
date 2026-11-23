@@ -5,8 +5,10 @@ import {
   doc,
   getDoc,
   getDocs,
+  limit,
   onSnapshot,
   query,
+  runTransaction,
   serverTimestamp,
   setDoc,
   updateDoc,
@@ -960,6 +962,8 @@ import {
   function createOrganizationStageCopy(stages) {
     return (Array.isArray(stages) ? stages : []).map((stage, index) => ({
       id: String(stage?.id || stage?.key || makeOrganizationStageId(stage?.name || `Stage ${index + 1}`)),
+      key: String(stage?.key || stage?.roleKey || ""),
+      roleKey: String(stage?.roleKey || stage?.key || ""),
       name: String(stage?.name || stage?.label || `Stage ${index + 1}`),
       required: typeof stage?.required === "boolean" ? stage.required : true,
       reviewerName: String(stage?.reviewerName || stage?.reviewer || ""),
@@ -1102,10 +1106,13 @@ import {
         const result = await getDocs(query(
           collection(db, "adminUser"),
           where("email", "==", normalizedEmail),
+          limit(2),
         ));
-        const accountSnapshot = result.docs.find((entry) =>
+        const matches = result.docs.filter((entry) =>
           String(entry.data()?.email || "").trim().toLowerCase() === normalizedEmail,
         );
+        if (matches.length > 1) return { status: "ambiguous" };
+        const accountSnapshot = matches[0];
         if (!accountSnapshot) return { status: "missing" };
         const account = accountSnapshot.data() || {};
         const nameParts = [account.firstName, account.middleName, account.lastName]
@@ -1116,7 +1123,17 @@ import {
           account.username || "Unknown name",
         );
         const role = String(account.role || account.adminRole || account.userRole || account.roleSuffix || "Unknown role");
-        return { status: "found", name, role };
+        const accountStatus = String(account.status || "").trim().toLowerCase();
+        const isActive = account.isActive !== false &&
+          !["disabled", "inactive", "suspended"].includes(accountStatus);
+        return {
+          status: isActive ? "found" : "inactive",
+          profileId: accountSnapshot.id,
+          profileRef: accountSnapshot.ref,
+          data: account,
+          name,
+          role,
+        };
       } catch (error) {
         console.error("[ApprovalStages] reviewer account lookup failed:", error?.code, error?.message);
         return { status: "error", error };
@@ -1126,11 +1143,511 @@ import {
     return lookup;
   }
 
+  function isActiveAdminProfile(data = {}) {
+    const role = String(data.role || data.adminRole || data.userRole || data.roleSuffix || "")
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9]/g, "");
+    const status = String(data.status || "").trim().toLowerCase();
+    return ["admin", "osas"].includes(role) &&
+      data.isActive !== false &&
+      !["disabled", "inactive", "suspended"].includes(status);
+  }
+
+  function isOrganizationAdviserProfile(data = {}) {
+    const role = String(data.role || data.adminRole || data.userRole || "")
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9]/g, "");
+    const roleSuffix = String(data.roleSuffix || "")
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9]/g, "");
+    return role === "admin" && roleSuffix === "orgadviser";
+  }
+
+  function configuredApprovalStageKey(stage) {
+    const identities = [
+      stage?.id,
+      stage?.key,
+      stage?.roleKey,
+      stage?.name,
+      stage?.reviewerName,
+      stage?.reviewer,
+    ].map((value) => String(value || "").trim().toLowerCase().replace(/[^a-z0-9]/g, ""));
+    if (identities.some((value) =>
+      ["sirabelida", "abelida", "abelidas", "laboratoryhead", "propertycustodian",
+        "administrativeofficer", "labhead"].some((marker) => value.includes(marker)),
+    )) return "sir_abelida";
+    if (identities.some((value) =>
+      value === "hap" || value.endsWith("hap") ||
+      value.includes("headacademicprograms") || value.includes("qaccoordinator"),
+    )) return "hap";
+    if (identities.some((value) => value === "osas" || value.includes("osas"))) {
+      return "osas";
+    }
+    return "";
+  }
+
+  function profileStageKey(value) {
+    const normalized = String(value || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+    if (
+      ["sirabelida", "abelida", "abelidas", "laboratoryhead", "propertycustodian",
+        "administrativeofficer", "labhead"].some((marker) => normalized.includes(marker))
+    ) return "sir_abelida";
+    if (
+      normalized === "hap" || normalized.endsWith("hap") ||
+      normalized.includes("headacademicprograms") || normalized.includes("qaccoordinator")
+    ) return "hap";
+    if (normalized === "osas" || normalized.includes("osas")) return "osas";
+    if (
+      ["orgadviser", "orgadvisor", "organizationadviser", "organizationadvisor"]
+        .some((marker) => normalized.includes(marker))
+    ) return "org_adv";
+    return "";
+  }
+
+  function accountNumberStageKey(profile) {
+    const accountNumbers = [
+      profile?.accountNumber,
+      profile?.accountNo,
+      profile?.account_number,
+      profile?.account_no,
+    ].map((value) => String(value || "").trim().toLowerCase().replace(/[^a-z0-9]/g, ""));
+    if (accountNumbers.some((value) => value.includes("administrative"))) return "sir_abelida";
+    if (accountNumbers.some((value) => value.includes("orgadviser") || value.includes("orgadvisor"))) {
+      return "org_adv";
+    }
+    if (accountNumbers.some((value) => value.includes("hap"))) return "hap";
+    if (accountNumbers.some((value) => value.includes("osas"))) return "osas";
+    return "";
+  }
+
+  function provisionedAccountNumber(profile, stageKey) {
+    const accountNumberValues = [
+      profile?.accountNumber,
+      profile?.accountNo,
+      profile?.account_number,
+      profile?.account_no,
+    ].map((value) => String(value || "").trim()).filter(Boolean);
+    if (stageKey === "sir_abelida") {
+      const administrativeId = [
+        ...accountNumberValues,
+        profile?.adminId,
+      ].map((value) => String(value || "").trim())
+        .find((value) => value.toLowerCase().includes("administrative"));
+      return administrativeId || "ADMINISTRATIVE";
+    }
+    return accountNumberValues[0] || "";
+  }
+
+  function assertProfileStageMatches(profile, stageKey, email) {
+    const accountStageKey = accountNumberStageKey(profile);
+    const identityStageKeys = [
+      "approvalStage",
+      "approvalStageKey",
+      "assignedApprovalStage",
+      "approverStage",
+      "approverKey",
+      "approvalRole",
+      "approverRole",
+      "roleSuffix",
+      "assignedRole",
+      "assignedApprover",
+      "adminRole",
+      "roleName",
+      "stageKey",
+      "position",
+      "role",
+      "userRole",
+      "userType",
+      "user_type",
+    ].map((field) => profileStageKey(profile?.[field])).filter(Boolean);
+    if (
+      (accountStageKey && accountStageKey !== stageKey) ||
+      identityStageKeys.some((key) => key !== stageKey)
+    ) {
+      throw adminProfileTransferError(
+        `The admin profile for ${email} has conflicting approval-stage fields. Correct its accountNumber/role markers before assigning it to this stage.`,
+      );
+    }
+  }
+
+  function stageEmailSignature(stages) {
+    return JSON.stringify(createOrganizationStageCopy(stages)
+      .map((stage) => stage.reviewerEmail));
+  }
+
+  function stagesFromSettings(settingsData, code) {
+    const entry = settingsData?.approvalStagesByOrg?.[code];
+    const stages = Array.isArray(entry?.stages) && entry.stages.length
+      ? entry.stages
+      : settingsData?.approvalStages || defaultApprovalStages;
+    return createOrganizationStageCopy(stages);
+  }
+
+  async function findUniqueUserProfile(email) {
+    const normalizedEmail = String(email || "").trim().toLowerCase();
+    const result = await getDocs(query(
+      collection(db, "users"),
+      where("email", "==", normalizedEmail),
+      limit(2),
+    ));
+    const matches = result.docs.filter((entry) =>
+      String(entry.data()?.email || "").trim().toLowerCase() === normalizedEmail,
+    );
+    if (matches.length > 1) return { status: "ambiguous" };
+    if (!matches.length) return { status: "missing" };
+    return { status: "found", profileId: matches[0].id };
+  }
+
+  function adminProfileTransferError(message) {
+    return Object.assign(new Error(message), { code: "portal/admin-profile-transfer" });
+  }
+
+  async function prepareAdminProfileTransfers(previousStages, nextStages) {
+    const previousById = new Map(previousStages.map((stage) => [stage.id, stage]));
+    const transfers = new Map();
+
+    for (const stage of nextStages) {
+      const approvalStageKey = configuredApprovalStageKey(stage);
+      const previousStage = previousById.get(stage.id);
+      const previousEmail = String(previousStage?.reviewerEmail || "").trim().toLowerCase();
+      const nextEmail = String(stage.reviewerEmail || "").trim().toLowerCase();
+      if (!previousEmail || !nextEmail || previousEmail === nextEmail) continue;
+
+      const [previousAccount, nextAccount] = await Promise.all([
+        getReviewerAccount(previousEmail),
+        getReviewerAccount(nextEmail),
+      ]);
+      if (previousAccount.status === "error" || nextAccount.status === "error") {
+        throw adminProfileTransferError(
+          `Could not verify the previous or new admin profile for "${stage.name}". Try again.`,
+        );
+      }
+      if (previousAccount.status === "ambiguous" || nextAccount.status === "ambiguous") {
+        throw adminProfileTransferError(
+          `More than one admin profile matches an email for "${stage.name}". Resolve the duplicate email before saving.`,
+        );
+      }
+      if (nextAccount.status === "inactive") {
+        throw adminProfileTransferError(
+          `The admin profile for ${nextEmail} is inactive. Reactivate it or choose another reviewer.`,
+        );
+      }
+
+      const targetUser = await findUniqueUserProfile(nextEmail);
+      if (targetUser.status === "ambiguous") {
+        if (previousAccount.status === "found" || nextAccount.status === "found") {
+          throw adminProfileTransferError(
+            `More than one users profile matches ${nextEmail}; the new UID cannot be resolved safely.`,
+          );
+        }
+        continue;
+      }
+
+      let sourceAccount = null;
+      if (
+        targetUser.status === "found" &&
+        nextAccount.status === "found" &&
+        nextAccount.profileId !== targetUser.profileId
+      ) {
+        if (
+          previousAccount.status === "found" &&
+          previousAccount.profileId !== nextAccount.profileId
+        ) {
+          throw adminProfileTransferError(
+            `The new email ${nextEmail} already belongs to a different admin profile. No role was transferred.`,
+          );
+        }
+        sourceAccount = nextAccount;
+      } else if (
+        targetUser.status === "found" &&
+        nextAccount.status === "missing" &&
+        previousAccount.status === "found"
+      ) {
+        sourceAccount = previousAccount;
+      } else if (
+        targetUser.status === "missing" &&
+        nextAccount.status === "missing" &&
+        previousAccount.status === "found"
+      ) {
+        throw adminProfileTransferError(
+          `A matching users profile for ${nextEmail} is required before its admin role can be transferred. No settings or profile changes were saved.`,
+        );
+      }
+
+      if (!sourceAccount || sourceAccount.profileId === targetUser.profileId) continue;
+      if (!isActiveAdminProfile(sourceAccount.data)) {
+        throw adminProfileTransferError(
+          `The previous admin profile for "${stage.name}" is inactive or does not have an Admin/OSAS role. It cannot be transferred.`,
+        );
+      }
+      if (isOrganizationAdviserProfile(sourceAccount.data)) {
+        throw adminProfileTransferError(
+          "Organization Adviser access has a separate UID-bound approver mapping that cannot be copied under the current Firestore rules. No profile or settings changes were saved.",
+        );
+      }
+      if (approvalStageKey) {
+        assertProfileStageMatches(sourceAccount.data, approvalStageKey, nextEmail);
+      }
+
+      const existingTransfer = transfers.get(targetUser.profileId);
+      if (
+        existingTransfer &&
+        (
+          existingTransfer.sourceAccount.profileId !== sourceAccount.profileId ||
+          existingTransfer.targetEmail !== nextEmail ||
+          existingTransfer.approvalStageKey !== approvalStageKey
+        )
+      ) {
+        throw adminProfileTransferError(
+          `Multiple different admin profiles resolve to the new UID for ${nextEmail}. Resolve the conflict before saving.`,
+        );
+      }
+      const sourceAlreadyTransferred = [...transfers.values()].some(
+        (transfer) =>
+          transfer.sourceAccount.profileId === sourceAccount.profileId &&
+          transfer.targetUid !== targetUser.profileId,
+      );
+      if (sourceAlreadyTransferred) {
+        throw adminProfileTransferError(
+          "One admin profile cannot be transferred to multiple new UIDs in the same save.",
+        );
+      }
+      transfers.set(targetUser.profileId, {
+        targetUid: targetUser.profileId,
+        targetEmail: nextEmail,
+        sourceAccount,
+        approvalStageKey,
+      });
+    }
+
+    const transferEmails = new Set(
+      [...transfers.values()].map((transfer) => transfer.targetEmail),
+    );
+    const transferSources = new Set(
+      [...transfers.values()].map((transfer) => transfer.sourceAccount.profileId),
+    );
+    const profileUpdates = new Map();
+    for (const stage of nextStages) {
+      const stageKey = configuredApprovalStageKey(stage);
+      const email = String(stage.reviewerEmail || "").trim().toLowerCase();
+      if (!stageKey || !email || transferEmails.has(email)) continue;
+      const account = await getReviewerAccount(email);
+      if (account.status !== "found" || !isActiveAdminProfile(account.data)) continue;
+      if (transferSources.has(account.profileId)) continue;
+      assertProfileStageMatches(account.data, stageKey, email);
+
+      const existingUpdate = profileUpdates.get(account.profileId);
+      if (existingUpdate && existingUpdate.approvalStageKey !== stageKey) {
+        throw adminProfileTransferError(
+          `${email} is assigned to multiple approval roles. Assign a different account to each stage.`,
+        );
+      }
+      profileUpdates.set(account.profileId, {
+        profileId: account.profileId,
+        email,
+        approvalStageKey: stageKey,
+      });
+    }
+
+    return {
+      transfers: [...transfers.values()],
+      profileUpdates: [...profileUpdates.values()],
+    };
+  }
+
+  async function persistOrganizationStages(
+    code,
+    stages,
+    previousStages,
+    transfers,
+    profileUpdates,
+  ) {
+    const actorUid = auth.currentUser.uid;
+    await runTransaction(db, async (transaction) => {
+      const settingsSnapshot = await transaction.get(settingsRef);
+      const settingsData = settingsSnapshot.exists() ? settingsSnapshot.data() || {} : {};
+      const latestStages = stagesFromSettings(
+        settingsData,
+        code,
+      );
+      if (stageEmailSignature(latestStages) !== stageEmailSignature(previousStages)) {
+        throw adminProfileTransferError(
+          "Approval stages changed in another session. Reload the page and review the latest settings before saving.",
+        );
+      }
+
+      const stageLists = [
+        settingsData.approvalStages || defaultApprovalStages,
+        ...Object.entries(settingsData.approvalStagesByOrg || {}).map(([orgCode, entry]) =>
+          orgCode === code
+            ? stages
+            : Array.isArray(entry?.stages) && entry.stages.length
+              ? entry.stages
+              : settingsData.approvalStages || defaultApprovalStages,
+        ),
+      ];
+      const assertStageEmailConsistency = (email, stageKey) => {
+        const conflictingStage = stageLists
+          .flat()
+          .find((stage) =>
+            String(stage?.reviewerEmail || stage?.email || "").trim().toLowerCase() === email &&
+            configuredApprovalStageKey(stage) &&
+            configuredApprovalStageKey(stage) !== stageKey,
+          );
+        if (conflictingStage) {
+          throw adminProfileTransferError(
+            `${email} is configured for more than one approval role. A single adminUser profile cannot hold both stage mappings.`,
+          );
+        }
+      };
+
+      const profileRefs = new Map();
+      const userProfileRefs = new Map();
+      transfers.forEach(({ targetUid, sourceAccount }) => {
+        const sourceRef = doc(db, "adminUser", sourceAccount.profileId);
+        const targetRef = doc(db, "adminUser", targetUid);
+        profileRefs.set(sourceRef.path, sourceRef);
+        profileRefs.set(targetRef.path, targetRef);
+        const userProfileRef = doc(db, "users", targetUid);
+        userProfileRefs.set(userProfileRef.path, userProfileRef);
+      });
+      profileUpdates.forEach(({ profileId }) => {
+        const profileRef = doc(db, "adminUser", profileId);
+        profileRefs.set(profileRef.path, profileRef);
+      });
+      const profileSnapshots = new Map();
+      await Promise.all([
+        ...profileRefs.values(),
+        ...userProfileRefs.values(),
+      ].map(async (profileRef) => {
+        profileSnapshots.set(profileRef.path, await transaction.get(profileRef));
+      }));
+
+      for (const {
+        targetUid,
+        targetEmail,
+        sourceAccount,
+        approvalStageKey,
+      } of transfers) {
+        const sourceRef = doc(db, "adminUser", sourceAccount.profileId);
+        const targetRef = doc(db, "adminUser", targetUid);
+        const sourceSnapshot = profileSnapshots.get(sourceRef.path);
+        const targetSnapshot = profileSnapshots.get(targetRef.path);
+        const sourceData = sourceSnapshot?.data() || {};
+        const sourceEmail = String(sourceData.email || "").trim().toLowerCase();
+        if (
+          !sourceSnapshot?.exists() ||
+          sourceEmail !== String(sourceAccount.data.email || "").trim().toLowerCase() ||
+          !isActiveAdminProfile(sourceData)
+        ) {
+          throw adminProfileTransferError(
+            "The source admin profile changed or became inactive. Reload and verify the account before saving.",
+          );
+        }
+        if (approvalStageKey) {
+          assertProfileStageMatches(sourceData, approvalStageKey, targetEmail);
+          assertStageEmailConsistency(targetEmail, approvalStageKey);
+        }
+        if (targetSnapshot?.exists()) {
+          throw adminProfileTransferError(
+            `An admin profile already exists for the new UID associated with ${targetEmail}. No profile was overwritten.`,
+          );
+        }
+        const userProfileRef = doc(db, "users", targetUid);
+        const userProfileSnapshot = profileSnapshots.get(userProfileRef.path);
+        if (
+          !userProfileSnapshot?.exists() ||
+          String(userProfileSnapshot.data()?.email || "").trim().toLowerCase() !== targetEmail
+        ) {
+          throw adminProfileTransferError(
+            `The users profile for ${targetEmail} changed or could not be verified. Reload and verify the account before saving.`,
+          );
+        }
+
+        const targetProfile = {
+          ...sourceData,
+          email: targetEmail,
+          status: "Active",
+          isActive: true,
+          updatedAt: serverTimestamp(),
+          updatedBy: actorUid,
+        };
+        const transferredAccountNumber = provisionedAccountNumber(sourceData, approvalStageKey);
+        if (transferredAccountNumber) targetProfile.accountNumber = transferredAccountNumber;
+        if (approvalStageKey) targetProfile.approvalStageKey = approvalStageKey;
+        if (Object.prototype.hasOwnProperty.call(sourceData, "uid")) {
+          targetProfile.uid = targetUid;
+        }
+        if (Object.prototype.hasOwnProperty.call(sourceData, "id")) {
+          targetProfile.id = targetUid;
+        }
+        transaction.set(targetRef, targetProfile);
+        if (transferredAccountNumber) {
+          transaction.update(userProfileRef, { accountNumber: transferredAccountNumber });
+        }
+        transaction.update(sourceRef, {
+          status: "Disabled",
+          isActive: false,
+          updatedAt: serverTimestamp(),
+          updatedBy: actorUid,
+        });
+      }
+
+      for (const profileUpdate of profileUpdates) {
+        const profileRef = doc(db, "adminUser", profileUpdate.profileId);
+        const profileSnapshot = profileSnapshots.get(profileRef.path);
+        const profile = profileSnapshot?.data() || {};
+        if (
+          !profileSnapshot?.exists() ||
+          String(profile.email || "").trim().toLowerCase() !== profileUpdate.email ||
+          !isActiveAdminProfile(profile)
+        ) {
+          throw adminProfileTransferError(
+            `The reviewer profile for ${profileUpdate.email} changed or became inactive. Reload and try again.`,
+          );
+        }
+        assertProfileStageMatches(
+          profile,
+          profileUpdate.approvalStageKey,
+          profileUpdate.email,
+        );
+        assertStageEmailConsistency(
+          profileUpdate.email,
+          profileUpdate.approvalStageKey,
+        );
+        transaction.update(profileRef, {
+          approvalStageKey: profileUpdate.approvalStageKey,
+          updatedAt: serverTimestamp(),
+          updatedBy: actorUid,
+        });
+      }
+
+      transaction.set(settingsRef, {
+        approvalStagesByOrg: {
+          [code]: {
+            stages,
+            updatedAt: serverTimestamp(),
+            updatedBy: actorUid,
+          },
+        },
+      }, { merge: true });
+    });
+  }
+
   function renderReviewerLookupStatus(statusElement, state) {
     statusElement.className = "settings-reviewer-lookup-status";
     if (state.status === "found") {
       statusElement.textContent = `Account found: ${state.name} (${state.role})`;
       statusElement.classList.add("is-found");
+    } else if (state.status === "ambiguous") {
+      statusElement.textContent = "Multiple admin accounts match this email";
+      statusElement.classList.add("is-error");
+    } else if (state.status === "inactive") {
+      statusElement.textContent = "This admin account is inactive";
+      statusElement.classList.add("is-error");
     } else if (state.status === "missing") {
       statusElement.textContent = "No admin account with this email";
       statusElement.classList.add("is-missing");
@@ -1553,7 +2070,23 @@ import {
 
     setOrganizationStagesSaving(true);
     if (orgApprovalSuccess) orgApprovalSuccess.hidden = true;
-    const reviewerEmails = [...new Set(draft.stages
+    const previousStages = stagesFromSettings(currentSettings, code);
+    const stages = draft.stages.map((stage, order) => ({
+      id: String(stage.id),
+      ...(configuredApprovalStageKey(stage)
+        ? {
+            key: configuredApprovalStageKey(stage),
+            roleKey: configuredApprovalStageKey(stage),
+          }
+        : {}),
+      name: String(stage.name).trim(),
+      required: stage.required,
+      reviewerName: String(stage.reviewerName || "").trim(),
+      reviewerEmail: String(stage.reviewerEmail || "").trim().toLowerCase(),
+      order,
+    }));
+    reviewerAccountLookups.clear();
+    const reviewerEmails = [...new Set(stages
       .map((stage) => String(stage.reviewerEmail || "").trim().toLowerCase())
       .filter(Boolean))];
     const reviewerAccounts = await Promise.all(reviewerEmails.map((email) => getReviewerAccount(email)));
@@ -1562,32 +2095,47 @@ import {
       setOrganizationStagesSaving(false);
       return false;
     }
+    if (reviewerAccounts.some((account) => account.status === "ambiguous")) {
+      showOrganizationStageError("More than one admin profile matches a reviewer email. Resolve duplicate emails before saving.");
+      setOrganizationStagesSaving(false);
+      return false;
+    }
+    if (reviewerAccounts.some((account) => account.status === "inactive")) {
+      showOrganizationStageError("An assigned reviewer account is inactive. Reactivate it or choose another reviewer.");
+      setOrganizationStagesSaving(false);
+      return false;
+    }
+
+    let profileChanges;
+    try {
+      profileChanges = await prepareAdminProfileTransfers(previousStages, stages);
+    } catch (error) {
+      console.error(`[ApprovalStages] Could not prepare admin profile transfer for ${code}:`, error);
+      showOrganizationStageError(error?.message || "Could not safely resolve the new reviewer account.");
+      setOrganizationStagesSaving(false);
+      return false;
+    }
+    const transferredEmails = new Set(
+      profileChanges.transfers.map((transfer) => transfer.targetEmail),
+    );
     if (
-      reviewerAccounts.some((account) => account.status === "missing") &&
+      reviewerEmails.some((email, index) =>
+        reviewerAccounts[index].status === "missing" && !transferredEmails.has(email),
+      ) &&
       !window.confirm("This reviewer has no account yet and will not be able to see proposals. Save anyway?")
     ) {
       setOrganizationStagesSaving(false);
       return false;
     }
 
-    const stages = draft.stages.map((stage, order) => ({
-      id: String(stage.id),
-      name: String(stage.name).trim(),
-      required: stage.required,
-      reviewerName: String(stage.reviewerName || "").trim(),
-      reviewerEmail: String(stage.reviewerEmail || "").trim().toLowerCase(),
-      order,
-    }));
     try {
-      await setDoc(settingsRef, {
-        approvalStagesByOrg: {
-          [code]: {
-            stages,
-            updatedAt: serverTimestamp(),
-            updatedBy: auth.currentUser.uid,
-          },
-        },
-      }, { merge: true });
+      await persistOrganizationStages(
+        code,
+        stages,
+        previousStages,
+        profileChanges.transfers,
+        profileChanges.profileUpdates,
+      );
 
       const savedEntry = {
         stages,
@@ -1599,6 +2147,7 @@ import {
         [code]: savedEntry,
       };
       cacheSettings(currentSettings);
+      reviewerAccountLookups.clear();
       organizationStageDrafts.set(code, {
         stages: createOrganizationStageCopy(stages),
         custom: true,
@@ -1622,7 +2171,11 @@ import {
       return true;
     } catch (error) {
       console.error(`Unable to save ${code} approval stages:`, error);
-      showOrganizationStageError(`Could not save ${code} stages. Check your connection and permissions, then try again.`);
+      showOrganizationStageError(
+        error?.code === "portal/admin-profile-transfer"
+          ? error.message
+          : `Could not save ${code} stages. Check your connection and permissions, then try again.`,
+      );
       return false;
     } finally {
       setOrganizationStagesSaving(false);

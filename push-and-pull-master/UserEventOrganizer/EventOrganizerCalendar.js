@@ -3,6 +3,7 @@
 import { onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
 import {
   collection,
+  limit,
   onSnapshot,
   query,
   where,
@@ -92,7 +93,11 @@ import { getEventDateRange } from "../UserStudent/calendarDateRange.mjs";
   let initialCalendarHolidaysReady = false;
   let pageLoadSignaled = false;
   const invalidDateEventIds = new Set();
+  const eventSourcePageLimitReached = new Set();
   let holidayRequestSequence = 0;
+  let authInitializationTimeout = null;
+  const HOLIDAY_LOAD_TIMEOUT_MS = 6000;
+  const CALENDAR_EVENT_PAGE_SIZE = 100;
 
   function signalCalendarPageReady() {
     if (
@@ -102,6 +107,36 @@ import { getEventDateRange } from "../UserStudent/calendarDateRange.mjs";
     ) return;
     pageLoadSignaled = true;
     window.dispatchEvent(new Event("page-data-ready"));
+  }
+
+  function updateCalendarNotice() {
+    if (!noticeElement) return;
+    if (!navigator.onLine) {
+      noticeElement.textContent = "You are offline. Showing the last saved events.";
+      noticeElement.hidden = false;
+    } else if (eventSourcePageLimitReached.size > 0) {
+      noticeElement.textContent = "Calendar results may be incomplete because a source reached its 100-event page cap. Open All Events to browse the full paginated list.";
+      noticeElement.hidden = false;
+    } else if (failedEventSources.size > 0 && eventSnapshotsBySource.size > 0) {
+      noticeElement.textContent = "Some event sources could not be loaded. Calendar results may be incomplete.";
+      noticeElement.hidden = false;
+    } else {
+      noticeElement.hidden = true;
+    }
+  }
+
+  function handleCalendarLoadFailure(error) {
+    console.error("[OrganizerCalendar] Calendar initialization failed:", {
+      code: error?.code || "unknown",
+      message: error?.message || String(error),
+      error,
+    });
+    state.isLoading = false;
+    state.loadError = true;
+    initialCalendarEventsReady = true;
+    initialCalendarHolidaysReady = true;
+    signalCalendarPageReady();
+    renderCalendar();
   }
 
   // --- Philippine Time Date Helpers ---
@@ -340,7 +375,7 @@ import { getEventDateRange } from "../UserStudent/calendarDateRange.mjs";
       return null;
     }
 
-    const title = data.name || data.eventName || data.title || "Untitled event";
+    const title = String(data.name || data.eventName || data.title || "Untitled event");
     const venue = data.venue || data.location || data.venueOther || "-";
     const source = data.source || data.eventSource || data.organizerName || "Others / External";
     const organization = 
@@ -348,7 +383,9 @@ import { getEventDateRange } from "../UserStudent/calendarDateRange.mjs";
       data.department || 
       data.organizerName || 
       (data.source ? data.source : "-");
-    const status = data.status || data.publicationStatus || data.approvalStatus || "published";
+    const rawStatus = [data.status, data.publicationStatus, data.approvalStatus]
+      .find((value) => typeof value === "string" && value.trim());
+    const status = rawStatus?.trim() || "published";
 
     const categoryKey = getCategoryKey({ ...data, source, title });
 
@@ -476,7 +513,8 @@ import { getEventDateRange } from "../UserStudent/calendarDateRange.mjs";
       `;
       document.getElementById("calTryAgainBtn")?.addEventListener("click", () => {
         state.loadError = false;
-        subscribeMonthData(true);
+        state.isLoading = true;
+        void subscribeMonthData(true).catch(handleCalendarLoadFailure);
       });
       renderUpcomingList();
       return;
@@ -874,8 +912,18 @@ import { getEventDateRange } from "../UserStudent/calendarDateRange.mjs";
 
   // --- Firestore Event Subscription ---
   function cleanupListeners() {
-    activeEventUnsubscribers.splice(0).forEach((unsubscribe) => unsubscribe());
+    activeEventUnsubscribers.splice(0).forEach((unsubscribe) => {
+      try {
+        unsubscribe();
+      } catch (error) {
+        console.warn("[OrganizerCalendar] Could not stop an event listener:", {
+          code: error?.code || "unknown",
+          message: error?.message || String(error),
+        });
+      }
+    });
     eventSnapshotsBySource.clear();
+    eventSourcePageLimitReached.clear();
     pendingInitialSnapshots.clear();
     failedEventSources.clear();
     if (initialSnapshotTimeout !== null) {
@@ -888,12 +936,37 @@ import { getEventDateRange } from "../UserStudent/calendarDateRange.mjs";
     }
   }
 
+  function handleEventSourceFailure(source, error) {
+    console.error("[OrganizerCalendar] Event listener failed:", {
+      source,
+      code: error?.code || "unknown",
+      error,
+    });
+    failedEventSources.add(source);
+    pendingInitialSnapshots.delete(source);
+    if (pendingInitialSnapshots.size === 0 && initialSnapshotTimeout !== null) {
+      clearTimeout(initialSnapshotTimeout);
+      initialSnapshotTimeout = null;
+    }
+    state.isLoading =
+      pendingInitialSnapshots.size > 0 && eventSnapshotsBySource.size === 0;
+    state.loadError =
+      pendingInitialSnapshots.size === 0 &&
+      eventSnapshotsBySource.size === 0;
+    updateCalendarNotice();
+    renderCalendar();
+    if (pendingInitialSnapshots.size === 0) {
+      initialCalendarEventsReady = true;
+      signalCalendarPageReady();
+    }
+  }
+
   async function subscribeMonthData(retry = false) {
     if (retry) cleanupListeners();
-    if (noticeElement) noticeElement.hidden = navigator.onLine;
+    updateCalendarNotice();
     state.isLoading = activeEventUnsubscribers.length === 0;
     state.loadError =
-      failedEventSources.size > 0 ||
+      (failedEventSources.size > 0 && eventSnapshotsBySource.size === 0) ||
       (!state.isLoading && pendingInitialSnapshots.size > 0);
 
     const year = state.date.getFullYear();
@@ -901,27 +974,60 @@ import { getEventDateRange } from "../UserStudent/calendarDateRange.mjs";
 
     // 1. Fetch holidays for this visible month
     const currentSeq = ++holidayRequestSequence;
-    fetchMonthHolidays(year, month)
+    let holidayTimeoutId;
+    const holidayTimeout = new Promise((_, reject) => {
+      holidayTimeoutId = setTimeout(() => {
+        reject(Object.assign(new Error("Holiday lookup timed out."), {
+          code: "calendar/holiday-timeout",
+        }));
+      }, HOLIDAY_LOAD_TIMEOUT_MS);
+    });
+    Promise.race([
+      Promise.resolve().then(() => fetchMonthHolidays(year, month)),
+      holidayTimeout,
+    ])
       .then((monthHolidays) => {
         if (currentSeq !== holidayRequestSequence) return;
-        state.holidays = (monthHolidays || []).map((h) => ({
-          id: `holiday:${h.date}:${h.title}`,
-          eventId: `holiday:${h.date}:${h.title}`,
-          title: h.title,
-          name: h.title,
-          dateISO: h.date,
-          startDay: h.date,
-          endDay: h.date,
-          startAt: new Date(`${h.date}T00:00:00+08:00`).getTime(),
-          endAt: new Date(`${h.date}T23:59:59+08:00`).getTime(),
-          venue: "—",
-          organization: "National Holiday",
-          source: "Holiday",
-          categoryKey: "holiday",
-          status: "Holiday",
-          isHoliday: true,
-          time: "All Day",
-        }));
+        state.holidays = (Array.isArray(monthHolidays) ? monthHolidays : [])
+          .flatMap((holiday) => {
+            try {
+              const date = String(holiday?.date || "");
+              const parsedDate = new Date(`${date}T00:00:00Z`);
+              if (
+                !/^\d{4}-\d{2}-\d{2}$/.test(date) ||
+                Number.isNaN(parsedDate.getTime()) ||
+                parsedDate.toISOString().slice(0, 10) !== date
+              ) return [];
+              const startAt = new Date(`${date}T00:00:00+08:00`).getTime();
+              const endAt = new Date(`${date}T23:59:59+08:00`).getTime();
+              if (!Number.isFinite(startAt) || !Number.isFinite(endAt)) return [];
+              const title = String(holiday.title || "Holiday");
+              return [{
+                id: `holiday:${date}:${title}`,
+                eventId: `holiday:${date}:${title}`,
+                title,
+                name: title,
+                dateISO: date,
+                startDay: date,
+                endDay: date,
+                startAt,
+                endAt,
+                venue: "—",
+                organization: "National Holiday",
+                source: "Holiday",
+                categoryKey: "holiday",
+                status: "Holiday",
+                isHoliday: true,
+                time: "All Day",
+              }];
+            } catch (error) {
+              console.warn("[OrganizerCalendar] Skipping malformed holiday record:", {
+                code: error?.code || "invalid-holiday-data",
+                message: error?.message || String(error),
+              });
+              return [];
+            }
+          });
         if (!state.isLoading) {
           renderCalendar();
         }
@@ -929,9 +1035,17 @@ import { getEventDateRange } from "../UserStudent/calendarDateRange.mjs";
         signalCalendarPageReady();
       })
       .catch((err) => {
-        console.warn("[OrganizerCalendar] Holiday load failed:", err?.code || "unknown");
+        if (currentSeq !== holidayRequestSequence) return;
+        state.holidays = [];
+        console.warn("[OrganizerCalendar] Holiday load failed:", {
+          code: err?.code || "unknown",
+          message: err?.message || String(err),
+        });
         initialCalendarHolidaysReady = true;
         signalCalendarPageReady();
+      })
+      .finally(() => {
+        clearTimeout(holidayTimeoutId);
       });
 
     if (activeEventUnsubscribers.length) {
@@ -967,11 +1081,16 @@ import { getEventDateRange } from "../UserStudent/calendarDateRange.mjs";
     pendingInitialSnapshots = new Set(listenerQueries.map(([source]) => source));
 
     listenerQueries.forEach(([source, eventsQuery]) => {
-      activeEventUnsubscribers.push(
-        onSnapshot(
-          eventsQuery,
+      try {
+        const unsubscribe = onSnapshot(
+          query(eventsQuery, limit(CALENDAR_EVENT_PAGE_SIZE)),
           { includeMetadataChanges: true },
           (snapshot) => {
+            if (snapshot.size === CALENDAR_EVENT_PAGE_SIZE) {
+              eventSourcePageLimitReached.add(source);
+            } else {
+              eventSourcePageLimitReached.delete(source);
+            }
             const previousDocuments = eventSnapshotsBySource.get(source) || new Map();
             const sourceDocuments = new Map();
             snapshot.docs.forEach((eventDocument) => {
@@ -1004,23 +1123,35 @@ import { getEventDateRange } from "../UserStudent/calendarDateRange.mjs";
 
             const eventsById = new Map();
             mergedDocuments.forEach((eventDocument, id) => {
-              const data = eventDocument.data();
-              const status = String(data.status || "").trim().toLowerCase();
-              const isCancelled = ["cancelled", "canceled"].includes(status);
-              const isPublished =
-                !isCancelled &&
-                (["published", "completed", "rescheduled"].includes(status) ||
-                  String(data.publicationStatus || "").trim().toLowerCase() === "published" ||
-                  data.published === true ||
-                  data.isPublished === true);
-              const isOwn = [data.organizerUid, data.organizerId, data.createdBy].some(
-                (ownerId) => String(ownerId || "") === String(state.currentUser.uid),
-              );
-              if (!isPublished && (!isOwn || isTeacher)) return;
-              const event = normalizeEvent(id, data);
-              if (!event) return;
-              event.snapshotVersion = JSON.stringify(data);
-              eventsById.set(id, event);
+              try {
+                const data = eventDocument.data();
+                if (!data || typeof data !== "object" || Array.isArray(data)) return;
+                const status = String(data.status || "").trim().toLowerCase();
+                const isCancelled = ["cancelled", "canceled"].includes(status);
+                const isPublished =
+                  !isCancelled &&
+                  (["published", "completed", "rescheduled"].includes(status) ||
+                    String(data.publicationStatus || "").trim().toLowerCase() === "published" ||
+                    data.published === true ||
+                    data.isPublished === true);
+                const isOwn = [data.organizerUid, data.organizerId, data.createdBy].some(
+                  (ownerId) => String(ownerId || "") === String(state.currentUser.uid),
+                );
+                if (!isPublished && (!isOwn || isTeacher)) return;
+                const event = normalizeEvent(id, data);
+                if (!event) return;
+                event.snapshotVersion = JSON.stringify(data);
+                eventsById.set(id, event);
+              } catch (error) {
+                if (!invalidDateEventIds.has(String(id))) {
+                  invalidDateEventIds.add(String(id));
+                  console.warn("[OrganizerCalendar] Skipping malformed event record:", {
+                    eventId: String(id),
+                    code: error?.code || "invalid-event-data",
+                    message: error?.message || String(error),
+                  });
+                }
+              }
             });
 
             state.eventsById = eventsById;
@@ -1031,10 +1162,13 @@ import { getEventDateRange } from "../UserStudent/calendarDateRange.mjs";
             state.organizerUnpublishedEvents = [...eventsById.values()].filter(
               (event) => event.isOwn && event.isUnpublished,
             );
+            state.isLoading =
+              pendingInitialSnapshots.size > 0 && eventSnapshotsBySource.size === 0;
             state.loadError =
-              failedEventSources.size > 0 ||
-              (!state.isLoading && pendingInitialSnapshots.size > 0);
-            if (pendingInitialSnapshots.size === 0) state.isLoading = false;
+              pendingInitialSnapshots.size === 0 &&
+              failedEventSources.size > 0 &&
+              eventSnapshotsBySource.size === 0;
+            updateCalendarNotice();
 
             if (eventRenderFrame === null) {
               eventRenderFrame = requestAnimationFrame(() => {
@@ -1083,46 +1217,40 @@ import { getEventDateRange } from "../UserStudent/calendarDateRange.mjs";
               });
             }
           },
-          (error) => {
-            console.error("[OrganizerCalendar] Event listener failed:", error?.code || "unknown");
-            failedEventSources.add(source);
-            pendingInitialSnapshots.delete(source);
-            if (pendingInitialSnapshots.size === 0 && initialSnapshotTimeout !== null) {
-              clearTimeout(initialSnapshotTimeout);
-              initialSnapshotTimeout = null;
-            }
-            state.isLoading = false;
-            state.loadError = true;
-            renderCalendar();
-            if (pendingInitialSnapshots.size === 0) {
-              initialCalendarEventsReady = true;
-              signalCalendarPageReady();
-            }
-          },
-        ),
-      );
+          (error) => handleEventSourceFailure(source, error),
+        );
+        activeEventUnsubscribers.push(unsubscribe);
+      } catch (error) {
+        handleEventSourceFailure(source, error);
+      }
     });
 
-    initialSnapshotTimeout = setTimeout(() => {
-      if (pendingInitialSnapshots.size > 0) {
-        console.error(
-          "[OrganizerCalendar] Initial event snapshot timed out:",
-          "deadline-exceeded",
-        );
-        state.isLoading = false;
-        state.loadError = true;
-        renderCalendar();
-        initialCalendarEventsReady = true;
-        signalCalendarPageReady();
-      }
-      initialSnapshotTimeout = null;
-    }, 9000);
+    if (pendingInitialSnapshots.size > 0) {
+      initialSnapshotTimeout = setTimeout(() => {
+        if (pendingInitialSnapshots.size > 0) {
+          const timedOutSources = [...pendingInitialSnapshots];
+          console.error("[OrganizerCalendar] Initial event snapshots timed out:", {
+            code: "deadline-exceeded",
+            sources: timedOutSources,
+          });
+          timedOutSources.forEach((source) => failedEventSources.add(source));
+          pendingInitialSnapshots.clear();
+          state.isLoading = false;
+          state.loadError = eventSnapshotsBySource.size === 0;
+          updateCalendarNotice();
+          renderCalendar();
+          initialCalendarEventsReady = true;
+          signalCalendarPageReady();
+        }
+        initialSnapshotTimeout = null;
+      }, 9000);
+    }
     renderCalendar();
   }
 
   function setCalendarMonth(year, month) {
     state.date = new Date(year, month, 1);
-    subscribeMonthData();
+    void subscribeMonthData().catch(handleCalendarLoadFailure);
   }
 
   // --- Filter State & URL Sync ---
@@ -1177,15 +1305,7 @@ import { getEventDateRange } from "../UserStudent/calendarDateRange.mjs";
       calendarDays.parentElement.insertBefore(noticeElement, calendarDays);
     }
 
-    const updateOnlineNotice = () => {
-      if (!noticeElement) return;
-      if (!navigator.onLine) {
-        noticeElement.textContent = "You are offline. Showing the last saved events.";
-        noticeElement.hidden = false;
-      } else if (noticeElement.textContent.startsWith("You are offline.")) {
-        noticeElement.hidden = true;
-      }
-    };
+    const updateOnlineNotice = updateCalendarNotice;
     window.addEventListener("offline", updateOnlineNotice);
     window.addEventListener("online", updateOnlineNotice);
     updateOnlineNotice();
@@ -1209,7 +1329,7 @@ import { getEventDateRange } from "../UserStudent/calendarDateRange.mjs";
     todayButton?.addEventListener("click", () => {
       const now = new Date();
       state.date = new Date(now.getFullYear(), now.getMonth(), 1);
-      subscribeMonthData();
+      void subscribeMonthData().catch(handleCalendarLoadFailure);
     });
 
     filterCheckboxes.forEach((cb) => {
@@ -1314,7 +1434,7 @@ import { getEventDateRange } from "../UserStudent/calendarDateRange.mjs";
     window.addEventListener("pagehide", cleanupListeners);
     window.addEventListener("pageshow", () => {
       if (state.currentUser && !activeEventUnsubscribers.length) {
-        subscribeMonthData(true);
+        void subscribeMonthData(true).catch(handleCalendarLoadFailure);
       }
     });
   }
@@ -1410,62 +1530,61 @@ import { getEventDateRange } from "../UserStudent/calendarDateRange.mjs";
 
     // Authentication observation
     if (auth) {
-      authReady.then(() => onAuthStateChanged(auth, (user) => {
-        state.currentUser = user;
-        cleanupListeners();
-        if (!user) {
-          closeDetailModal();
-          state.eventsById = new Map();
-          state.publicEvents = [];
-          state.upcomingEvents = [];
-          state.organizerUnpublishedEvents = [];
-          state.isLoading = false;
-          state.loadError = false;
-          renderCalendar();
-          if (!isTeacher) {
-            window.location.replace("EventOrganizerLogin.html");
+      authInitializationTimeout = setTimeout(() => {
+        authInitializationTimeout = null;
+        handleCalendarLoadFailure(Object.assign(
+          new Error("Authentication initialization timed out."),
+          { code: "calendar/auth-timeout" },
+        ));
+      }, 8000);
+      authReady.then(() => {
+        onAuthStateChanged(auth, (user) => {
+          if (authInitializationTimeout !== null) {
+            clearTimeout(authInitializationTimeout);
+            authInitializationTimeout = null;
           }
-          return;
-        }
+          try {
+            state.currentUser = user;
+            cleanupListeners();
+            if (!user) {
+              closeDetailModal();
+              state.eventsById = new Map();
+              state.publicEvents = [];
+              state.upcomingEvents = [];
+              state.organizerUnpublishedEvents = [];
+              state.isLoading = false;
+              state.loadError = false;
+              initialCalendarEventsReady = true;
+              initialCalendarHolidaysReady = true;
+              renderCalendar();
+              signalCalendarPageReady();
+              if (!isTeacher) {
+                window.location.replace("EventOrganizerLogin.html");
+              }
+              return;
+            }
 
-        const role = String(
-          state.organizerProfile?.role || state.organizerProfile?.userRole || "",
-        ).toLowerCase().replace(/[\s_.-]+/g, "");
-        const profileUid = String(state.organizerProfile?.uid || "");
-        if (
-          !isTeacher &&
-          (!["eventorganizer", "organizer", "eo"].includes(role) ||
-            (profileUid && profileUid !== String(user.uid)))
-        ) {
-          closeDetailModal();
-          state.eventsById = new Map();
-          state.publicEvents = [];
-          state.upcomingEvents = [];
-          state.organizerUnpublishedEvents = [];
-          state.isLoading = false;
-          state.loadError = false;
-          renderCalendar();
-          return;
-        }
-
-        subscribeMonthData(true).then(() => {
-          if (dayParam) {
-            openDay(dayParam);
+            void subscribeMonthData(true)
+              .then(() => {
+                if (dayParam) openDay(dayParam);
+              })
+              .catch(handleCalendarLoadFailure);
+          } catch (error) {
+            handleCalendarLoadFailure(error);
           }
         });
-      })).catch((error) => {
-        console.error(
-          "[OrganizerCalendar] Authentication restore failed:",
-          error?.code || "unknown",
-        );
-        state.isLoading = false;
-        state.loadError = true;
-        renderCalendar();
+      }).catch((error) => {
+        if (authInitializationTimeout !== null) {
+          clearTimeout(authInitializationTimeout);
+          authInitializationTimeout = null;
+        }
+        handleCalendarLoadFailure(error);
       });
     } else {
-      state.isLoading = false;
-      state.loadError = true;
-      renderCalendar();
+      handleCalendarLoadFailure(Object.assign(
+        new Error("Authentication is unavailable."),
+        { code: "calendar/auth-unavailable" },
+      ));
     }
   }
 

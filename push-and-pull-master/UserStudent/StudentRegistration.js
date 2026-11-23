@@ -6,8 +6,11 @@ import {
   doc,
   getDocs,
   collection,
+  limit,
+  query,
   serverTimestamp,
   setDoc,
+  where,
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 import { auth, db, isFirebaseConfigured } from "./firebaseConfig.js";
 import {
@@ -738,20 +741,20 @@ form.addEventListener("submit", async (event) => {
   submitButton.textContent = "Creating account...";
 
   try {
-    const existingUsers = await getDocs(collection(db, "users"));
-    const duplicateEmail = existingUsers.docs.some((userDoc) =>
-      String(userDoc.data()?.email || "").trim().toLowerCase() === email,
-    );
+    const users = collection(db, "users");
+    const [emailMatch, studentNumberMatch, studentIdMatch] = await Promise.all([
+      getDocs(query(users, where("email", "==", email), limit(1))),
+      getDocs(query(users, where("studentNumber", "==", studentNumber), limit(1))),
+      getDocs(query(users, where("studentId", "==", studentNumber), limit(1))),
+    ]);
+    const duplicateEmail = !emailMatch.empty;
     if (duplicateEmail) {
       setInvalid("field-reg-email", true, "This email is already registered.");
       fields.email.focus();
       return;
     }
-    const duplicateStudentNumber = existingUsers.docs.some((userDoc) =>
-      String(userDoc.data()?.studentNumber || userDoc.data()?.studentId || "")
-        .trim()
-        .toUpperCase() === studentNumber,
-    );
+    const duplicateStudentNumber =
+      !studentNumberMatch.empty || !studentIdMatch.empty;
     if (duplicateStudentNumber) {
       setInvalid("field-reg-student-id", true, "This Student Number is already registered.");
       fields.studentId.focus();

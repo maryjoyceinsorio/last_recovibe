@@ -16,7 +16,6 @@ import { auth, authReady, db, isFirebaseConfigured } from "../UserStudent/fireba
 import {
   profileCollectionsForRole,
   signInWithPendingEmailFallback,
-  syncVerifiedProfileEmail,
 } from "../portalProfileAccount.js";
 import {
   clearPortalProfileCaches,
@@ -362,15 +361,22 @@ import {
         findOrganizerProfile(credential.user.uid, credential.user.email || email),
         PROFILE_VERIFICATION_TIMEOUT_MS,
       );
-      if (!profileResult.emailLookup) {
-        await syncVerifiedProfileEmail(
-          auth,
-          db,
-          credential.user,
-          "eventorganizer",
-          [profileResult.profileSource.collectionName],
-        );
-      }
+      const savedProfileSnapshot = await withTimeout(
+        getDoc(doc(db, "users", credential.user.uid)),
+        PROFILE_VERIFICATION_TIMEOUT_MS,
+      );
+      const savedProfile = savedProfileSnapshot.exists() ? savedProfileSnapshot.data() : {};
+      const editableFields = [
+        "firstName",
+        "middleName",
+        "lastName",
+        "fullName",
+        "name",
+        "contactNumber",
+      ];
+      const savedEditableFields = Object.fromEntries(editableFields
+        .filter((field) => typeof savedProfile[field] === "string")
+        .map((field) => [field, savedProfile[field]]));
       accessSettings = await readSystemAccessSettings(db);
       if (!accessSettings.userLoginEnabled) {
         await signOut(auth);
@@ -382,6 +388,7 @@ import {
 
       const organizerProfile = {
         ...profileResult.profile,
+        ...savedEditableFields,
         uid: credential.user.uid,
         email: credential.user.email || email,
         profileSource: profileResult.profileSource,

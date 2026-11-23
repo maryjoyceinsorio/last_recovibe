@@ -96,34 +96,6 @@ body {
   color: #8b8f94;
 }
 
-.filter-select-wrap {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  color: var(--ink-700);
-  font-size: 12px;
-  font-weight: 600;
-}
-.filter-select-wrap.teacher-has-custom-filter > .filter-dropdown {
-  flex: 1 1 auto;
-  min-width: 0;
-}
-.filter-select-wrap .teacher-native-filter-select {
-  display: none !important;
-}
-
-.filter-select {
-  min-width: 150px;
-  min-height: 38px;
-  padding: 8px 12px;
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  background: var(--paper);
-  color: var(--ink-900);
-  font: 500 12px var(--font-body);
-  cursor: pointer;
-}
-
 .notifications-panel {
   max-width: 100%;
 }
@@ -508,13 +480,8 @@ body {
   .notification-toolbar {
     align-items: stretch;
   }
-  .notification-toolbar .search-box,
-  .filter-select-wrap {
+  .notification-toolbar .search-box {
     width: 100%;
-  }
-  .filter-select {
-    flex: 1;
-    min-width: 0;
   }
   #notificationPanels {
     display: grid;
@@ -630,39 +597,6 @@ body {
   color: #382b16;
 }
 
-.filter-select-wrap {
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  color: var(--ink-700);
-  font-size: 13px;
-  font-weight: 400;
-}
-
-.filter-select-wrap .filter-dropdown {
-  position: relative;
-  min-width: 140px;
-}
-
-.filter-select-wrap .filter-button {
-  width: 100%;
-  min-height: 40px;
-  padding: 8px 12px;
-  border: 1px solid #ded8d2;
-  border-radius: 9px;
-  background: #fff;
-  color: var(--ink-900);
-  font: 500 13px var(--font-body);
-  text-align: left;
-}
-
-.filter-select-wrap .filter-menu {
-  z-index: 20;
-  border: 1px solid #ded8d2;
-  border-radius: 9px;
-  background: #fff;
-}
-
 .notification-panel-switcher {
   position: static;
   display: inline-flex;
@@ -727,7 +661,6 @@ body {
 }
 
 .notification-search input:focus-visible,
-.filter-select-wrap .filter-button:focus-visible,
 .notification-toolbar button:focus-visible {
   outline: 3px solid rgba(122, 31, 46, .22);
   outline-offset: 2px;
@@ -1431,11 +1364,6 @@ body {
   background: transparent;
 }
 
-#notificationFilterSection .filter-select-wrap.teacher-has-custom-filter > .filter-dropdown {
-  flex: 0 0 140px;
-  min-width: 140px;
-}
-
 #notificationPanels > .notifications-panel:not(:first-child) {
   display: none;
 }
@@ -1468,16 +1396,6 @@ body #notificationMain {
   padding-right: clamp(32px, 3vw, 36px) !important;
 }
 
-#notificationFilterSection .filter-select-wrap {
-  width: auto;
-  flex: 0 0 auto;
-}
-
-#notificationFilterSection .filter-select-wrap.teacher-has-custom-filter > .filter-dropdown {
-  width: 140px;
-  flex: 0 0 140px;
-}
-
 #notificationFilterSection .notification-tabs {
   margin: 0;
 }
@@ -1487,4 +1405,74 @@ body #notificationMain {
     padding-left: 12px !important;
     padding-right: 12px !important;
   }
+}
+
+.notification-panel-switcher,
+.notification-card-actions,
+.notification-trash-actions {
+  position: relative;
+  z-index: 30;
+  pointer-events: auto;
+}
+
+.notification-toolbar {
+  flex-wrap: wrap;
+  row-gap: 12px;
+}
+
+.notification-toolbar-left {
+  flex: 1 1 220px;
+  min-width: 0;
+}
+
+.notification-panel-switcher.notification-toolbar-actions {
+  position: static;
+  display: flex;
+  flex: 0 1 auto;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  min-width: 0;
+  max-width: 100%;
+  margin-left: auto;
+}
+
+.notification-panel-switcher .mark-all {
+  max-width: 100%;
+  white-space: normal;
+}
+
+.notification-panel-switcher .trash-bin-link {
+  flex: 0 0 40px;
+}
+
+@media (max-width: 560px) {
+  .notification-toolbar-left {
+    flex-basis: 100%;
+  }
+
+  .notification-panel-switcher.notification-toolbar-actions {
+    flex: 1 1 100%;
+    justify-content: space-between;
+    margin-left: 0;
+  }
+
+  .notification-panel-switcher .mark-all {
+    flex: 1 1 auto;
+    text-align: left;
+  }
+}
+
+.notification-toolbar-actions > button,
+.notification-card-actions > button,
+.notification-trash-actions > button {
+  position: relative;
+  z-index: 1;
+  pointer-events: auto;
+  touch-action: manipulation;
+}
+
+.notification-card::before,
+.notification-card::after {
+  pointer-events: none;
 }

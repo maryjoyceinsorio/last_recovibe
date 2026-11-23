@@ -5,7 +5,7 @@ import {
   where,
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 import { onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
-import { auth, authReady, db, functions, isFirebaseConfigured } from "../UserStudent/firebaseConfig.js";
+import { auth, authReady, db, isFirebaseConfigured } from "../UserStudent/firebaseConfig.js";
 import { syncOrganizerOrganization } from "../organizationScope.js";
 import "./OrganizerNotificationBadge.js";
 
@@ -211,7 +211,7 @@ import "./OrganizerNotificationBadge.js";
       if (!auth?.currentUser) {
         throw new Error("Sign in before loading organization events.");
       }
-      const organizationCode = await syncOrganizerOrganization(functions);
+      const organizationCode = await syncOrganizerOrganization();
       unsubscribeEvents?.();
       const eventsRef = collection(db, "events");
       const q = query(

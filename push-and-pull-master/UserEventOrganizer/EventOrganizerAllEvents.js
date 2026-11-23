@@ -1,27 +1,37 @@
 import { onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
 import {
   collection,
+  getDocs,
+  limit,
   onSnapshot,
   query,
+  startAfter,
   where,
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 import {
   auth,
   authReady,
   db,
-  functions,
   isFirebaseConfigured,
 } from "../UserStudent/firebaseConfig.js";
 import { syncOrganizerOrganization } from "../organizationScope.js";
 
 (() => {
+  const EVENT_PAGE_SIZE = 100;
   let events = [];
   let isLoading = true;
   let loadError = "";
   const unsubscribeEvents = [];
   const eventSnapshotsBySource = new Map();
+  const additionalEventSnapshotsBySource = new Map();
   const eventSourcesSettled = new Set();
   const eventSourceFailures = new Set();
+  let activeEventQueryBases = [];
+  let refreshEventSources = () => {};
+  const eventCursorsBySource = new Map();
+  const eventSourcesHaveMore = new Set();
+  let eventPageLoading = false;
+  let eventPageError = "";
   const happeningNowRows = document.getElementById("happeningNowEvents");
   const upcomingRows = document.getElementById("upcomingEvents");
   const completedRows = document.getElementById("completedEvents");
@@ -30,6 +40,19 @@ import { syncOrganizerOrganization } from "../organizationScope.js";
   const status = document.getElementById("eventStatusFilter");
   const category = document.getElementById("eventCategoryFilter");
   let organizerId = "";
+  const eventPageStatus = document.createElement("p");
+  const loadMoreEventsButton = document.createElement("button");
+  eventPageStatus.className = "organizer-empty";
+  eventPageStatus.setAttribute("role", "status");
+  eventPageStatus.setAttribute("aria-live", "polite");
+  loadMoreEventsButton.type = "button";
+  loadMoreEventsButton.className = "filter-button";
+  loadMoreEventsButton.textContent = "Load more events";
+  if (completedRows) {
+    completedRows.insertAdjacentElement("afterend", eventPageStatus);
+    eventPageStatus.insertAdjacentElement("afterend", loadMoreEventsButton);
+  }
+  loadMoreEventsButton.addEventListener("click", loadNextEventPage);
   let pageLoadSignaled = false;
   const signalPageReady = () => {
     if (pageLoadSignaled) return;
@@ -314,7 +337,7 @@ import { syncOrganizerOrganization } from "../organizationScope.js";
     const phaseLabel = phase === "unknown"
       ? String(event.status || "Schedule TBA")
       : phase.charAt(0).toUpperCase() + phase.slice(1);
-    return `<article class="published-event-card" id="organizer-event-card-${eventId}" data-event-id="${eventId}"><div class="published-event-date" id="published-event-date-${eventId}" aria-label="${escape(dateLabel)}"><span class="published-event-month" id="published-event-month-${eventId}">${date ? date.toLocaleDateString("en-US", { month: "short" }) : "TBA"}</span><strong class="published-event-day" id="published-event-day-${eventId}">${date ? date.getDate() : ""}</strong><span class="published-event-year" id="published-event-year-${eventId}">${date ? date.getFullYear() : ""}</span></div><div class="published-event-content" id="published-event-content-${eventId}"><div class="published-event-heading"><div><h2 class="published-event-title" id="published-event-title-${eventId}">${escape(event.title)}</h2><p class="published-event-source" id="published-event-source-${eventId}">${escape(normalizeSource(eventSourceText(event)))}</p></div><span class="published-event-phase published-event-phase--${escape(phase)}">${escape(phaseLabel)}</span></div><div class="published-event-meta" id="published-event-meta-${eventId}"><span id="published-event-date-label-${eventId}" class="visually-hidden">${escape(dateLabel)}</span><span class="published-event-meta-time" id="published-event-time-${eventId}">${escape(event.time || "Time TBA")}</span><span class="published-event-meta-location" id="published-event-location-${eventId}">${escape(event.location || "Location TBA")}${event.room ? `&nbsp;·&nbsp;${escape(event.room)}` : ""}</span></div><div class="published-event-footer"><div class="published-event-summary" id="published-event-summary-${eventId}"><div class="published-event-tags" id="published-event-category-group-${eventId}"><span id="published-event-category-${eventId}">${escape(event.category || "General")}</span></div><span class="published-event-capacity" id="published-event-capacity-${eventId}">${openSlots} of ${totalSlots} Slots Open</span></div><div class="published-event-actions"><button type="button" id="published-event-details-${eventId}" data-preview-id="${eventId}">View Details</button></div></div></div></article>`;
+    return `<article class="published-event-card" id="organizer-event-card-${eventId}" data-event-id="${eventId}"><div class="published-event-content" id="published-event-content-${eventId}"><div class="published-event-heading"><div><h2 class="published-event-title" id="published-event-title-${eventId}">${escape(event.title)}</h2><p class="published-event-source" id="published-event-source-${eventId}">${escape(normalizeSource(eventSourceText(event)))}</p></div></div><div class="published-event-meta" id="published-event-meta-${eventId}"><span id="published-event-date-label-${eventId}" class="visually-hidden">${escape(dateLabel)}</span><span class="published-event-meta-time" id="published-event-time-${eventId}">${escape(event.time || "Time TBA")}</span><span class="published-event-meta-location" id="published-event-location-${eventId}">${escape(event.location || "Location TBA")}${event.room ? `&nbsp;·&nbsp;${escape(event.room)}` : ""}</span></div><div class="published-event-footer"><div class="published-event-summary" id="published-event-summary-${eventId}"><div class="published-event-tags" id="published-event-category-group-${eventId}"><span id="published-event-category-${eventId}">${escape(event.category || "General")}</span></div><span class="published-event-capacity" id="published-event-capacity-${eventId}">${openSlots} of ${totalSlots} Slots Open</span><span class="published-event-phase published-event-phase--${escape(phase)}">${escape(phaseLabel)}</span></div><div class="published-event-actions"><button type="button" id="published-event-details-${eventId}" data-preview-id="${eventId}">View Details</button></div></div></div><div class="published-event-date" id="published-event-date-${eventId}" aria-label="${escape(dateLabel)}"><span class="published-event-month" id="published-event-month-${eventId}">${date ? date.toLocaleDateString("en-US", { month: "short" }) : "TBA"}</span><strong class="published-event-day" id="published-event-day-${eventId}">${date ? date.getDate() : ""}</strong><span class="published-event-year" id="published-event-year-${eventId}">${date ? date.getFullYear() : ""}</span></div></article>`;
   }
 
   function renderList(element, list, emptyText = "No events match your filters.") {
@@ -362,6 +385,54 @@ import { syncOrganizerOrganization } from "../organizationScope.js";
     renderList(happeningNowRows, happeningNow, "No ongoing events");
     renderList(upcomingRows, upcoming);
     renderList(completedRows, completed, "No completed events");
+    updateEventPagination();
+  }
+
+  function updateEventPagination() {
+    const hasMore = eventSourcesHaveMore.size > 0;
+    eventPageStatus.hidden = !eventPageError && !hasMore;
+    eventPageStatus.textContent = eventPageError ||
+      `Showing ${events.length} loaded events. Load more to check older records.`;
+    loadMoreEventsButton.hidden = !hasMore;
+    loadMoreEventsButton.disabled = eventPageLoading;
+    loadMoreEventsButton.textContent = eventPageLoading ? "Loading..." : "Load more events";
+  }
+
+  async function loadNextEventPage() {
+    if (eventPageLoading || !eventSourcesHaveMore.size) return;
+    eventPageLoading = true;
+    eventPageError = "";
+    updateEventPagination();
+    const failures = [];
+    const sources = [...eventSourcesHaveMore];
+    await Promise.all(sources.map(async (source) => {
+      const baseQuery = activeEventQueryBases.find(([querySource]) => querySource === source)?.[1];
+      const cursor = eventCursorsBySource.get(source);
+      if (!baseQuery || !cursor) return;
+      try {
+        const snapshot = await getDocs(query(
+          baseQuery,
+          startAfter(cursor),
+          limit(EVENT_PAGE_SIZE),
+        ));
+        const documents = additionalEventSnapshotsBySource.get(source) || new Map();
+        snapshot.docs.forEach((eventDocument) => {
+          documents.set(eventDocument.id, eventDocument);
+        });
+        additionalEventSnapshotsBySource.set(source, documents);
+        eventCursorsBySource.set(source, snapshot.docs.at(-1) || cursor);
+        if (snapshot.size < EVENT_PAGE_SIZE) eventSourcesHaveMore.delete(source);
+      } catch (error) {
+        failures.push({ source, error });
+        console.error(`Unable to load another Event Organizer event page (${source}):`, error);
+      }
+    }));
+    refreshEventSources();
+    eventPageError = failures.length
+      ? "Some additional events could not be loaded. Please try again."
+      : "";
+    eventPageLoading = false;
+    render();
   }
 
   function openDetails(eventId) {
@@ -967,8 +1038,15 @@ import { syncOrganizerOrganization } from "../organizationScope.js";
       unsubscribeEvents.forEach((unsubscribe) => unsubscribe());
       unsubscribeEvents.length = 0;
       eventSnapshotsBySource.clear();
+      additionalEventSnapshotsBySource.clear();
       eventSourcesSettled.clear();
       eventSourceFailures.clear();
+      eventCursorsBySource.clear();
+      eventSourcesHaveMore.clear();
+      activeEventQueryBases = [];
+      eventPageLoading = false;
+      eventPageError = "";
+      refreshEventSources = () => {};
       if (!user) {
         window.location.replace("EventOrganizerLogin.html");
         return;
@@ -980,7 +1058,7 @@ import { syncOrganizerOrganization } from "../organizationScope.js";
       render();
       let organizationCode = "";
       try {
-        organizationCode = await syncOrganizerOrganization(functions);
+        organizationCode = await syncOrganizerOrganization();
       } catch (error) {
         console.warn("Could not verify organizer organization; loading public schedule events.", {
           code: error?.code || "unknown",
@@ -1014,11 +1092,22 @@ import { syncOrganizerOrganization } from "../organizationScope.js";
           query(eventsRef, where("organizationCode", "==", organizationCode)),
         ]);
       }
+      activeEventQueryBases = eventQueries;
 
       let initialEventOpened = false;
       const refreshEvents = () => {
         const mergedDocuments = new Map();
         eventSnapshotsBySource.forEach((sourceDocuments) => {
+          sourceDocuments.forEach((eventDocument, id) => {
+            const previous = mergedDocuments.get(id);
+            const previousTime = previous?.updateTime?.toMillis?.() || 0;
+            const currentTime = eventDocument.updateTime?.toMillis?.() || 0;
+            if (!previous || currentTime >= previousTime) {
+              mergedDocuments.set(id, eventDocument);
+            }
+          });
+        });
+        additionalEventSnapshotsBySource.forEach((sourceDocuments) => {
           sourceDocuments.forEach((eventDocument, id) => {
             const previous = mergedDocuments.get(id);
             const previousTime = previous?.updateTime?.toMillis?.() || 0;
@@ -1092,14 +1181,23 @@ import { syncOrganizerOrganization } from "../organizationScope.js";
           openDetails(initialEventId);
         }
       };
+      refreshEventSources = refreshEvents;
 
       eventQueries.forEach(([source, eventsQuery]) => {
         const unsubscribe = onSnapshot(
-          eventsQuery,
+          query(eventsQuery, limit(EVENT_PAGE_SIZE)),
           (snapshot) => {
             eventSnapshotsBySource.set(source, new Map(
               snapshot.docs.map((eventDocument) => [eventDocument.id, eventDocument]),
             ));
+            if (!additionalEventSnapshotsBySource.has(source)) {
+              eventCursorsBySource.set(source, snapshot.docs.at(-1) || null);
+              if (snapshot.size === EVENT_PAGE_SIZE) {
+                eventSourcesHaveMore.add(source);
+              } else {
+                eventSourcesHaveMore.delete(source);
+              }
+            }
             eventSourcesSettled.add(source);
             eventSourceFailures.delete(source);
             refreshEvents();

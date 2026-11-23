@@ -643,3 +643,16 @@
     transition-duration: .01ms !important;
   }
 }
+
+.sa-header-actions {
+  position: relative;
+  z-index: 2;
+  pointer-events: auto;
+}
+
+.sa-header-actions > button {
+  position: relative;
+  z-index: 1;
+  pointer-events: auto;
+  touch-action: manipulation;
+}

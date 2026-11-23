@@ -976,6 +976,176 @@ body.modal-open {
   font-weight: 500;
 }
 
+.my-events-action-status {
+  margin: 14px 0 0;
+  padding: 11px 14px;
+  border: 1px solid #b9ddc7;
+  border-radius: 8px;
+  background: #e6f4eb;
+  color: #19633a;
+  line-height: 1.45;
+}
+
+.my-events-action-status.is-error {
+  border-color: #e7b6b6;
+  background: #fff0ef;
+  color: #8c2830;
+}
+
+.my-events-action-status[hidden],
+.my-events-dialog-overlay[hidden] {
+  display: none !important;
+}
+
+body.my-events-dialog-open {
+  overflow: hidden;
+}
+
+.my-events-dialog-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 10010;
+  display: grid;
+  place-items: center;
+  overflow-y: auto;
+  padding: 18px;
+  background: rgb(20 16 15 / 58%);
+}
+
+.my-events-dialog {
+  width: min(100%, 520px);
+  padding: 24px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--paper);
+  color: var(--ink);
+  box-shadow: 0 20px 60px rgb(36 26 23 / 25%);
+}
+
+.my-events-dialog h2 {
+  margin: 0 0 10px;
+  color: var(--maroon);
+  font: 700 22px/1.2 var(--display);
+}
+
+.my-events-dialog p {
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+.my-events-dialog-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 22px;
+}
+
+.my-events-dialog-actions button,
+.my-events-dialog-close {
+  min-height: 40px;
+  padding: 8px 16px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  cursor: pointer;
+  font: inherit;
+  font-weight: 700;
+}
+
+.my-events-dialog-primary {
+  background: var(--maroon);
+  color: #fff;
+}
+
+.my-events-dialog-secondary {
+  border-color: var(--line) !important;
+  background: #fff;
+  color: var(--ink);
+}
+
+.my-events-dialog-danger {
+  background: #8c2830;
+  color: #fff;
+}
+
+.my-events-dialog-actions button:disabled {
+  cursor: wait;
+  opacity: 0.6;
+}
+
+.my-events-dialog-feedback {
+  margin: 14px 0 0;
+  padding: 10px 12px;
+  border: 1px solid #b9ddc7;
+  border-radius: 8px;
+  background: #e6f4eb;
+  color: #19633a !important;
+  overflow-wrap: anywhere;
+}
+
+.my-events-dialog-feedback.is-error {
+  border-color: #e7b6b6;
+  background: #fff0ef;
+  color: #8c2830 !important;
+}
+
+.my-events-dialog-feedback[hidden] {
+  display: none !important;
+}
+
+.my-events-dialog-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.my-events-dialog-close {
+  flex: 0 0 auto;
+  width: 40px;
+  padding: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 26px;
+}
+
+.my-events-reschedule-dialog form {
+  display: grid;
+  gap: 9px;
+}
+
+.my-events-reschedule-dialog label {
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.my-events-reschedule-dialog input {
+  width: 100%;
+  min-height: 42px;
+  padding: 8px 10px;
+  border: 1px solid #d3d0c8;
+  border-radius: 8px;
+  background: #fff;
+  color: var(--ink);
+  font: inherit;
+}
+
+.my-events-reschedule-time-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.my-events-reschedule-time-fields > div {
+  display: grid;
+  gap: 9px;
+}
+
+.my-events-reschedule-dialog .my-events-dialog-actions {
+  margin-top: 10px;
+}
+
 /* Vertical Track on Narrow Screens */
 @media (max-width: 860px) {
   .tracker-timeline {
@@ -1258,6 +1428,10 @@ body.modal-open {
   display: flex;
   align-items: center;
   gap: 10px;
+}
+
+.tracker-footer [hidden] {
+  display: none !important;
 }
 
 .tracker-btn {
@@ -1584,6 +1758,17 @@ tr.new-event-highlight {
   min-height: 36px;
 }
 @media (max-width: 620px) {
+  .my-events-dialog {
+    padding: 20px 16px;
+  }
+
+  .my-events-dialog-actions {
+    justify-content: stretch;
+  }
+
+  .my-events-dialog-actions button {
+    flex: 1 1 100%;
+  }
   .date-range-months {
     grid-template-columns: 36px minmax(0, 1fr) 36px;
   }
@@ -1651,4 +1836,243 @@ tr.new-event-highlight {
   .date-range-quick::before { flex: 0 0 auto; align-self: center; }
   .date-range-quick-option { width: auto; flex: 0 0 auto; }
   .date-range-next-month { display: none; }
+}
+
+/* Keep the tracker fixed to the viewport without nested scrolling. */
+.tracker-modal-overlay {
+  box-sizing: border-box;
+  height: 100vh;
+  height: 100dvh;
+  overflow: hidden;
+  padding: 12px;
+}
+
+.tracker-dialog {
+  box-sizing: border-box;
+  height: min(820px, calc(100vh - 24px));
+  height: min(820px, calc(100dvh - 24px));
+  max-height: none;
+  min-height: 0;
+}
+
+.tracker-header,
+.tracker-footer {
+  flex: 0 0 auto;
+}
+
+.tracker-content-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+  gap: 12px;
+  padding: 16px 22px;
+}
+
+.tracker-timeline-wrap {
+  flex: 0 0 auto;
+  overflow: hidden;
+  margin: 0;
+  padding: 8px 0;
+}
+
+.tracker-timeline {
+  min-width: 0;
+  width: 100%;
+}
+
+.timeline-step {
+  flex: 1 1 0;
+  min-width: 0;
+  max-width: none;
+}
+
+.tracker-notes-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.tracker-note-item {
+  min-width: 0;
+  padding: 8px 10px;
+}
+
+.tracker-note-text {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.tracker-footer {
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.tracker-footer-left,
+.tracker-footer-right {
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+@media (max-width: 860px) {
+  .tracker-modal-overlay {
+    padding: 6px;
+  }
+
+  .tracker-dialog {
+    width: 100%;
+    height: calc(100vh - 12px);
+    height: calc(100dvh - 12px);
+    border-radius: 10px;
+  }
+
+  .tracker-header {
+    padding: 10px 12px;
+  }
+
+  .tracker-header h2 {
+    font-size: 18px;
+  }
+
+  .tracker-content-scroll {
+    gap: 8px;
+    padding: 8px 10px;
+  }
+
+  .tracker-timeline-wrap {
+    padding: 2px 0;
+  }
+
+  .tracker-timeline {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 4px;
+  }
+
+  .timeline-step {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    min-height: 0;
+    gap: 2px;
+    text-align: center;
+  }
+
+  .timeline-line-connector {
+    display: none;
+  }
+
+  .timeline-dot {
+    width: 22px;
+    height: 22px;
+    margin: 0 0 2px;
+    font-size: 10px;
+  }
+
+  .timeline-step-tag {
+    margin: 0;
+    font-size: 8px;
+  }
+
+  .timeline-step-name {
+    display: -webkit-box;
+    overflow: hidden;
+    font-size: 10px;
+    line-height: 1.15;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+  }
+
+  .timeline-step-status {
+    font-size: 9px;
+  }
+
+  .event-details-section h3,
+  .tracker-section h3 {
+    margin-bottom: 4px;
+    font-size: 10px;
+  }
+
+  .event-details-section p {
+    font-size: 12px;
+  }
+
+  .tracker-notes-list {
+    gap: 4px;
+  }
+
+  .tracker-note-item {
+    align-items: flex-start;
+    gap: 5px;
+    padding: 5px;
+  }
+
+  .tracker-note-avatar {
+    width: 20px;
+    height: 20px;
+    flex: 0 0 20px;
+    font-size: 11px;
+  }
+
+  .tracker-note-header {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+  }
+
+  .tracker-note-title,
+  .tracker-note-date,
+  .tracker-note-text {
+    font-size: 9px;
+    line-height: 1.2;
+  }
+
+  .tracker-next-line {
+    margin-top: 4px;
+    padding: 5px 8px;
+    font-size: 10px;
+  }
+
+  .tracker-footer {
+    padding: 8px 10px;
+  }
+
+  .tracker-footer-left,
+  .tracker-footer-right {
+    gap: 5px;
+  }
+
+  .tracker-btn {
+    min-height: 32px;
+    padding: 5px 8px;
+    font-size: 11px;
+  }
+}
+
+@media (max-height: 600px) {
+  .tracker-header {
+    padding-top: 7px;
+    padding-bottom: 7px;
+  }
+
+  .tracker-content-scroll {
+    gap: 5px;
+    padding-top: 5px;
+    padding-bottom: 5px;
+  }
+
+  .tracker-footer {
+    padding-top: 5px;
+    padding-bottom: 5px;
+  }
+
+  .tracker-notes-list {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 3px;
+  }
+
+  .tracker-note-item {
+    padding: 3px;
+  }
 }

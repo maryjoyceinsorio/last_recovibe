@@ -2,6 +2,7 @@
   const DEBUG = false;
   const STORAGE_KEY = "recovibeOrganizerNotifications";
   const DELETED_STORAGE_KEY = "recovibeOrganizerDeletedNotifications";
+  const PERMANENTLY_DELETED_STORAGE_KEY = "recovibeOrganizerPermanentlyDeletedNotifications";
   const MAX_EVENTS = 15;
   const MAX_OWN_EVENTS_PER_QUERY = 100;
   const MAX_REGISTRATIONS_PER_EVENT = 100;
@@ -20,6 +21,9 @@
   ]);
   const rtdbEvents = new Map();
   const registrations = new Map();
+  const firestoreRegistrations = new Map();
+  const rtdbRegistrations = new Map();
+  const legacyRegistrationLoads = new Set();
   const readOverrides = new Map();
   const registrationErrors = new Set();
   let activeUid = "";
@@ -29,6 +33,7 @@
   let firebase = null;
   let authModule = null;
   let firestoreModule = null;
+  let readCacheModule = null;
   let databaseModule = null;
   let initialized = false;
   let lifecycleActive = true;
@@ -200,6 +205,23 @@
           registration.studentName || registration.name || registration.fullName || "",
         ).trim();
       }
+
+      function updateRegistrationDocuments(eventId) {
+        const merged = new Map();
+        [...(firestoreRegistrations.get(eventId) || []), ...(rtdbRegistrations.get(eventId) || [])]
+          .forEach((registration, index) => {
+            const key = String(
+              registration.uid ||
+              registration.userId ||
+              registration.studentId ||
+              registration.id ||
+              `record-${index}`,
+            );
+            merged.set(key, registration);
+          });
+        registrations.set(eventId, [...merged.values()]);
+        publish();
+      }
       groups.set(day, group);
     });
     return [...groups.entries()].map(([day, group]) => {
@@ -316,6 +338,7 @@
       if (!merged.has(normalized.id)) merged.set(normalized.id, normalized);
     });
     let deletedIds = new Set();
+    let permanentlyDeletedIds = new Set();
     try {
       const deleted = JSON.parse(localStorage.getItem(DELETED_STORAGE_KEY) || "[]");
       if (Array.isArray(deleted)) {
@@ -328,7 +351,21 @@
     } catch (error) {
       debug("Could not read deleted notification state:", error);
     }
-    return [...merged.values()].filter((item) => !deletedIds.has(item.id)).sort(
+    try {
+      const deleted = JSON.parse(localStorage.getItem(PERMANENTLY_DELETED_STORAGE_KEY) || "[]");
+      if (Array.isArray(deleted)) {
+        permanentlyDeletedIds = new Set(
+          deleted
+            .filter((item) => item?.ownerUid === activeUid)
+            .map((item) => String(item.id)),
+        );
+      }
+    } catch (error) {
+      debug("Could not read permanently deleted notification state:", error);
+    }
+    return [...merged.values()].filter((item) =>
+      !deletedIds.has(item.id) && !permanentlyDeletedIds.has(item.id)
+    ).sort(
       (first, second) => toMillis(second.createdAt) - toMillis(first.createdAt),
     );
   }
@@ -403,6 +440,9 @@
     listenerStops.forEach((stop) => stop());
     listenerStops.clear();
     registrations.clear();
+    firestoreRegistrations.clear();
+    rtdbRegistrations.clear();
+    legacyRegistrationLoads.clear();
     registrationErrors.clear();
     clearTimeout(academicCalendarTimer);
     academicCalendarTimer = null;
@@ -459,44 +499,116 @@
     const selected = events.slice(0, MAX_EVENTS);
     const selectedIds = new Set(selected.map((event) => event.id));
     [...listenerStops.keys()].forEach((key) => {
-      if (key.startsWith("registration:") && !selectedIds.has(key.slice(12))) {
+      const eventId = key.startsWith("registration-fallback:")
+        ? key.slice("registration-fallback:".length)
+        : key.startsWith("registration:")
+          ? key.slice("registration:".length)
+          : "";
+      if (eventId && !selectedIds.has(eventId)) {
         listenerStops.get(key)?.();
         listenerStops.delete(key);
-        registrations.delete(key.slice(12));
+        registrations.delete(eventId);
+        firestoreRegistrations.delete(eventId);
+        rtdbRegistrations.delete(eventId);
+        legacyRegistrationLoads.delete(eventId);
+        registrationErrors.delete(eventId);
       }
     });
     selected.forEach((event) => {
       const key = `registration:${event.id}`;
-      if (listenerStops.has(key) || !firestoreModule || !firebase?.db) return;
-      try {
-        const ref = firestoreModule.query(
-          firestoreModule.collection(
-            firebase.db,
-            "events",
-            event.id,
-            "registrations",
-          ),
-          firestoreModule.limit(MAX_REGISTRATIONS_PER_EVENT),
-        );
-        const stop = firestoreModule.onSnapshot(ref, (snapshot) => {
-          registrations.set(event.id, snapshot.docs.map((document) => document.data()));
-          publish();
-        }, (error) => {
+      if (!firebase?.db || !firestoreModule) return;
+      const registrationsRef = firestoreModule.query(
+        firestoreModule.collection(firebase.db, "events", event.id, "registrations"),
+        firestoreModule.limit(MAX_REGISTRATIONS_PER_EVENT),
+      );
+      if (!legacyRegistrationLoads.has(event.id)) {
+        legacyRegistrationLoads.add(event.id);
+        const getDocsCached = readCacheModule?.getDocsCached;
+        const read = getDocsCached
+          ? getDocsCached(
+              firestoreModule.getDocs,
+              registrationsRef,
+              `legacy-registrations:${event.id}`,
+              uid,
+            )
+          : firestoreModule.getDocs(registrationsRef);
+        read.then((snapshot) => {
+          if (uid !== activeUid || !selectedIds.has(event.id)) return;
+          firestoreRegistrations.set(event.id, snapshot.docs.map((document) => ({
+            ...document.data(),
+            uid: document.data().uid || document.id,
+          })));
+          updateRegistrationDocuments(event.id);
+        }).catch((error) => {
           if (!registrationErrors.has(event.id)) {
             registrationErrors.add(event.id);
-            debug(`Could not read registrations for ${event.id}; skipping registration notifications:`, error);
+            debug(`Could not read legacy registrations for ${event.id}:`, error);
           }
-          registrations.delete(event.id);
-          publish();
         });
-        listenerStops.set(key, stop);
-      } catch (error) {
-        if (!registrationErrors.has(event.id)) {
-          registrationErrors.add(event.id);
-          debug(`Could not subscribe to registrations for ${event.id}; skipping registration notifications:`, error);
+      }
+
+      if (listenerStops.has(key)) return;
+      if (firebase?.isRtdbConfigured && firebase.rtdb && databaseModule) {
+        try {
+          const stop = databaseModule.onValue(
+            databaseModule.ref(firebase.rtdb, `eventRegistrations/${event.id}`),
+            (snapshot) => {
+              const value = snapshot.val();
+              const items = value && typeof value === "object"
+                ? Object.entries(value).map(([uidKey, data]) => ({
+                    ...data,
+                    uid: data?.uid || uidKey,
+                  }))
+                : [];
+              rtdbRegistrations.set(event.id, items);
+              updateRegistrationDocuments(event.id);
+            },
+            (error) => {
+              if (!registrationErrors.has(event.id)) {
+                registrationErrors.add(event.id);
+                debug(`Could not read RTDB registrations for ${event.id}; using Firestore updates:`, error);
+              }
+              rtdbRegistrations.delete(event.id);
+              updateRegistrationDocuments(event.id);
+              attachFirestoreRegistrationFallback(event.id, registrationsRef);
+            },
+          );
+          listenerStops.set(key, stop);
+        } catch (error) {
+          debug(`Could not subscribe to RTDB registrations for ${event.id}; using Firestore updates:`, error);
+          attachFirestoreRegistrationFallback(event.id, registrationsRef);
         }
+      } else {
+        attachFirestoreRegistrationFallback(event.id, registrationsRef);
       }
     });
+  }
+
+  function attachFirestoreRegistrationFallback(eventId, registrationsRef) {
+    const key = `registration-fallback:${eventId}`;
+    if (listenerStops.has(key) || !firestoreModule) return;
+    try {
+      const stop = firestoreModule.onSnapshot(registrationsRef, (snapshot) => {
+        firestoreRegistrations.set(eventId, snapshot.docs.map((document) => ({
+          ...document.data(),
+          uid: document.data().uid || document.id,
+        })));
+        updateRegistrationDocuments(eventId);
+      }, (error) => {
+        if (!registrationErrors.has(eventId)) {
+          registrationErrors.add(eventId);
+          debug(`Could not read registrations for ${eventId}; skipping registration notifications:`, error);
+        }
+        firestoreRegistrations.delete(eventId);
+        updateRegistrationDocuments(eventId);
+      });
+      listenerStops.set(key, stop);
+    } catch (error) {
+      if (!registrationErrors.has(eventId)) {
+        registrationErrors.add(eventId);
+        debug(`Could not subscribe to registrations for ${eventId}:`, error);
+      }
+    }
   }
 
   function startFirestore(uid) {
@@ -654,10 +766,11 @@
     if (initialized || !lifecycleActive) return;
     initialized = true;
     try {
-      [firebase, authModule, firestoreModule] = await Promise.all([
+      [firebase, authModule, firestoreModule, readCacheModule] = await Promise.all([
         import("../UserStudent/firebaseConfig.js"),
         import("https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js"),
         import("https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js"),
+        import("../firestoreReadCache.js"),
       ]);
       try {
         databaseModule = await import("https://www.gstatic.com/firebasejs/10.12.2/firebase-database.js");
@@ -714,6 +827,29 @@
     publish();
   }
 
+  function markPermanentlyDeleted(id) {
+    const notificationId = String(id || "");
+    if (!activeUid || !notificationId) {
+      throw new Error("The signed-in organizer or notification could not be verified.");
+    }
+    let existing = [];
+    try {
+      const value = JSON.parse(localStorage.getItem(PERMANENTLY_DELETED_STORAGE_KEY) || "[]");
+      if (Array.isArray(value)) existing = value;
+    } catch (error) {
+      debug("Could not read permanently deleted notification state:", error);
+    }
+    const otherUsers = existing.filter((item) => item?.ownerUid !== activeUid);
+    const currentUser = existing.filter(
+      (item) => item?.ownerUid === activeUid && String(item.id) !== notificationId,
+    );
+    localStorage.setItem(
+      PERMANENTLY_DELETED_STORAGE_KEY,
+      JSON.stringify([...otherUsers, ...currentUser, { id: notificationId, ownerUid: activeUid }]),
+    );
+    publish();
+  }
+
   function retry() {
     if (activeUid) start(activeUid);
     else {
@@ -723,7 +859,7 @@
     }
   }
 
-  window.OrganizerNotificationData = { subscribe, setRead, retry };
+  window.OrganizerNotificationData = { subscribe, setRead, markPermanentlyDeleted, retry };
   window.addEventListener("pagehide", stop);
   window.addEventListener("pageshow", (event) => {
     if (event.persisted) {

@@ -1,6 +1,6 @@
 import { doc, getDoc } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 import { auth, db } from "./UserStudent/firebaseConfig.js";
-import { httpsCallable } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-functions.js";
+import { getDocCached } from "./firestoreReadCache.js";
 
 function normalizeOrganizationCode(value) {
   return String(value || "").trim().replace(/\s+/g, " ").toUpperCase();
@@ -19,9 +19,9 @@ async function getOrganizerOrganizationFromProfile() {
   }
 
   const reads = await Promise.allSettled([
-    getDoc(doc(db, "adminUser", uid)),
-    getDoc(doc(db, "users", uid)),
-    getDoc(doc(db, "eventOrganizations", uid)),
+    getDocCached(getDoc, doc(db, "adminUser", uid), uid),
+    getDocCached(getDoc, doc(db, "users", uid), uid),
+    getDocCached(getDoc, doc(db, "eventOrganizations", uid), uid),
   ]);
   const profiles = reads.slice(0, 2)
     .filter((result) => result.status === "fulfilled" && result.value.exists())
@@ -59,30 +59,32 @@ async function getOrganizerOrganizationFromProfile() {
   return organizationCode;
 }
 
-export async function syncOrganizerOrganization(functions) {
-  if (functions) {
-    try {
-      const result = await httpsCallable(functions, "syncOrganizerOrganization")({});
-      const organizationCode = normalizeOrganizationCode(result.data?.organizationCode);
-      if (organizationCode) return organizationCode;
-      console.warn("Organizer organization callable returned no organization code; using the verified profile.");
-    } catch (error) {
-      console.warn("Organizer organization callable unavailable; using the verified profile:", error);
-    }
-  }
+export async function syncOrganizerOrganization() {
   return getOrganizerOrganizationFromProfile();
 }
 
-export async function syncApproverOrganization(functions) {
-  if (!functions) {
-    throw new Error("Approval organization verification is unavailable.");
-  }
-  const result = await httpsCallable(functions, "syncApproverOrganization")({});
-  const organizationCode = String(result.data?.organizationCode || "")
-    .trim()
-    .replace(/\s+/g, " ")
-    .toUpperCase();
+export async function syncApproverOrganization() {
+  const uid = auth?.currentUser?.uid;
+  if (!db || !uid) throw new Error("Sign in before verifying the approval organization.");
+  const reads = await Promise.allSettled([
+    getDocCached(getDoc, doc(db, "adminUser", uid), uid),
+    getDocCached(getDoc, doc(db, "users", uid), uid),
+  ]);
+  const profiles = reads
+    .filter((result) => result.status === "fulfilled" && result.value.exists())
+    .map((result) => result.value.data());
+  const profile = profiles.find((candidate) =>
+    String(candidate.role || candidate.userRole || "").trim().toLowerCase() === "admin",
+  ) || profiles[0] || {};
+  const readError = reads.find((result) => result.status === "rejected")?.reason;
+  const organizationCode = normalizeOrganizationCode(
+    profile.organizationCode ||
+    profile.orgCode ||
+    profile.organization ||
+    profile.organizationName,
+  );
   if (!organizationCode) {
+    if (readError) throw readError;
     throw new Error("Your approval role does not have an organization assigned.");
   }
   return organizationCode;

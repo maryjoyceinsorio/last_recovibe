@@ -2683,6 +2683,11 @@ body {
   background: #f8eeee;
 }
 
+#calendarMain .calendar-data-status.is-warning {
+  color: #69511a;
+  background: #fff5d6;
+}
+
 #calendarMain .upcoming-more {
   margin-top: 10px;
   padding: 7px 10px;

@@ -512,14 +512,15 @@
     const holidayFilter = document.querySelector(
       '[data-source="Holiday"], [data-category-key="holiday"], [data-calendar-category="Holiday"]',
     );
-    const officialFilter = document.querySelector(
-      '[data-source="Official Date"], [data-category-key="official-date"], [data-category-key="academic"], [data-calendar-category="Official Date"]',
-    );
     const isHoliday = academicCategory(entry) === "holiday";
-    if (isOrganizerCalendar() && !isHoliday) {
+    if (isOrganizerCalendar()) {
+      if (isHoliday) return !holidayFilter || holidayFilter.checked;
       const pupFilter = document.querySelector('[data-category-key="pup"]');
       return !pupFilter || pupFilter.checked;
     }
+    const officialFilter = document.querySelector(
+      '[data-source="Official Date"], [data-category-key="official-date"], [data-category-key="academic"], [data-calendar-category="Official Date"]',
+    );
     return isHoliday
       ? !holidayFilter || holidayFilter.checked
       : !officialFilter || officialFilter.checked;
@@ -557,7 +558,7 @@
   }
 
   function ensureOfficialDateFilter() {
-    if (isStudentCalendar()) return;
+    if (isStudentCalendar() || isOrganizerCalendar()) return;
     const adminFilter = document.querySelector(".admin-filter-panel");
     const panel = adminFilter || document.querySelector(".filter-panel");
     if (!panel) return;
@@ -1355,20 +1356,30 @@
     document.addEventListener("change", (event) => {
       if (
         event.target.matches(
-          '[data-source="Holiday"], [data-source="Official Date"], [data-category-key="holiday"], [data-category-key="official-date"], [data-calendar-category="Holiday"], [data-calendar-category="Official Date"]',
+          '[data-source="Holiday"], [data-category-key="holiday"], [data-calendar-category="Holiday"]',
         ) ||
-        isStudentCalendar() &&
+        (
+          !isOrganizerCalendar() &&
+          event.target.matches(
+            '[data-source="Official Date"], [data-category-key="official-date"], [data-calendar-category="Official Date"]',
+          )
+        ) ||
+        (
+          isStudentCalendar() &&
           event.target.matches('[data-source="PUP Official"]')
+        )
       ) {
         renderAcademicGrid();
       }
     });
     document.addEventListener("click", (event) => {
       if (!event.target.closest(".filter-reset, #resetCalendarFilters")) return;
-      const officialDateFilter = document.querySelector(
-        '[data-source="Official Date"], [data-category-key="official-date"], [data-calendar-category="Official Date"]',
-      );
-      if (officialDateFilter) officialDateFilter.checked = true;
+      if (!isOrganizerCalendar()) {
+        const officialDateFilter = document.querySelector(
+          '[data-source="Official Date"], [data-category-key="official-date"], [data-calendar-category="Official Date"]',
+        );
+        if (officialDateFilter) officialDateFilter.checked = true;
+      }
       renderAcademicGrid();
     });
     document.addEventListener("click", handleAcademicClick);

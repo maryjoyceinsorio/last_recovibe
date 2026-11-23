@@ -15,6 +15,83 @@ export function isStudentEventStatus(status) {
   return STUDENT_EVENT_STATUSES.includes(normalized);
 }
 
+const PUBLISHED_EVENT_STATUSES = new Set([
+  "published",
+  "published live",
+  "live",
+  "completed",
+  "rescheduled",
+]);
+const UNPUBLISHED_EVENT_STATUSES = new Set([
+  "draft",
+  "unpublished",
+  "pending",
+  "pending approval",
+  "awaiting approval",
+  "awaiting review",
+  "awaiting publication",
+  "approval pending",
+  "pending review",
+  "ready to publish",
+  "ready for publication",
+  "submitted",
+  "rejected",
+  "disapproved",
+  "private",
+  "hidden",
+  "deleted",
+  "archived",
+  "expired",
+  "cancelled",
+  "canceled",
+]);
+
+function normalizeEventLifecycleStatus(status) {
+  return String(status || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[ _-]+/g, " ");
+}
+
+export function isStudentEventPublished(eventData) {
+  const event = eventData?.raw || eventData || {};
+  const lifecycleStatuses = [
+    event.status,
+    event.eventStatus,
+    event.event_status,
+    event.publicationStatus,
+    event.publication_status,
+    event.approvalStatus,
+    event.approval_status,
+    event.reviewStatus,
+    event.review_status,
+  ].map(normalizeEventLifecycleStatus).filter(Boolean);
+
+  if (lifecycleStatuses.some((status) => UNPUBLISHED_EVENT_STATUSES.has(status))) {
+    return false;
+  }
+  if (
+    event.published === false ||
+    event.isPublished === false ||
+    event.approved === false ||
+    event.isApproved === false
+  ) {
+    return false;
+  }
+
+  return (
+    lifecycleStatuses.some((status) => PUBLISHED_EVENT_STATUSES.has(status)) ||
+    event.published === true ||
+    event.isPublished === true ||
+    event.isLive === true ||
+    Boolean(
+      event.publishedAt ||
+      event.publication?.publishedAt ||
+      event.approval?.publishedAt,
+    )
+  );
+}
+
 export function toCleanList(value) {
   const cleanValues = [];
   const seenValues = new Set();

@@ -1,6 +1,7 @@
 import { onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
 import {
   collection,
+  deleteDoc,
   doc,
   limit,
   onSnapshot,
@@ -10,6 +11,7 @@ import {
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 import {
   onValue,
+  remove,
   ref as databaseRef,
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-database.js";
 import {
@@ -700,6 +702,33 @@ export async function markTeacherNotificationRead(id) {
     await updateDoc(doc(db, "notifications", String(id)), { read: true });
   } catch (error) {
     debug("Could not update Firestore notification read state:", error);
+    throw error;
+  }
+}
+
+export async function deleteTeacherNotification(item) {
+  const id = String(item?.id || "");
+  const source = String(item?.source || "");
+  if (!id || !currentUid) {
+    throw new Error("The notification or signed-in teacher could not be verified.");
+  }
+  try {
+    if (source === "firestore") {
+      if (!db) throw new Error("Firestore is not configured.");
+      await deleteDoc(doc(db, "notifications", id));
+      return;
+    }
+    if (source === "rtdb") {
+      if (!rtdb || !isRtdbConfigured) {
+        throw new Error("Realtime Database is not configured.");
+      }
+      await remove(databaseRef(rtdb, `notifications/${currentUid}/${id}`));
+      return;
+    }
+    if (source === "derived") return;
+    throw new Error("This notification source cannot be deleted.");
+  } catch (error) {
+    debug("Could not permanently delete notification:", error);
     throw error;
   }
 }

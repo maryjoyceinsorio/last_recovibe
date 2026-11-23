@@ -1,9 +1,14 @@
 import {
   collection,
+  documentId,
   doc,
+  getDocs,
   getDoc,
+  limit,
   onSnapshot,
+  orderBy,
   query,
+  startAfter,
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 import { signOut } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
 import { auth, authReady, db, isFirebaseConfigured } from "../UserStudent/firebaseConfig.js";
@@ -21,6 +26,12 @@ import { auth, authReady, db, isFirebaseConfigured } from "../UserStudent/fireba
   let shown = 10,
     searchTimer;
   let firestoreEvents = [];
+  let firstPageDocuments = new Map();
+  const additionalPageDocuments = new Map();
+  let eventCursor = null;
+  let eventHasMore = false;
+  let eventPageLoading = false;
+  let eventPageError = "";
   let unsubscribeEvents = null;
   let loadTimer = null;
   let loadExpired = false;
@@ -38,6 +49,7 @@ import { auth, authReady, db, isFirebaseConfigured } from "../UserStudent/fireba
     "November",
     "December",
   ];
+  const EVENT_PAGE_SIZE = 100;
   const sources = [
     "PUP Official",
     "Organizational",
@@ -151,6 +163,57 @@ import { auth, authReady, db, isFirebaseConfigured } from "../UserStudent/fireba
     root.innerHTML = `<div class="admin-error" role="alert">${esc(message)} <button class="admin-row-action" id="retryAllEvents" type="button">Try again</button></div>`;
     root.querySelector("#retryAllEvents").addEventListener("click", init);
     window.dispatchEvent(new Event("page-data-ready"));
+  }
+  function normalizeEventDocuments(documents) {
+    const mergedDocuments = new Map(
+      documents.map((eventDocument) => [eventDocument.id, eventDocument]),
+    );
+    additionalPageDocuments.forEach((eventDocument, eventId) => {
+      if (!mergedDocuments.has(eventId)) mergedDocuments.set(eventId, eventDocument);
+    });
+    return [...mergedDocuments.values()]
+      .map((eventDocument) => {
+        const data = eventDocument.data();
+        if (!isPublishedEvent(data)) return null;
+        const eventDate = data.eventDate || data.dateISO || data.date || "";
+        return {
+          ...data,
+          id: eventDocument.id,
+          eventId: eventDocument.id,
+          title: data.eventName || data.title || "Untitled event",
+          date: eventDate,
+          dateISO: eventDate,
+          venue: data.venue || data.location || data.venueOther || "",
+          location: data.venue || data.location || data.venueOther || "",
+          organization: data.organization || data.organizerName || data.organizer || "",
+        };
+      })
+      .filter(Boolean);
+  }
+  async function loadNextEventPage() {
+    eventPageLoading = true;
+    eventPageError = "";
+    render();
+    try {
+      const snapshot = await getDocs(query(
+        collection(db, "events"),
+        orderBy(documentId()),
+        startAfter(eventCursor),
+        limit(EVENT_PAGE_SIZE),
+      ));
+      snapshot.docs.forEach((eventDocument) => {
+        additionalPageDocuments.set(eventDocument.id, eventDocument);
+      });
+      eventCursor = snapshot.docs.at(-1) || eventCursor;
+      eventHasMore = snapshot.size === EVENT_PAGE_SIZE;
+      firestoreEvents = normalizeEventDocuments([...firstPageDocuments.values()]);
+    } catch (error) {
+      console.error("Could not load the next page of events:", error);
+      eventPageError = "More events could not be loaded. Please try again.";
+    } finally {
+      eventPageLoading = false;
+      render();
+    }
   }
   function esc(value) {
     return String(value ?? "").replace(
@@ -317,7 +380,8 @@ import { auth, authReady, db, isFirebaseConfigured } from "../UserStudent/fireba
           return `<section><h2 class="admin-group-title">${group === "Happening" ? "Happening Now" : group}</h2><div class="admin-event-grid">${list.slice(0, shown).map(card).join("")}</div></section>`;
         })
         .join("");
-      root.innerHTML = `<div class="events-toolbar"><input class="admin-search" id="eventSearch" type="search" placeholder="Search events, organizer or venue" aria-label="Search events" value="${esc(state.q)}">${dropdown("source", "All Sources", ["All Sources", ...sources])}${dropdown("category", "All Categories", ["All Categories", ...categories])}${monthDropdown()}${dropdown("status", "Event Status", ["Event Status", "Happening", "Upcoming", "Cancelled", "Completed", "Rescheduled"])}${dropdown("availability", "Availability", ["Availability", "Available", "Full"])}<button type="button" id="clearEvents" class="admin-link-button" ${hasFilters() ? "" : "hidden"}>Clear filters</button></div>${sections || '<div class="admin-empty">No events match these filters.</div>'}${selected.length > shown ? '<div class="admin-section-heading"><button class="admin-row-action" id="loadMore" type="button">Load more</button></div>' : ""}`;
+      const canLoadMore = selected.length > shown || eventHasMore;
+      root.innerHTML = `<div class="events-toolbar"><input class="admin-search" id="eventSearch" type="search" placeholder="Search events, organizer or venue" aria-label="Search events" value="${esc(state.q)}">${dropdown("source", "All Sources", ["All Sources", ...sources])}${dropdown("category", "All Categories", ["All Categories", ...categories])}${monthDropdown()}${dropdown("status", "Event Status", ["Event Status", "Happening", "Upcoming", "Cancelled", "Completed", "Rescheduled"])}${dropdown("availability", "Availability", ["Availability", "Available", "Full"])}<button type="button" id="clearEvents" class="admin-link-button" ${hasFilters() ? "" : "hidden"}>Clear filters</button></div>${sections || '<div class="admin-empty">No events match these filters.</div>'}${eventPageError ? `<p class="admin-error" role="alert">${esc(eventPageError)}</p>` : ""}${canLoadMore ? `<div class="admin-section-heading"><button class="admin-row-action" id="loadMore" type="button" ${eventPageLoading ? "disabled" : ""}>${eventPageLoading ? "Loading..." : "Load more"}</button></div>` : ""}`;
       wire();
       root.querySelectorAll("[data-event-view]").forEach(
         (button) =>
@@ -385,7 +449,7 @@ import { auth, authReady, db, isFirebaseConfigured } from "../UserStudent/fireba
     const organizer = event.organizerName || event.organizer || event.organization || "Event Organizer";
     const monthName = date ? new Date(`${date}T00:00:00`).toLocaleDateString("en-US", { month: "short", timeZone: "Asia/Manila" }) : "—";
     const dayNum = parts[2] ? parts[2].replace(/^0+/, '') || parts[2] : "—";
-    return `<article class="admin-event-card"><div class="event-card-header"><div class="event-date-tile"><small>${esc(monthName)}</small><strong>${esc(parts[2] || "—")}</strong></div><div class="event-card-titles"><h3 class="event-card-title">${esc(event.title || "Untitled event")}</h3><p class="event-organizer-text"><strong>Event Organizer:</strong> ${esc(organizer)}</p><p class="event-source-text"><strong>Source:</strong> ${esc(normalizeSource(eventSourceText(event)))}</p></div></div><div class="event-card-meta"><span><strong>Date:</strong> ${esc(date || "—")}</span><span><strong>Start:</strong> ${esc(time[0] || "—")}</span><span><strong>End:</strong> ${esc(time[1] || "—")}</span><span><strong>Venue:</strong> ${esc(event.venueOther || event.location || event.venue || "—")}</span><span style="grid-column: 1 / -1;"><strong>Capacity:</strong> ${caps === null ? "No capacity limit" : `${open} out of ${caps} Slots are Open`}</span></div><div class="event-card-bottom"><div class="admin-pills">${cats.map((category) => `<span class="admin-category-pill">${esc(category)}</span>`).join("")} ${chips.join(" ")}</div><button class="admin-row-action" type="button" data-event-view="${esc(event.eventId || event.id)}">View Details</button></div></article>`;
+    return `<article class="admin-event-card"><div class="event-card-header"><div class="event-card-titles"><h3 class="event-card-title">${esc(event.title || "Untitled event")}</h3><p class="event-organizer-text"><strong>Event Organizer:</strong> ${esc(organizer)}</p><p class="event-source-text"><strong>Source:</strong> ${esc(normalizeSource(eventSourceText(event)))}</p></div><div class="event-date-tile"><small>${esc(monthName)}</small><strong>${esc(parts[2] || "—")}</strong></div></div><div class="event-card-meta"><span><strong>Date:</strong> ${esc(date || "—")}</span><span><strong>Start:</strong> ${esc(time[0] || "—")}</span><span><strong>End:</strong> ${esc(time[1] || "—")}</span><span><strong>Venue:</strong> ${esc(event.venueOther || event.location || event.venue || "—")}</span><span style="grid-column: 1 / -1;"><strong>Capacity:</strong> ${caps === null ? "No capacity limit" : `${open} out of ${caps} Slots are Open`}</span></div><div class="event-card-bottom"><div class="admin-pills">${cats.map((category) => `<span class="admin-category-pill">${esc(category)}</span>`).join("")} ${chips.join(" ")}</div><button class="admin-row-action" type="button" data-event-view="${esc(event.eventId || event.id)}">View Details</button></div></article>`;
   }
   function dropdown(key, label, options) {
     const current = state[key];
@@ -484,9 +548,14 @@ import { auth, authReady, db, isFirebaseConfigured } from "../UserStudent/fireba
       shown = 10;
       render();
     };
-    root.querySelector("#loadMore")?.addEventListener("click", () => {
+    root.querySelector("#loadMore")?.addEventListener("click", async () => {
+      if (eventPageLoading) return;
       shown += 10;
-      render();
+      if (shown >= firestoreEvents.length && eventHasMore) {
+        await loadNextEventPage();
+      } else {
+        render();
+      }
     });
     document.addEventListener(
       "click",
@@ -566,6 +635,13 @@ import { auth, authReady, db, isFirebaseConfigured } from "../UserStudent/fireba
     clearTimeout(loadTimer);
     unsubscribeEvents?.();
     unsubscribeEvents = null;
+    firestoreEvents = [];
+    firstPageDocuments = new Map();
+    additionalPageDocuments.clear();
+    eventCursor = null;
+    eventHasMore = false;
+    eventPageLoading = false;
+    eventPageError = "";
     if (!isFirebaseConfigured || !db) {
       showLoadError("Event data is unavailable. Please check your connection and try again.");
       return;
@@ -594,30 +670,24 @@ import { auth, authReady, db, isFirebaseConfigured } from "../UserStudent/fireba
     }
     unsubscribeEvents?.();
     unsubscribeEvents = onSnapshot(
-      query(collection(db, "events")),
+      query(
+        collection(db, "events"),
+        orderBy(documentId()),
+        limit(EVENT_PAGE_SIZE),
+      ),
       (snapshot) => {
       if (loadExpired) return;
       clearTimeout(loadTimer);
       loadTimer = null;
       loadExpired = false;
-      firestoreEvents = snapshot.docs
-          .map((eventDocument) => {
-            const data = eventDocument.data();
-            if (!isPublishedEvent(data)) return null;
-            const eventDate = data.eventDate || data.dateISO || data.date || "";
-            return {
-              ...data,
-              id: eventDocument.id,
-              eventId: eventDocument.id,
-              title: data.eventName || data.title || "Untitled event",
-              date: eventDate,
-              dateISO: eventDate,
-              venue: data.venue || data.location || data.venueOther || "",
-              location: data.venue || data.location || data.venueOther || "",
-              organization: data.organization || data.organizerName || data.organizer || "",
-            };
-          })
-          .filter(Boolean);
+      firstPageDocuments = new Map(
+        snapshot.docs.map((eventDocument) => [eventDocument.id, eventDocument]),
+      );
+      if (!additionalPageDocuments.size) {
+        eventCursor = snapshot.docs.at(-1) || null;
+        eventHasMore = snapshot.size === EVENT_PAGE_SIZE;
+      }
+      firestoreEvents = normalizeEventDocuments([...firstPageDocuments.values()]);
         render();
         window.dispatchEvent(new Event("page-data-ready"));
       },

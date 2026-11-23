@@ -1,4 +1,4 @@
-import { auth, db, rtdb, functions, isFirebaseConfigured, isRtdbConfigured } from "./firebaseConfig.js";
+import { auth, db, rtdb, isFirebaseConfigured, isRtdbConfigured } from "./firebaseConfig.js";
 import {
   onAuthStateChanged,
   signOut,
@@ -6,6 +6,7 @@ import {
 import {
   collectionGroup,
   doc,
+  getDocs,
   getDoc,
   onSnapshot as onFirestoreSnapshot,
   query as firestoreQuery,
@@ -16,12 +17,20 @@ import {
   onValue,
   off,
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-database.js";
-import { httpsCallable } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-functions.js";
+import {
+  createAttendanceQrPayload,
+  renderAttendanceQr,
+} from "./attendanceQr.js";
+import {
+  mergeRegistrationMapsByUid,
+  mergeUserRegistrationMaps,
+} from "./eventRegistrationData.js";
 import {
   clearCachedStudentProfile,
   loadStudentProfile,
   renderStudentSidebar,
 } from "./studentIdentity.js";
+import { getDocCached } from "../firestoreReadCache.js";
 
 /* ---------------------------------------------------------
    COMMON SIDEBAR & USER PROFILE INITIALIZATION
@@ -53,6 +62,10 @@ function initCommon() {
 let currentUid = null;
 let serverTimeOffset = 0;
 let permanentQrToken = "";
+let qrModalLoading = false;
+let qrRefreshInProgress = false;
+let qrModalEventId = "";
+let qrModalEventTitle = "";
 let authResolved = false;
 let profileResolved = false;
 let participationLoading = true;
@@ -79,7 +92,11 @@ const userRegistrationsMap = new Map(); // id -> { status, at }
 const rtdbRegistrationsMap = new Map();
 const firestoreRegistrationsMap = new Map();
 const attendanceMap = new Map(); // id -> { scannedAt, scannedBy, walkIn }
+const attendanceSourceRecords = new Map();
+const firestoreAttendanceRecords = new Map();
 const attendanceListeners = new Map(); // id -> unsub
+let firestoreAttendanceUid = "";
+let firestoreAttendancePromise = null;
 
 const filterState = {
   search: "",
@@ -487,10 +504,11 @@ function getParticipationStatus(registration, event, now) {
 
 function refreshUserRegistrations() {
   userRegistrationsMap.clear();
-  for (const [eventId, registration] of rtdbRegistrationsMap) {
-    userRegistrationsMap.set(eventId, registration);
-  }
-  for (const [eventId, registration] of firestoreRegistrationsMap) {
+  const mergedRegistrations = mergeUserRegistrationMaps(
+    firestoreRegistrationsMap,
+    rtdbRegistrationsMap,
+  );
+  for (const [eventId, registration] of mergedRegistrations) {
     userRegistrationsMap.set(eventId, registration);
   }
   syncPublicEventListeners();
@@ -592,7 +610,7 @@ function listenForFirestoreRegistrations(uid) {
 
       const eventReadResults = await Promise.allSettled(
         eventSnapshots.map(async ({ eventId, eventRef }) => {
-          const eventSnapshot = await getDoc(eventRef);
+          const eventSnapshot = await getDocCached(getDoc, eventRef, uid);
           if (!eventSnapshot.exists()) {
             throw new Error(`Event document ${eventId} no longer exists.`);
           }
@@ -694,25 +712,95 @@ function syncPublicEventListeners() {
 /* ---------------------------------------------------------
    ATTENDANCE REAL-TIME LISTENERS
 --------------------------------------------------------- */
+function updateAttendanceFromSources(eventId, sourceRecords) {
+  if (attendanceSourceRecords.get(eventId) !== sourceRecords) return;
+  const merged = mergeRegistrationMapsByUid(
+    ...["firestore", "legacy", "event", "eventAttendance"].map((source) =>
+      sourceRecords[source] ? { [currentUid]: sourceRecords[source] } : {},
+    ),
+  )[currentUid];
+  if (merged) attendanceMap.set(eventId, merged);
+  else attendanceMap.delete(eventId);
+  render();
+}
+
+function loadFirestoreAttendanceRecords(uid) {
+  if (!db || !isFirebaseConfigured || !uid || firestoreAttendanceUid === uid) return;
+  if (firestoreAttendancePromise) return;
+
+  firestoreAttendanceUid = uid;
+  const request = getDocs(firestoreQuery(
+    collectionGroup(db, "attendance"),
+    where("uid", "==", uid),
+  ))
+    .then((snapshot) => {
+      if (currentUid !== uid) return;
+      firestoreAttendanceRecords.clear();
+      snapshot.forEach((attendanceDocument) => {
+        const eventId = attendanceDocument.ref.parent.parent?.id;
+        if (!eventId) return;
+        firestoreAttendanceRecords.set(eventId, {
+          ...attendanceDocument.data(),
+          uid: attendanceDocument.data().uid || attendanceDocument.id,
+        });
+      });
+      attendanceSourceRecords.forEach((sourceRecords, eventId) => {
+        sourceRecords.firestore = firestoreAttendanceRecords.get(eventId) || null;
+        updateAttendanceFromSources(eventId, sourceRecords);
+      });
+    })
+    .catch((error) => console.warn("[My Participation] Firestore attendance lookup failed:", {
+      code: error?.code || "unknown",
+    }))
+    .finally(() => {
+      if (firestoreAttendancePromise === request) firestoreAttendancePromise = null;
+    });
+  firestoreAttendancePromise = request;
+}
+
 function syncAttendanceListeners() {
-  if (!isRtdbConfigured || !currentUid) return;
+  if (!currentUid || (
+    (!isRtdbConfigured || !rtdb) &&
+    (!isFirebaseConfigured || !db)
+  )) return;
 
   const currentEventIds = new Set(userRegistrationsMap.keys());
+  if (currentEventIds.size) loadFirestoreAttendanceRecords(currentUid);
 
   // Subscribe to newly registered events
   currentEventIds.forEach((eventId) => {
     if (!attendanceListeners.has(eventId)) {
-      const attRef = ref(rtdb, `attendance/${eventId}/${currentUid}`);
-      const unsub = onValue(attRef, (snap) => {
-        const val = snap.val();
-        if (val) {
-          attendanceMap.set(eventId, val);
-        } else {
-          attendanceMap.delete(eventId);
-        }
-        render();
+      const sourceRecords = {
+        firestore: firestoreAttendanceRecords.get(eventId) || null,
+        legacy: null,
+        event: null,
+        eventAttendance: null,
+      };
+      attendanceSourceRecords.set(eventId, sourceRecords);
+      const attendanceRefs = isRtdbConfigured && rtdb
+        ? [
+          ref(rtdb, `attendance/${eventId}/${currentUid}`),
+          ref(rtdb, `events/${eventId}/attendance/${currentUid}`),
+          ref(rtdb, `eventAttendance/${eventId}/${currentUid}`),
+        ]
+        : [];
+      const sourceNames = ["legacy", "event", "eventAttendance"];
+      const unsubscribers = attendanceRefs.map((attRef, index) => {
+        const unsubscribe = onValue(attRef, (snap) => {
+          sourceRecords[sourceNames[index]] = snap.val();
+          updateAttendanceFromSources(eventId, sourceRecords);
+        }, (error) => {
+          console.warn(`[My Participation] ${sourceNames[index]} attendance lookup failed:`, {
+            eventId,
+            code: error?.code || "unknown",
+          });
+        });
+        return () => off(attRef, "value", unsubscribe);
       });
-      attendanceListeners.set(eventId, () => off(attRef, "value", unsub));
+      updateAttendanceFromSources(eventId, sourceRecords);
+      attendanceListeners.set(eventId, () => {
+        unsubscribers.forEach((unsubscribe) => unsubscribe());
+      });
     }
   });
 
@@ -721,6 +809,7 @@ function syncAttendanceListeners() {
     if (!currentEventIds.has(eventId)) {
       unsub();
       attendanceListeners.delete(eventId);
+      attendanceSourceRecords.delete(eventId);
       attendanceMap.delete(eventId);
     }
   });
@@ -729,6 +818,10 @@ function syncAttendanceListeners() {
 function stopAttendanceListeners() {
   attendanceListeners.forEach((unsubscribe) => unsubscribe());
   attendanceListeners.clear();
+  attendanceSourceRecords.clear();
+  firestoreAttendanceRecords.clear();
+  firestoreAttendanceUid = "";
+  firestoreAttendancePromise = null;
   attendanceMap.clear();
 }
 
@@ -965,7 +1058,7 @@ function render() {
             ${statusBadgeHtml}
             ${
               status === "upcoming" && isActiveRegistration(registration)
-                ? `<button type="button" class="btn-show-qr" data-qr-event-title="${escapeHTML(event.title)}">
+                ? `<button type="button" class="btn-show-qr" data-qr-event-id="${escapeHTML(event.id)}" data-qr-event-title="${escapeHTML(event.title)}">
                     <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" width="14" height="14" aria-hidden="true">
                       <rect x="3" y="3" width="5" height="5" rx="1"/>
                       <rect x="12" y="3" width="5" height="5" rx="1"/>
@@ -1790,7 +1883,7 @@ function bindFilterControls() {
       const qrBtn = e.target.closest(".btn-show-qr");
       if (qrBtn) {
         const title = qrBtn.dataset.qrEventTitle || "";
-        openQrModal(title);
+        openQrModal(title, qrBtn.dataset.qrEventId || "");
         return;
       }
 
@@ -1809,15 +1902,8 @@ function bindFilterControls() {
 /* ---------------------------------------------------------
    QR MODAL & REFRESH/DOWNLOAD
 --------------------------------------------------------- */
-async function getQRCodeLib() {
-  if (window.QRCode) return window.QRCode;
-  try {
-    const mod = await import("https://esm.sh/qrcode@1.5.4");
-    return mod.default || mod;
-  } catch (err) {
-    console.error("Failed to load QRCode library", err);
-    throw err;
-  }
+function getQrModalErrorMessage(error) {
+  return String(error?.message || "Couldn't generate your attendance QR code. Try again.");
 }
 
 function downloadCanvasAsPng(canvas, filename = "student-qr-code.png") {
@@ -1835,69 +1921,22 @@ function downloadCanvasAsPng(canvas, filename = "student-qr-code.png") {
   }
 }
 
-let qrCooldownTimer = null;
-
-function updateCooldownButtons(remainingMs) {
+function updateCooldownButtons() {
   const refreshBtn = document.getElementById("qrModalRefreshBtn");
   const refreshLabel = document.getElementById("qrModalRefreshLabel");
   if (!refreshBtn) return;
-  if (remainingMs > 0) {
-    const totalSec = Math.ceil(remainingMs / 1000);
-    const m = Math.floor(totalSec / 60);
-    const s = String(totalSec % 60).padStart(2, "0");
-    refreshBtn.disabled = true;
-    if (refreshLabel) {
-      refreshLabel.textContent = `Refresh code (${m}:${s})`;
-    } else {
-      refreshBtn.textContent = `Refresh code (${m}:${s})`;
-    }
-  } else {
-    refreshBtn.disabled = false;
-    if (refreshLabel) {
-      refreshLabel.textContent = "Refresh code";
-    }
+  const isBusy = qrRefreshInProgress || qrModalLoading;
+  refreshBtn.disabled = isBusy;
+  if (refreshLabel) {
+    refreshLabel.textContent = qrRefreshInProgress
+      ? "Refreshing..."
+      : qrModalLoading
+        ? "Loading..."
+        : "Refresh code";
   }
-}
-
-function startCooldown(cooldownMs) {
-  if (qrCooldownTimer) {
-    clearInterval(qrCooldownTimer);
-    qrCooldownTimer = null;
-  }
-
-  const savedUntil = Number(localStorage.getItem("recovibe_qr_cooldown_until") || 0);
-  const now = Date.now();
-  let targetTime = 0;
-
-  if (cooldownMs && cooldownMs > 0) {
-    targetTime = Math.max(now + cooldownMs, savedUntil);
-    localStorage.setItem("recovibe_qr_cooldown_until", String(targetTime));
-  } else if (savedUntil > now) {
-    targetTime = savedUntil;
-  }
-
-  if (targetTime <= now) {
-    localStorage.removeItem("recovibe_qr_cooldown_until");
-    updateCooldownButtons(0);
-    return;
-  }
-
-  function tick() {
-    const remaining = Math.max(0, targetTime - Date.now());
-    updateCooldownButtons(remaining);
-    if (remaining <= 0) {
-      clearInterval(qrCooldownTimer);
-      qrCooldownTimer = null;
-      localStorage.removeItem("recovibe_qr_cooldown_until");
-    }
-  }
-
-  tick();
-  qrCooldownTimer = setInterval(tick, 1000);
 }
 
 async function downloadQrCard(token, student = {}) {
-  const QRCodeLib = await getQRCodeLib();
   const cardCanvas = document.createElement("canvas");
   cardCanvas.width = 560;
   cardCanvas.height = 760;
@@ -1914,14 +1953,9 @@ async function downloadQrCard(token, student = {}) {
 
   // Render 480px QR onto canvas
   const qrCanvas = document.createElement("canvas");
-  await QRCodeLib.toCanvas(qrCanvas, token, {
+  await renderAttendanceQr(qrCanvas, token, {
     width: 480,
-    margin: 2,
-    color: {
-      dark: "#000000",
-      light: "#ffffff",
-    },
-    errorCorrectionLevel: "M",
+    displayWidth: 480,
   });
 
   ctx.drawImage(qrCanvas, 40, 40, 480, 480);
@@ -1996,48 +2030,37 @@ function renderMyQr(canvas, options = {}) {
       if (!uid || auth?.currentUser?.uid !== uid) {
         throw new Error("Sign in to load your attendance QR code.");
       }
-      const tokenStorageKey = `recovibe_permanent_qr_token:${uid}`;
-      let token = permanentQrToken || localStorage.getItem(tokenStorageKey) || "";
-
-      if (!token) {
-        if (!functions || !navigator.onLine) {
-          throw new Error("Attendance QR code is unavailable. Check your connection and try again.");
-        }
-        const getMyQrTokenCallable = httpsCallable(functions, "getMyQrToken");
-        const timeoutPromise = new Promise((_, reject) =>
-          setTimeout(() => reject(new Error("Token request timed out")), 2500)
-        );
-        const result = await Promise.race([getMyQrTokenCallable(), timeoutPromise]);
-        token = String(result?.data?.token || "");
-        if (!token) throw new Error("Attendance QR code could not be loaded. Please try again.");
-        if (!active || auth?.currentUser?.uid !== uid) return;
-        permanentQrToken = token;
-        localStorage.setItem(tokenStorageKey, token);
-        if (typeof result?.data?.cooldownMs === "number") {
-          startCooldown(result.data.cooldownMs);
-        }
-      }
+      const payload = createAttendanceQrPayload({
+        user: auth.currentUser,
+        eventId: options.eventId,
+        eventName: options.eventName,
+        registrationStatus: "registered",
+      });
 
       if (!active) return;
+      permanentQrToken = payload;
 
-      permanentQrToken = token;
-
-      const QRCodeLib = await getQRCodeLib();
-      await QRCodeLib.toCanvas(canvas, token, {
-        width: width,
-        margin: 2,
-        color: {
-          dark: "#000000",
-          light: "#ffffff",
-        },
-        errorCorrectionLevel: "M",
+      if (currentUid !== uid || auth?.currentUser?.uid !== uid) {
+        throw new Error("The signed-in account changed. Please retry.");
+      }
+      if (!canvas || typeof canvas.getContext !== "function" || !canvas.getContext("2d")) {
+        throw new Error("The attendance QR code canvas is unavailable.");
+      }
+      await renderAttendanceQr(canvas, payload, {
+        width,
+        displayWidth: width,
       });
 
       if (!active) return;
       if (onStateChange) onStateChange("ready");
     } catch (err) {
       if (!active) return;
-      console.error("renderMyQr error:", err);
+      console.error("Student attendance QR generation failed:", {
+        code: err?.code || "",
+        message: err?.message || String(err),
+        details: err?.details,
+        error: err,
+      });
       const ctx = canvas.getContext("2d");
       if (ctx) ctx.clearRect(0, 0, canvas.width, canvas.height);
       if (onStateChange) onStateChange("error");
@@ -2062,6 +2085,7 @@ const qrModalCanvas = document.getElementById("qrModalCanvas");
 const qrModalSkeleton = document.getElementById("qrModalSkeleton");
 const qrModalCanvasBox = document.getElementById("qrModalCanvasBox");
 const qrModalError = document.getElementById("qrModalError");
+const qrModalErrorMessage = document.getElementById("qrModalErrorMessage");
 const qrModalRetryBtn = document.getElementById("qrModalRetryBtn");
 const qrModalStudentName = document.getElementById("qrModalStudentName");
 const qrModalEventName = document.getElementById("qrModalEventName");
@@ -2071,9 +2095,11 @@ const qrModalDownloadBtn = document.getElementById("qrModalDownloadBtn");
 let qrModalCleanup = null;
 let previousFocusedElement = null;
 
-function openQrModal(eventName = "") {
+function openQrModal(eventName = "", eventId = "") {
   if (!qrModalOverlay) return;
   previousFocusedElement = document.activeElement;
+  qrModalEventId = eventId;
+  qrModalEventTitle = eventName;
 
   if (qrModalStudentName) qrModalStudentName.textContent = studentProfile.fullName;
   if (qrModalEventName) {
@@ -2123,7 +2149,12 @@ function initQrModal() {
 
   qrModalCleanup = renderMyQr(qrModalCanvas, {
     width: 260,
+    eventId: qrModalEventId,
+    eventName: qrModalEventTitle,
     onStateChange: (state) => {
+      qrModalLoading = state === "loading";
+      if (qrModalDownloadBtn) qrModalDownloadBtn.disabled = state !== "ready";
+      updateCooldownButtons();
       if (state === "loading") {
         if (qrModalSkeleton) {
           qrModalSkeleton.hidden = false;
@@ -2165,7 +2196,31 @@ function initQrModal() {
         }
       }
     },
+    onError: (error) => {
+      if (qrModalErrorMessage) {
+        qrModalErrorMessage.textContent = getQrModalErrorMessage(error);
+      }
+    },
   });
+}
+
+function showQrModalError(message) {
+  qrModalLoading = false;
+  if (qrModalErrorMessage) qrModalErrorMessage.textContent = message;
+  if (qrModalSkeleton) {
+    qrModalSkeleton.hidden = true;
+    qrModalSkeleton.style.display = "none";
+  }
+  if (qrModalCanvasBox) {
+    qrModalCanvasBox.hidden = true;
+    qrModalCanvasBox.style.display = "none";
+  }
+  if (qrModalError) {
+    qrModalError.hidden = false;
+    qrModalError.style.display = "flex";
+  }
+  if (qrModalDownloadBtn) qrModalDownloadBtn.disabled = true;
+  updateCooldownButtons();
 }
 
 function setupModalEventListeners() {
@@ -2196,39 +2251,49 @@ function setupModalEventListeners() {
   if (qrModalRefreshBtn) {
     qrModalRefreshBtn.addEventListener("click", async (e) => {
       e.preventDefault();
-      const confirmed = window.confirm("Your saved QR image will stop working. Refresh your code?");
-      if (!confirmed) return;
+      if (qrRefreshInProgress || qrModalLoading) return;
 
+      const uid = currentUid;
+      qrRefreshInProgress = true;
+      updateCooldownButtons();
       try {
-        if (!currentUid || !functions) throw new Error("Sign in to refresh your attendance QR code.");
-        const regenCallable = httpsCallable(functions, "regenerateMyQr");
-        const res = await regenCallable();
-        const newToken = String(res?.data?.token || "");
-        if (!newToken) throw new Error("Could not refresh your QR code. Please try again.");
-        startCooldown(res.data.cooldownMs || 180000);
-        permanentQrToken = newToken;
-        localStorage.setItem(`recovibe_permanent_qr_token:${currentUid}`, newToken);
+        if (!uid || auth?.currentUser?.uid !== uid) {
+          throw new Error("Sign in to refresh your attendance QR code.");
+        }
+        permanentQrToken = "";
         initQrModal();
-        alert("New code ready. Download it again so your saved copy works.");
       } catch (err) {
-        console.warn("Failed to regenerate QR code:", err);
-        alert(err.message || "Could not refresh your code right now. Please try again later.");
+        console.error("Student attendance QR refresh failed:", {
+          code: err?.code || "",
+          message: err?.message || String(err),
+          details: err?.details,
+          error: err,
+        });
+        showQrModalError(err.message || "Could not refresh your code. Try again.");
+      } finally {
+        qrRefreshInProgress = false;
+        updateCooldownButtons();
       }
     });
   }
   if (qrModalDownloadBtn) {
     qrModalDownloadBtn.addEventListener("click", async (e) => {
       e.preventDefault();
-      const token = permanentQrToken || localStorage.getItem(`recovibe_permanent_qr_token:${currentUid}`) || "";
+      const token = permanentQrToken;
       if (!token) {
-        alert("Attendance QR code is unavailable. Please try again.");
+        showQrModalError("Attendance QR code is not ready. Use Try again to generate it.");
         return;
       }
-      await downloadQrCard(token, {
-        name: studentProfile.fullName,
-        studentNo: studentProfile.studentNo,
-        organization: studentProfile.organization,
-      });
+      try {
+        await downloadQrCard(token, {
+          name: studentProfile.fullName,
+          studentNo: studentProfile.studentNo,
+          organization: studentProfile.organization,
+        });
+      } catch (error) {
+        console.error("Could not download the student attendance QR code:", error);
+        showQrModalError(error?.message || "Could not download your QR code. Try again.");
+      }
     });
   }
 

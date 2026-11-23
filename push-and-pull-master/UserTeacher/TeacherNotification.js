@@ -40,6 +40,7 @@
   let sourceError = "";
   let activeFilter = "all";
   let pendingDeleteId = null;
+  const pendingPermanentDeletes = new Set();
   let undoDeletedItem = null;
   let undoTimer = null;
   let pageLoadSignaled = false;
@@ -424,8 +425,7 @@
     const query = searchInput.value.trim().toLowerCase();
     const visible = notifications.filter((item) => belongsToCurrentTeacher(item) && (() => {
       const stateMatches =
-        activeFilter === "all" ||
-        (activeFilter === "read" ? item.read : !item.read);
+        activeFilter === "all" || !item.read;
       return (
         stateMatches &&
         (!query ||
@@ -449,8 +449,7 @@
     const unreadBadge = document.getElementById("notificationUnreadCount");
     if (unreadBadge) unreadBadge.textContent = String(unreadCount);
     document.querySelectorAll("[data-notification-filter]").forEach((button) => {
-      const selected = button.dataset.notificationFilter === activeFilter ||
-        (button.dataset.notificationFilter === "all" && activeFilter === "read");
+      const selected = button.dataset.notificationFilter === activeFilter;
       button.classList.toggle("is-active", selected);
       button.setAttribute("aria-pressed", String(selected));
     });
@@ -563,6 +562,7 @@
     });
     undoDeletedItem = deletedNotifications[0];
     closeDeleteConfirmation();
+    save();
     renderNotifications();
     const toast = document.getElementById("teacherNotificationToast");
     if (toast) {
@@ -591,121 +591,52 @@
     });
   }
 
-  const notificationFilter = document.getElementById("notificationFilter");
-  const filterDropdown = document.createElement("div");
-  const filterButton = document.createElement("button");
-  const filterMenu = document.createElement("div");
-  filterDropdown.className = "filter-dropdown";
-  filterButton.className = "filter-button";
-  filterButton.type = "button";
-  filterButton.id = "notificationFilterDropdownButton";
-  filterButton.setAttribute("aria-haspopup", "listbox");
-  filterButton.setAttribute("aria-expanded", "false");
-  filterButton.setAttribute(
-    "aria-label",
-    notificationFilter.getAttribute("aria-label") || "Filter notifications",
-  );
-  filterButton.setAttribute("aria-controls", "notificationFilterDropdown");
-  filterMenu.className = "filter-menu";
-  filterMenu.id = "notificationFilterDropdown";
-  filterMenu.setAttribute("role", "listbox");
-  filterMenu.setAttribute("aria-labelledby", filterButton.id);
-  [...notificationFilter.options].forEach((option) => {
-    const item = document.createElement("button");
-    item.className = `filter-option${option.selected ? " active" : ""}`;
-    item.type = "button";
-    item.setAttribute("role", "option");
-    item.setAttribute("aria-selected", String(option.selected));
-    item.dataset.value = option.value;
-    item.textContent = option.textContent.trim();
-    filterMenu.appendChild(item);
-  });
-
-  function syncNotificationFilter() {
-    const selected =
-      notificationFilter.options[notificationFilter.selectedIndex];
-    filterButton.childNodes[0]?.remove();
-    filterButton.insertBefore(
-      document.createTextNode(selected ? selected.textContent.trim() : ""),
-      filterButton.firstChild,
-    );
-    filterMenu.querySelectorAll(".filter-option").forEach((item) => {
-      const active = item.dataset.value === notificationFilter.value;
-      item.classList.toggle("active", active);
-      item.setAttribute("aria-selected", String(active));
-    });
-  }
-
-  syncNotificationFilter();
-  notificationFilter.classList.add("teacher-native-filter-select");
-  notificationFilter.setAttribute("aria-hidden", "true");
-  notificationFilter.tabIndex = -1;
-  notificationFilter.hidden = true;
-  notificationFilter.parentElement.classList.add("teacher-has-custom-filter");
-  notificationFilter.parentNode.insertBefore(
-    filterDropdown,
-    notificationFilter,
-  );
-  filterDropdown.append(filterButton, filterMenu, notificationFilter);
-  filterButton.addEventListener("click", (event) => {
-    event.stopPropagation();
-    const isOpen = filterMenu.classList.contains("show");
-    filterMenu.classList.toggle("show", !isOpen);
-    filterButton.setAttribute("aria-expanded", String(!isOpen));
-  });
-  filterMenu.addEventListener("click", (event) => {
-    const item = event.target.closest(".filter-option");
-    if (!item) return;
-    event.stopPropagation();
-    notificationFilter.value = item.dataset.value;
-    notificationFilter.dispatchEvent(new Event("change", { bubbles: true }));
-    syncNotificationFilter();
-    filterMenu.classList.remove("show");
-    filterButton.setAttribute("aria-expanded", "false");
-    filterButton.focus();
-  });
-  notificationFilter.addEventListener("change", syncNotificationFilter);
-  document.addEventListener("click", (event) => {
-    if (!event.target.closest(".filter-select-wrap .filter-dropdown")) {
-      filterMenu.classList.remove("show");
-      filterButton.setAttribute("aria-expanded", "false");
-    }
-  });
-  document.addEventListener("keydown", (event) => {
-    if (event.key === "Escape") {
-      filterMenu.classList.remove("show");
-      filterButton.setAttribute("aria-expanded", "false");
-    }
-  });
-
   document
     .getElementById("notificationSearch")
     .addEventListener("input", renderNotifications);
-  notificationFilter.addEventListener("change", (event) => {
-    activeFilter = event.target.value;
-    renderNotifications();
-  });
   document.querySelectorAll("[data-notification-filter]").forEach((button) => {
     button.addEventListener("click", () => {
-      notificationFilter.value = button.dataset.notificationFilter;
-      notificationFilter.dispatchEvent(new Event("change", { bubbles: true }));
+      const selectedFilter = button.dataset.notificationFilter;
+      if (!["all", "unread"].includes(selectedFilter)) return;
+      activeFilter = selectedFilter;
+      renderNotifications();
     });
   });
-  document.getElementById("markAllRead").addEventListener("click", () => {
+  document.getElementById("markAllRead").addEventListener("click", async () => {
     if (showingDeleted()) {
-      const count = activeTrashItems().length;
+      const items = activeTrashItems();
+      const count = items.length;
       if (!count || !window.confirm(`Permanently delete all ${count} notifications? This cannot be undone.`)) return;
       const removedAt = Date.now();
-      deletedNotifications = [
-        ...deletedNotifications.filter((item) => item.purged),
-        ...activeTrashItems().map((item) => ({
-          ...item,
-          deletedAt: removedAt,
-          expiresAt: 0,
-          purged: true,
-        })),
-      ];
+      const failed = [];
+      for (const item of items) {
+        if (pendingPermanentDeletes.has(item.id)) continue;
+        pendingPermanentDeletes.add(item.id);
+        try {
+          if (!dataModule?.deleteTeacherNotification) {
+            throw new Error("The notification delete service is unavailable.");
+          }
+          await dataModule.deleteTeacherNotification(item);
+          deletedNotifications = deletedNotifications.map((notification) =>
+            notification.id === item.id
+              ? { ...notification, deletedAt: removedAt, expiresAt: 0, purged: true }
+              : notification,
+          );
+        } catch (error) {
+          failed.push(item);
+          console.error("[Teacher Notifications] Could not permanently delete notification:", error);
+        } finally {
+          pendingPermanentDeletes.delete(item.id);
+        }
+      }
       save();
+      if (failed.length) {
+        const toast = document.getElementById("teacherNotificationToast");
+        if (toast) {
+          toast.textContent = `${failed.length} notifications could not be permanently deleted. Please try again.`;
+          toast.hidden = false;
+        }
+      }
     } else {
       notifications.forEach((item) => setRead(item, true));
       save();
@@ -795,19 +726,42 @@
     if (action.dataset.deletedAction === "restore") {
       const { deletedAt, expiresAt, ...restoredItem } = item;
       notifications.unshift(restoredItem);
+      deletedNotifications = deletedNotifications.filter(
+        (notification) => notification.id !== item.id,
+      );
+      save();
     } else if (action.dataset.deletedAction === "delete-permanently") {
       if (!window.confirm("Permanently delete this notification? This cannot be undone.")) return;
-      deletedNotifications = deletedNotifications.map((notification) =>
-        notification.id === item.id
-          ? { ...notification, deletedAt: Date.now(), expiresAt: 0, purged: true }
-          : notification,
-      );
+      if (pendingPermanentDeletes.has(item.id)) return;
+      pendingPermanentDeletes.add(item.id);
       renderNotifications();
+      (async () => {
+        try {
+          if (!dataModule?.deleteTeacherNotification) {
+            throw new Error("The notification delete service is unavailable.");
+          }
+          await dataModule.deleteTeacherNotification(item);
+          deletedNotifications = deletedNotifications.map((notification) =>
+            notification.id === item.id
+              ? { ...notification, deletedAt: Date.now(), expiresAt: 0, purged: true }
+              : notification,
+          );
+          save();
+        } catch (error) {
+          console.error("[Teacher Notifications] Could not permanently delete notification:", error);
+          const toast = document.getElementById("teacherNotificationToast");
+          if (toast) {
+            toast.textContent = "Could not permanently delete this notification. Please try again.";
+            toast.hidden = false;
+          }
+        } finally {
+          pendingPermanentDeletes.delete(item.id);
+          renderNotifications();
+        }
+      })();
       return;
     }
-    deletedNotifications = deletedNotifications.filter(
-      (notification) => notification.id !== item.id,
-    );
+    if (action.dataset.deletedAction === "restore") save();
     renderNotifications();
   });
   document.getElementById("notificationMain").addEventListener("click", (event) => {
@@ -817,6 +771,7 @@
     notifications.unshift(restoredItem);
     undoDeletedItem = null;
     clearTimeout(undoTimer);
+    save();
     renderNotifications();
   });
   document

@@ -95,6 +95,10 @@ import {
         return "Incorrect email or password.";
       case "auth/too-many-requests":
         return "Too many sign-in attempts. Please try again later.";
+      case "auth/network-request-failed":
+        return "A network error prevented sign-in. Check your connection and try again.";
+      case "auth/user-disabled":
+        return "This account is disabled. Contact an administrator for help.";
       case "portal/email-change-pending":
         return "If your email change is still pending, verify the new address and sign in with your current email until then.";
       default:
@@ -107,6 +111,11 @@ import {
       .trim()
       .toLowerCase()
       .replace(/\s+/g, "");
+  }
+
+  function isDisabledProfile(profile) {
+    const status = String(profile?.status || "").trim().toLowerCase();
+    return profile?.isActive === false || ["inactive", "disabled"].includes(status);
   }
 
   function resolveRole(profiles) {
@@ -150,6 +159,19 @@ import {
     const profiles = reads
       .filter((read) => read.status === "fulfilled" && read.value)
       .map((read) => read.value);
+    const disabledAdminProfile = profiles.find(
+      (candidate) =>
+        candidate.collectionName === "adminUser" &&
+        isDisabledProfile(candidate.data),
+    );
+    if (disabledAdminProfile) {
+      return {
+        ...disabledAdminProfile,
+        resolvedRole: "Admin",
+        disabled: true,
+        candidates: profiles,
+      };
+    }
     const resolution = resolveRole(profiles);
     if (resolution?.resolvedRole === "Super Admin") {
       console.info("[AdminLogin] Role resolution:", {
@@ -160,6 +182,12 @@ import {
         })),
         finalRole: "Super Admin",
       });
+      return { ...resolution, candidates: profiles };
+    }
+    if (
+      resolution &&
+      ["Admin", "Event Organizer", "Student"].includes(resolution.resolvedRole)
+    ) {
       return { ...resolution, candidates: profiles };
     }
     if (lookupErrors.length) {
@@ -251,6 +279,16 @@ import {
       }
 
       const profile = profileRecord.data;
+      if (
+        profileRecord.disabled ||
+        (profileRecord.collectionName === "adminUser" && isDisabledProfile(profile))
+      ) {
+        await signOut(auth);
+        authenticated = false;
+        clearPortalProfileCaches();
+        showError("This admin account is disabled or inactive. Contact a super admin for help.");
+        return;
+      }
       const role = profileRecord.resolvedRole;
       const normalizedRole = normalizeRole(role);
       if (!["admin", "osas"].includes(normalizedRole)) {
@@ -333,10 +371,17 @@ import {
         showError(authErrorMessage(error));
       } else if (error?.code?.startsWith("auth/")) {
         showError(authErrorMessage(error));
+      } else if (
+        error?.code === "permission-denied" ||
+        error?.code === "firestore/permission-denied"
+      ) {
+        showError("Your account signed in, but its profile could not be read. Contact an administrator to verify profile access.");
+      } else if (
+        ["unavailable", "firestore/unavailable", "deadline-exceeded", "firestore/deadline-exceeded"].includes(error?.code)
+      ) {
+        showError("Your account signed in, but a network or Firestore error prevented profile verification. Check your connection and try again.");
       } else {
-        showError(
-          "Sign-in succeeded, but the account profile could not be verified. Check the Firestore rules and try again.",
-        );
+        showError("Your account signed in, but its profile could not be verified. Contact an administrator.");
       }
     } finally {
       if (!signInVerified) clearRememberedEmail();

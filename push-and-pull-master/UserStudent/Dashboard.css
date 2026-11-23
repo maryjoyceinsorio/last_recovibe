@@ -2171,8 +2171,14 @@ ul {
   color: var(--maroon-700);
   font-weight: 600;
 }
-.btn-hide-qr {
+.inline-qr-actions {
+  display: flex;
+  justify-content: center;
+  gap: 12px;
   margin-top: 4px;
+}
+.btn-hide-qr,
+.btn-refresh-qr {
   font-size: 12px;
   color: var(--ink-500);
   background: transparent;
@@ -2181,7 +2187,8 @@ ul {
   text-decoration: underline;
   padding: 4px;
 }
-.btn-hide-qr:hover {
+.btn-hide-qr:hover,
+.btn-refresh-qr:hover {
   color: var(--maroon-700);
 }
 

@@ -17,6 +17,7 @@ import {
 import { onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
 import {
   collection,
+  limit,
   onSnapshot,
   query,
   where,
@@ -49,6 +50,7 @@ import {
   let holidayLoadError = "";
   let eventsLoading = true;
   let calendarEventsReady = false;
+  let calendarEventLimitReached = false;
   let calendarPageReady = false;
   function signalCalendarPageReady() {
     if (calendarPageReady || !calendarEventsReady) return;
@@ -161,17 +163,25 @@ import {
   }
 
   function updateDataStatus() {
+    const hasError = Boolean(eventLoadError || profileLoadError || holidayLoadError);
     const message = eventsLoading
       ? "Loading calendar events…"
-      : eventLoadError || profileLoadError || holidayLoadError;
+      : eventLoadError || profileLoadError || holidayLoadError ||
+        (calendarEventLimitReached
+          ? "Showing a limited calendar set. Open Events to browse the full paginated list."
+          : "");
     statusElement.hidden = !message;
     statusElement.textContent = message;
     statusElement.className = message
-      ? eventsLoading ? "calendar-data-status is-loading" : "calendar-data-status is-error"
+      ? eventsLoading
+        ? "calendar-data-status is-loading"
+        : hasError
+          ? "calendar-data-status is-error"
+          : "calendar-data-status is-warning"
       : "calendar-data-status";
     statusElement.setAttribute(
       "role",
-      eventsLoading ? "status" : message ? "alert" : "status",
+      eventsLoading ? "status" : hasError ? "alert" : "status",
     );
   }
 
@@ -733,6 +743,7 @@ import {
     }
 
     eventsLoading = true;
+    calendarEventLimitReached = false;
     eventLoadError = "";
     updateDataStatus();
     try {
@@ -745,6 +756,7 @@ import {
             (status) => status !== "cancelled" && status !== "canceled",
           ),
         ),
+        limit(150),
       );
       eventsUnsubscribe = onSnapshot(
         eventsQuery,
@@ -752,6 +764,7 @@ import {
           firestoreEvents = snapshot.docs.map((eventDocument) =>
             normalizeCalendarEvent(eventDocument.id, eventDocument.data()),
           );
+          calendarEventLimitReached = snapshot.size === 150;
           eventsLoading = false;
           calendarEventsReady = true;
           eventLoadError = "";

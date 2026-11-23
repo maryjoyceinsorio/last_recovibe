@@ -1,9 +1,14 @@
 import {
   collection,
+  documentId,
   doc,
+  getDocs,
   getDoc,
+  limit,
   onSnapshot,
+  orderBy,
   query,
+  startAfter,
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 import { signOut } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
 import { auth, authReady, db, isFirebaseConfigured } from "../UserStudent/firebaseConfig.js";
@@ -15,6 +20,7 @@ import { auth, authReady, db, isFirebaseConfigured } from "../UserStudent/fireba
     .catch(() => document.querySelectorAll("[data-notification-count]").forEach((badge) => { badge.hidden = true; }));
 
   const ROLE_NAME = "Admin";
+  const EVENT_PAGE_SIZE = 100;
 
   function readStorage(key, fallback = null) {
     try {
@@ -61,6 +67,12 @@ import { auth, authReady, db, isFirebaseConfigured } from "../UserStudent/fireba
   ];
 
   let allEvents = [];
+  let firstPageDocuments = new Map();
+  const additionalPageDocuments = new Map();
+  let eventCursor = null;
+  let eventHasMore = false;
+  let eventPageLoading = false;
+  let eventPageError = "";
   let unsubscribeEvents = null;
   let currentPeriod = "all";
   let customStartDate = null;
@@ -100,6 +112,16 @@ import { auth, authReady, db, isFirebaseConfigured } from "../UserStudent/fireba
   const retryBtn = document.getElementById("reportRetryBtn");
   const dataContainer = document.getElementById("reportDataContainer");
   const downloadCopyBtn = document.getElementById("downloadCopyBtn");
+  const eventPageStatus = document.createElement("p");
+  const loadMoreEventsButton = document.createElement("button");
+  eventPageStatus.setAttribute("role", "status");
+  eventPageStatus.setAttribute("aria-live", "polite");
+  eventPageStatus.className = "report-pagination-status";
+  loadMoreEventsButton.type = "button";
+  loadMoreEventsButton.className = "report-retry-btn";
+  loadMoreEventsButton.textContent = "Load more events";
+  loadMoreEventsButton.addEventListener("click", loadNextEventPage);
+  dataContainer.append(eventPageStatus, loadMoreEventsButton);
 
   const metricTotalEvents = document.getElementById("metricTotalEvents");
   const metricUpcomingEvents = document.getElementById("metricUpcomingEvents");
@@ -220,19 +242,36 @@ import { auth, authReady, db, isFirebaseConfigured } from "../UserStudent/fireba
         roleEl.title = adminRoleTitle;
       }
       unsubscribeEvents?.();
+      firstPageDocuments = new Map();
+      additionalPageDocuments.clear();
+      eventCursor = null;
+      eventHasMore = false;
+      eventPageLoading = false;
+      eventPageError = "";
+      allEvents = [];
       const eventsRef = collection(db, "events");
-      const q = query(eventsRef);
+      const q = query(
+        eventsRef,
+        orderBy(documentId()),
+        limit(EVENT_PAGE_SIZE),
+      );
       unsubscribeEvents = onSnapshot(
         q,
         (snapshot) => {
           if (reportLoadExpired) return;
           clearTimeout(reportLoadTimer);
           reportLoadTimer = null;
-          allEvents = snapshot.docs.map(normalizeEvent);
+          firstPageDocuments = new Map(
+            snapshot.docs.map((eventDocument) => [eventDocument.id, eventDocument]),
+          );
+          if (!additionalPageDocuments.size) {
+            eventCursor = snapshot.docs.at(-1) || null;
+            eventHasMore = snapshot.size === EVENT_PAGE_SIZE;
+          }
+          mergeEventDocuments([...firstPageDocuments.values()]);
           loadingState.hidden = true;
           errorState.hidden = true;
           dataContainer.hidden = false;
-          downloadCopyBtn.disabled = false;
           renderReport();
           window.dispatchEvent(new Event("page-data-ready"));
         },
@@ -441,7 +480,60 @@ import { auth, authReady, db, isFirebaseConfigured } from "../UserStudent/fireba
     return "completed";
   }
 
+  function updateEventPagination() {
+    if (eventPageError) {
+      eventPageStatus.textContent = eventPageError;
+    } else {
+      eventPageStatus.textContent = eventHasMore
+        ? `Showing ${allEvents.length} events. Load more to include the rest in this report.`
+        : `All ${allEvents.length} events are included in this report.`;
+    }
+    loadMoreEventsButton.hidden = !eventHasMore;
+    loadMoreEventsButton.disabled = eventPageLoading;
+    loadMoreEventsButton.textContent = eventPageLoading ? "Loading..." : "Load more events";
+    downloadCopyBtn.disabled = eventHasMore || eventPageLoading;
+  }
+
+  function mergeEventDocuments(documents) {
+    const merged = new Map(
+      documents.map((eventDocument) => [eventDocument.id, eventDocument]),
+    );
+    additionalPageDocuments.forEach((eventDocument, eventId) => {
+      if (!merged.has(eventId)) merged.set(eventId, eventDocument);
+    });
+    allEvents = [...merged.values()].map(normalizeEvent);
+  }
+
+  async function loadNextEventPage() {
+    if (eventPageLoading || !eventHasMore || !eventCursor) return;
+    eventPageLoading = true;
+    eventPageError = "";
+    updateEventPagination();
+    try {
+      const snapshot = await getDocs(query(
+        collection(db, "events"),
+        orderBy(documentId()),
+        startAfter(eventCursor),
+        limit(EVENT_PAGE_SIZE),
+      ));
+      snapshot.docs.forEach((eventDocument) => {
+        additionalPageDocuments.set(eventDocument.id, eventDocument);
+      });
+      eventCursor = snapshot.docs.at(-1) || eventCursor;
+      eventHasMore = snapshot.size === EVENT_PAGE_SIZE;
+      mergeEventDocuments([...firstPageDocuments.values()]);
+      renderReport();
+    } catch (error) {
+      console.error("Could not load the next event page for the Admin report:", error);
+      eventPageError = "More events could not be loaded. Please try again.";
+    } finally {
+      eventPageLoading = false;
+      updateEventPagination();
+    }
+  }
+
   function renderReport() {
+    updateEventPagination();
     const now = getManilaNow();
     const range = getSelectedDateRange();
 

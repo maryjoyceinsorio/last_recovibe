@@ -10,6 +10,11 @@ import {
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 import { signInWithEmailAndPassword } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
 import { ref, update } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-database.js";
+import {
+  getDocCached,
+  getDocsCached,
+  invalidateDocCache,
+} from "./firestoreReadCache.js";
 
 const PROFILE_COLLECTIONS = {
   student: ["users", "students"],
@@ -23,8 +28,8 @@ const PROFILE_COLLECTIONS = {
 const ROLE_ALIASES = {
   student: ["student"],
   eventorganizer: ["eventorganizer", "organizer", "eo"],
-  teacher: ["teacher", "teacheradviser"],
-  admin: ["admin"],
+  teacher: ["teacher", "teacheradviser", "faculty", "adviser"],
+  admin: ["admin", "osas"],
   superadmin: ["superadmin"],
 };
 
@@ -59,6 +64,15 @@ function roleMatches(data, role, collectionName) {
     return Object.values(ROLE_ALIASES).flat().includes(normalizedRole);
   }
   if (role === "student" && collectionName === "students" && !normalizedRole) return true;
+  if (role === "student" && collectionName === "users" && !normalizedRole) {
+    return [
+      data.studentNumber,
+      data.student_number,
+      data.studentNo,
+      data.student_no,
+      data.studentId,
+    ].some((value) => String(value || "").trim());
+  }
   if (ROLE_ALIASES[role]?.includes(normalizedRole)) return true;
   return role === "eventorganizer" &&
     collectionName === "eventOrganizations" &&
@@ -70,7 +84,7 @@ async function findProfileRecords(db, uid, role, collections = profileCollection
   const reads = await Promise.allSettled(
     collections.map(async (collectionName) => {
       const profileRef = doc(db, collectionName, uid);
-      const snapshot = await getDoc(profileRef);
+      const snapshot = await getDocCached(getDoc, profileRef, uid);
       return snapshot.exists()
         ? { collectionName, profileRef, data: snapshot.data() }
         : null;
@@ -106,14 +120,18 @@ async function findProfileRecords(db, uid, role, collections = profileCollection
 
 export async function savePendingProfileEmail(db, uid, role, email, collections) {
   const records = await findProfileRecords(db, uid, role, collections);
-  await Promise.all(records.map(({ profileRef }) =>
-    updateDoc(profileRef, { pendingEmail: email }),
-  ));
+  await Promise.all(records.map(async ({ profileRef }) => {
+    await updateDoc(profileRef, { pendingEmail: email });
+    invalidateDocCache(profileRef, uid);
+  }));
 }
 
 export async function saveProfileFields(db, uid, role, fields, collections) {
   const records = await findProfileRecords(db, uid, role, collections);
-  await Promise.all(records.map(({ profileRef }) => updateDoc(profileRef, fields)));
+  await Promise.all(records.map(async ({ profileRef }) => {
+    await updateDoc(profileRef, fields);
+    invalidateDocCache(profileRef, uid);
+  }));
 }
 
 async function syncVerifiedProfileEmailOnce(auth, db, user, role, collections, rtdb) {
@@ -138,7 +156,10 @@ async function syncVerifiedProfileEmailOnce(auth, db, user, role, collections, r
     if (String(data.pendingEmail || "").trim().toLowerCase() === normalizedEmail) {
       updates.pendingEmail = deleteField();
     }
-    if (Object.keys(updates).length) await updateDoc(profileRef, updates);
+    if (Object.keys(updates).length) {
+      await updateDoc(profileRef, updates);
+      invalidateDocCache(profileRef, user.uid);
+    }
     return { collectionName, changed: Object.keys(updates).length > 0 };
   });
   const results = await Promise.all(profileUpdates);
@@ -189,14 +210,24 @@ export async function findPendingEmailFallbacks(db, email, role, collections = p
   const normalizedEmail = String(email || "").trim().toLowerCase();
   const reads = await Promise.allSettled(
     collections.flatMap((collectionName) => [
-      getDocs(query(
-        collection(db, collectionName),
-        where("email", "==", normalizedEmail),
-      )),
-      getDocs(query(
-        collection(db, collectionName),
-        where("pendingEmail", "==", normalizedEmail),
-      )),
+      getDocsCached(
+        getDocs,
+        query(
+          collection(db, collectionName),
+          where("email", "==", normalizedEmail),
+        ),
+        `${normalizePortalRole(role)}:${collectionName}:email:${normalizedEmail}`,
+        normalizedEmail,
+      ),
+      getDocsCached(
+        getDocs,
+        query(
+          collection(db, collectionName),
+          where("pendingEmail", "==", normalizedEmail),
+        ),
+        `${normalizePortalRole(role)}:${collectionName}:pendingEmail:${normalizedEmail}`,
+        normalizedEmail,
+      ),
     ]),
   );
   const candidates = new Set();

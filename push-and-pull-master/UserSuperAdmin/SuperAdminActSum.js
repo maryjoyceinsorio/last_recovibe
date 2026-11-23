@@ -1,8 +1,12 @@
 import {
   collection,
+  documentId,
+  getDocs,
+  limit,
   onSnapshot,
   orderBy,
   query,
+  startAfter,
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 import { onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
 import { auth, db, isFirebaseConfigured } from "../UserStudent/firebaseConfig.js";
@@ -11,6 +15,7 @@ import { auth, db, isFirebaseConfigured } from "../UserStudent/firebaseConfig.js
   "use strict";
 
   const ROLE_NAME = "Super Admin";
+  const EVENT_PAGE_SIZE = 100;
 
   function readStorage(key, fallback = null) {
     try {
@@ -85,6 +90,12 @@ import { auth, db, isFirebaseConfigured } from "../UserStudent/firebaseConfig.js
   ];
 
   let allEvents = [];
+  let firstPageDocuments = new Map();
+  const additionalPageDocuments = new Map();
+  let eventCursor = null;
+  let eventHasMore = false;
+  let eventPageLoading = false;
+  let eventPageError = "";
   let unsubscribeEvents = null;
   let currentPeriod = "all";
   let customStartDate = null;
@@ -122,6 +133,16 @@ import { auth, db, isFirebaseConfigured } from "../UserStudent/firebaseConfig.js
   const retryBtn = document.getElementById("reportRetryBtn");
   const dataContainer = document.getElementById("reportDataContainer");
   const downloadCopyBtn = document.getElementById("downloadCopyBtn");
+  const eventPageStatus = document.createElement("p");
+  const loadMoreEventsButton = document.createElement("button");
+  eventPageStatus.setAttribute("role", "status");
+  eventPageStatus.setAttribute("aria-live", "polite");
+  eventPageStatus.className = "report-pagination-status";
+  loadMoreEventsButton.type = "button";
+  loadMoreEventsButton.className = "report-retry-btn";
+  loadMoreEventsButton.textContent = "Load more events";
+  loadMoreEventsButton.addEventListener("click", loadNextEventPage);
+  dataContainer.append(eventPageStatus, loadMoreEventsButton);
 
   const metricTotalEvents = document.getElementById("metricTotalEvents");
   const metricUpcomingEvents = document.getElementById("metricUpcomingEvents");
@@ -412,8 +433,71 @@ import { auth, db, isFirebaseConfigured } from "../UserStudent/firebaseConfig.js
     renderReport();
   }
 
+  function updateEventPagination() {
+    if (eventPageError) {
+      eventPageStatus.textContent = eventPageError;
+    } else {
+      eventPageStatus.textContent = eventHasMore
+        ? `Showing ${allEvents.length} events. Load more to include the rest in this report.`
+        : `All ${allEvents.length} events are included in this report.`;
+    }
+    loadMoreEventsButton.hidden = !eventHasMore;
+    loadMoreEventsButton.disabled = eventPageLoading;
+    loadMoreEventsButton.textContent = eventPageLoading ? "Loading..." : "Load more events";
+    if (downloadCopyBtn) {
+      downloadCopyBtn.disabled = eventHasMore || eventPageLoading;
+    }
+  }
+
+  function mergeEventDocuments(documents) {
+    const merged = new Map(
+      documents.map((eventDocument) => [
+        eventDocument.id,
+        { id: eventDocument.id, ...eventDocument.data() },
+      ]),
+    );
+    additionalPageDocuments.forEach((eventDocument, eventId) => {
+      if (!merged.has(eventId)) {
+        merged.set(eventId, {
+          id: eventDocument.id,
+          ...eventDocument.data(),
+        });
+      }
+    });
+    allEvents = [...merged.values()];
+  }
+
+  async function loadNextEventPage() {
+    if (eventPageLoading || !eventHasMore || !eventCursor) return;
+    eventPageLoading = true;
+    eventPageError = "";
+    updateEventPagination();
+    try {
+      const snapshot = await getDocs(query(
+        collection(db, "events"),
+        orderBy(documentId()),
+        startAfter(eventCursor),
+        limit(EVENT_PAGE_SIZE),
+      ));
+      snapshot.docs.forEach((eventDocument) => {
+        additionalPageDocuments.set(eventDocument.id, eventDocument);
+      });
+      eventCursor = snapshot.docs.at(-1) || eventCursor;
+      eventHasMore = snapshot.size === EVENT_PAGE_SIZE;
+      mergeEventDocuments([...firstPageDocuments.values()]);
+      renderReport();
+    } catch (error) {
+      console.error("Could not load the next event page for the Super Admin report:", error);
+      eventPageError = "More events could not be loaded. Please try again.";
+    } finally {
+      eventPageLoading = false;
+      updateEventPagination();
+    }
+  }
+
   // Render Engine
   function renderReport() {
+    updateEventPagination();
     if (!allEvents) return;
     const now = getManilaNow();
     const { start: pStart, end: pEnd } = getPeriodRange(currentPeriod);
@@ -1217,16 +1301,31 @@ import { auth, db, isFirebaseConfigured } from "../UserStudent/firebaseConfig.js
     if (errorState) errorState.hidden = true;
     if (dataContainer) dataContainer.hidden = true;
     if (downloadCopyBtn) downloadCopyBtn.disabled = true;
+    firstPageDocuments = new Map();
+    additionalPageDocuments.clear();
+    eventCursor = null;
+    eventHasMore = false;
+    eventPageLoading = false;
+    eventPageError = "";
+    allEvents = [];
 
     try {
-      const q = query(collection(db, "events"), orderBy("date", "asc"));
+      const q = query(
+        collection(db, "events"),
+        orderBy(documentId()),
+        limit(EVENT_PAGE_SIZE),
+      );
       unsubscribeEvents = onSnapshot(
         q,
         (snapshot) => {
-          allEvents = snapshot.docs.map((docSnap) => ({
-            id: docSnap.id,
-            ...docSnap.data(),
-          }));
+          firstPageDocuments = new Map(
+            snapshot.docs.map((eventDocument) => [eventDocument.id, eventDocument]),
+          );
+          if (!additionalPageDocuments.size) {
+            eventCursor = snapshot.docs.at(-1) || null;
+            eventHasMore = snapshot.size === EVENT_PAGE_SIZE;
+          }
+          mergeEventDocuments([...firstPageDocuments.values()]);
 
           if (loadingState) loadingState.hidden = true;
           if (errorState) errorState.hidden = true;

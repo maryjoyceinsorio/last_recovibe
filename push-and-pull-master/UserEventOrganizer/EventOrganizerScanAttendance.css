@@ -679,6 +679,7 @@
 
 .manual-search-result-row {
   display: flex;
+  width: 100%;
   align-items: center;
   justify-content: space-between;
   gap: 10px;
@@ -686,6 +687,25 @@
   border: 1px solid var(--line, #e6e0d3);
   border-radius: 8px;
   background: var(--paper, #ffffff);
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.manual-search-result-row[aria-pressed="true"] {
+  border-color: var(--maroon, #7a1f2e);
+  box-shadow: 0 0 0 2px rgb(122 31 46 / 12%);
+}
+
+.manual-search-result-row:focus-visible {
+  outline: 2px solid var(--maroon, #7a1f2e);
+  outline-offset: 2px;
+}
+
+.manual-search-result-row:disabled {
+  cursor: not-allowed;
+  opacity: 0.65;
 }
 
 .manual-search-result-details {

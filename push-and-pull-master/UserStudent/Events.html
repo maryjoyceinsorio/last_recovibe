@@ -3175,12 +3175,22 @@
         onValue,
         off,
       } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-database.js";
+      import { writeEventRegistration } from "./eventRtdb.js";
       import {
+        isRegistrationActive,
+        mergeUserRegistrationMaps,
+      } from "./eventRegistrationData.js";
+      import {
+        collectionGroup,
         collection,
         doc,
+        documentId,
+        getDocs,
+        limit,
         onSnapshot,
+        orderBy,
         query,
-        runTransaction,
+        startAfter,
         where,
       } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
       import { getEventDateRange } from "./calendarDateRange.mjs";
@@ -3189,11 +3199,13 @@
         getCachedSystemAccessSettings,
         readSystemAccessSettings,
       } from "../systemAccess.js";
+      import { isResourceExhausted } from "./firestoreRetry.js";
 
       /* ---------------------------------------------------------
          STATE
       --------------------------------------------------------- */
       const DEBUG = false;
+      const EVENT_PAGE_SIZE = 100;
       let currentUid = null;
       let serverTimeOffset = 0;
       let systemAccessSettings = getCachedSystemAccessSettings();
@@ -3203,7 +3215,18 @@
       let eventLoadTimer = null;
       let authUnsubscribe = null;
       let eventsUnsubscribe = null;
-      const registrationUnsubscribes = new Map();
+      let registrationUnsubscribe = null;
+      let rtdbRegistrationUnsubscribe = null;
+      let registrationQueryUid = "";
+      let registrationSnapshotReady = false;
+      let registrationQueryError = false;
+      const registrationRecords = new Map();
+      const rtdbRegistrationRecords = new Map();
+      let eventCursor = null;
+      let eventHasMore = false;
+      let eventPageLoading = false;
+      let firstPageEventDocuments = new Map();
+      const eventPageDocuments = new Map();
       let serverTimeUnsubscribe = null;
       const registrationStates = new Map();
       let loadRequestSequence = 0;
@@ -4639,7 +4662,13 @@
         if (request !== loadRequestSequence) return;
         rawEventsMap.clear();
         try {
-          snapshot.docs.forEach((eventDoc) => {
+          const documents = new Map(
+            snapshot.docs.map((eventDoc) => [eventDoc.id, eventDoc]),
+          );
+          eventPageDocuments.forEach((eventDoc, eventId) => {
+            if (!documents.has(eventId)) documents.set(eventId, eventDoc);
+          });
+          documents.forEach((eventDoc) => {
             try {
               const data = eventDoc.data();
               const ev = normalizeEvent(eventDoc.id, data);
@@ -4742,11 +4771,51 @@
         }
       }
 
+      async function loadNextEventPage(request = loadRequestSequence) {
+        if (eventPageLoading || !eventHasMore || !eventCursor || !db) return;
+        eventPageLoading = true;
+        renderAllEvents();
+        try {
+          const publicStatuses = STUDENT_EVENT_STATUSES.filter(
+            (status) => !["cancelled", "canceled"].includes(status),
+          );
+          const snapshot = await getDocs(query(
+            collection(db, "events"),
+            where("status", "in", publicStatuses),
+            orderBy(documentId()),
+            startAfter(eventCursor),
+            limit(EVENT_PAGE_SIZE),
+          ));
+          if (request !== loadRequestSequence) return;
+          snapshot.docs.forEach((eventDoc) => {
+            eventPageDocuments.set(eventDoc.id, eventDoc);
+          });
+          eventCursor = snapshot.docs.at(-1) || eventCursor;
+          eventHasMore = snapshot.size === EVENT_PAGE_SIZE;
+          logLoadStep("events-next-page-success", { count: snapshot.size });
+          applyEventSnapshot({
+            docs: [...firstPageEventDocuments.values()],
+          }, request);
+        } catch (error) {
+          if (request !== loadRequestSequence) return;
+          console.error("[Student Events] Could not load the next event page:", error);
+          showToast("More events could not be loaded. Please try again.");
+        } finally {
+          eventPageLoading = false;
+          if (request === loadRequestSequence) renderAllEvents();
+        }
+      }
+
       async function startEventsLoad(user = auth?.currentUser) {
         const request = ++loadRequestSequence;
         eventsUnsubscribe?.();
         eventsUnsubscribe = null;
         clearRegistrationListeners();
+        eventCursor = null;
+        eventHasMore = false;
+        eventPageLoading = false;
+        firstPageEventDocuments.clear();
+        eventPageDocuments.clear();
         eventsLoading = true;
         eventLoadError = "";
         rawEventsMap.clear();
@@ -4801,12 +4870,23 @@
               const eventsQuery = query(
                 collection(db, "events"),
                 where("status", "in", publicStatuses),
+                orderBy(documentId()),
+                limit(EVENT_PAGE_SIZE),
               );
               eventsUnsubscribe = onSnapshot(
                 eventsQuery,
                 (snapshot) => {
                   logLoadStep("events-query-success", { count: snapshot.size });
-                  applyEventSnapshot(snapshot, request);
+                  firstPageEventDocuments = new Map(
+                    snapshot.docs.map((eventDoc) => [eventDoc.id, eventDoc]),
+                  );
+                  if (!eventPageDocuments.size) {
+                    eventCursor = snapshot.docs.at(-1) || null;
+                    eventHasMore = snapshot.size === EVENT_PAGE_SIZE;
+                  }
+                  applyEventSnapshot({
+                    docs: [...firstPageEventDocuments.values()],
+                  }, request);
                 },
                 (error) => {
                   logLoadStep("events-query-failure", {
@@ -4842,94 +4922,155 @@
       }
 
       function clearRegistrationListeners() {
-        registrationUnsubscribes.forEach((unsubscribe) => unsubscribe());
-        registrationUnsubscribes.clear();
+        registrationUnsubscribe?.();
+        rtdbRegistrationUnsubscribe?.();
+        registrationUnsubscribe = null;
+        rtdbRegistrationUnsubscribe = null;
+        registrationQueryUid = "";
+        registrationSnapshotReady = false;
+        registrationQueryError = false;
+        registrationRecords.clear();
+        rtdbRegistrationRecords.clear();
         registrationStates.clear();
         registeredEventIds.clear();
       }
 
-      function startRegistrationListeners(retryEventId = "") {
-        const eventIds = retryEventId
-          ? [retryEventId]
-          : [...rawEventsMap.keys()];
-        const activeEventIds = new Set(rawEventsMap.keys());
-
-        registrationUnsubscribes.forEach((unsubscribe, eventId) => {
-          if (!activeEventIds.has(eventId)) {
-            unsubscribe();
-            registrationUnsubscribes.delete(eventId);
-            registrationStates.delete(eventId);
-            registeredEventIds.delete(eventId);
+      function syncRegistrationStates() {
+        registrationStates.clear();
+        registeredEventIds.clear();
+        const mergedRegistrations = mergeUserRegistrationMaps(
+          registrationRecords,
+          rtdbRegistrationRecords,
+        );
+        rawEventsMap.forEach((_, eventId) => {
+          if (!registrationSnapshotReady) {
+            registrationStates.set(eventId, "loading");
+            return;
           }
-        });
-
-        eventIds.forEach((eventId) => {
-          if (!currentUid || !db || !rawEventsMap.has(eventId)) {
+          const registration = mergedRegistrations.get(eventId);
+          if (registrationQueryError && !registration) {
             registrationStates.set(eventId, "error");
             return;
           }
-          if (registrationUnsubscribes.has(eventId) && retryEventId !== eventId) return;
-          registrationUnsubscribes.get(eventId)?.();
-          registrationStates.set(eventId, "loading");
-          const listenerUid = currentUid;
-          const registrationRef = doc(db, "events", eventId, "registrations", listenerUid);
-          logLoadStep("registration-listener-start", {
-            uid: listenerUid,
+          const isRegistered = registration && isRegistrationActive(registration);
+          registrationStates.set(
             eventId,
-            path: `events/${eventId}/registrations/${listenerUid}`,
+            isRegistered ? "registered" : "not-registered",
+          );
+          if (isRegistered) registeredEventIds.add(eventId);
+        });
+      }
+
+      function startRegistrationListeners(forceRefresh = false) {
+        if (!currentUid || (!db && !rtdb)) {
+          rawEventsMap.forEach((_, eventId) => {
+            registrationStates.set(eventId, "error");
+          });
+          return;
+        }
+        if (
+          registrationQueryUid === currentUid &&
+          !forceRefresh &&
+          (registrationUnsubscribe || rtdbRegistrationUnsubscribe)
+        ) {
+          syncRegistrationStates();
+          return;
+        }
+
+        registrationUnsubscribe?.();
+        rtdbRegistrationUnsubscribe?.();
+        registrationUnsubscribe = null;
+        rtdbRegistrationUnsubscribe = null;
+        registrationQueryUid = currentUid;
+        registrationSnapshotReady = false;
+        registrationQueryError = false;
+        registrationRecords.clear();
+        rtdbRegistrationRecords.clear();
+        syncRegistrationStates();
+        const listenerUid = currentUid;
+        if (isRtdbConfigured && rtdb) {
+          rtdbRegistrationUnsubscribe = onValue(
+            ref(rtdb, `userRegistrations/${listenerUid}`),
+            (snapshot) => {
+              if (currentUid !== listenerUid) return;
+              rtdbRegistrationRecords.clear();
+              Object.entries(snapshot.val() || {}).forEach(([eventId, registration]) => {
+                rtdbRegistrationRecords.set(eventId, registration);
+              });
+              registrationQueryError = false;
+              registrationSnapshotReady = true;
+              syncRegistrationStates();
+              syncAttendanceListeners();
+              renderAll();
+            },
+            (error) => {
+              if (currentUid !== listenerUid) return;
+              registrationQueryError = true;
+              registrationSnapshotReady = true;
+              console.warn("[Student Events] RTDB registrations are unavailable:", error);
+              syncRegistrationStates();
+              renderAll();
+            },
+          );
+        }
+        if (db && isFirebaseConfigured) {
+          logLoadStep("registration-query-start", {
+            uid: listenerUid,
+            collectionGroup: "registrations",
           });
           try {
-            const unsubscribe = onSnapshot(
-              registrationRef,
+            registrationUnsubscribe = onSnapshot(
+              query(
+                collectionGroup(db, "registrations"),
+                where("uid", "==", listenerUid),
+              ),
               (snapshot) => {
-                try {
-                  if (currentUid !== listenerUid || !rawEventsMap.has(eventId)) return;
-                  const registration = snapshot.exists() ? snapshot.data() : null;
-                  const isRegistered = registration?.status === "registered";
-                  registrationStates.set(
-                    eventId,
-                    isRegistered ? "registered" : "not-registered",
-                  );
-                  if (isRegistered) registeredEventIds.add(eventId);
-                  else registeredEventIds.delete(eventId);
-                  logLoadStep("registration-listener-success", {
-                    uid: listenerUid,
-                    eventId,
-                    exists: snapshot.exists(),
-                    status: registration?.status || "",
-                    snapshot: registration,
-                  });
-                  syncAttendanceListeners();
-                  renderAll();
-                } catch (error) {
-                  registrationStates.set(eventId, "error");
-                  console.error("[Student Events] Could not process registration snapshot:", error);
-                  renderAll();
-                } finally {
-                  logLoadStep("registration-listener-settled", { eventId });
-                }
+                if (currentUid !== listenerUid) return;
+                registrationRecords.clear();
+                snapshot.docs.forEach((registrationDoc) => {
+                  const eventId = registrationDoc.ref.parent.parent?.id;
+                  if (!eventId) return;
+                  registrationRecords.set(eventId, registrationDoc.data());
+                });
+                registrationSnapshotReady = true;
+                registrationQueryError = false;
+                syncRegistrationStates();
+                logLoadStep("registration-query-success", {
+                  uid: listenerUid,
+                  count: snapshot.size,
+                });
+                syncAttendanceListeners();
+                renderAll();
               },
               (error) => {
-                if (currentUid !== listenerUid || !rawEventsMap.has(eventId)) return;
-                registrationStates.set(eventId, "error");
-                logLoadStep("registration-listener-failure", {
-                  eventId,
+                if (currentUid !== listenerUid) return;
+                registrationQueryError = true;
+                registrationSnapshotReady = true;
+                syncRegistrationStates();
+                logLoadStep("registration-query-failure", {
                   code: error?.code || "",
                 });
-                console.error("[Student Events] Registration status is unavailable:", error);
+                console.warn("[Student Events] Firestore registrations are unavailable:", error);
                 renderAll();
               },
             );
-            registrationUnsubscribes.set(eventId, unsubscribe);
           } catch (error) {
-            registrationStates.set(eventId, "error");
-            logLoadStep("registration-listener-failure", {
-              eventId,
+            registrationQueryError = true;
+            registrationSnapshotReady = true;
+            syncRegistrationStates();
+            logLoadStep("registration-query-failure", {
               code: error?.code || "",
             });
-            console.error("[Student Events] Could not attach registration listener:", error);
+            console.warn("[Student Events] Could not attach registration listener:", error);
+            renderAll();
           }
-        });
+        }
+        if (!db && !rtdb) {
+          registrationSnapshotReady = true;
+          registrationQueryError = true;
+          syncRegistrationStates();
+          renderAll();
+        }
       }
 
       /* ---------------------------------------------------------
@@ -4959,21 +5100,36 @@
         // Attach listeners for newly live registered events
         liveRegisteredIds.forEach((evId) => {
           if (!attendanceListeners.has(evId)) {
-            const attRef = ref(rtdb, `attendance/${evId}/${currentUid}`);
-            const listener = (snap) => {
-              if (snap.exists()) {
-                attendanceMap.set(evId, snap.val());
-                // Close QR code if open when checked in
-                if (openQrEventId === evId) {
-                  openQrEventId = null;
+            const refs = [
+              ref(rtdb, `attendance/${evId}/${currentUid}`),
+              ref(rtdb, `events/${evId}/attendance/${currentUid}`),
+              ref(rtdb, `eventAttendance/${evId}/${currentUid}`),
+            ];
+            const values = [null, null, null];
+            const unsubscribers = refs.map((attRef, index) => {
+              const listener = (snap) => {
+                values[index] = snap.val();
+                const attendance = values
+                  .filter(Boolean)
+                  .reduce((latest, candidate) =>
+                    !latest || Number(candidate.scannedAt) >= Number(latest.scannedAt)
+                      ? candidate
+                      : latest,
+                  null);
+                if (attendance) {
+                  attendanceMap.set(evId, attendance);
+                  if (openQrEventId === evId) openQrEventId = null;
+                } else {
+                  attendanceMap.delete(evId);
                 }
                 renderHappeningNow();
-              } else {
-                attendanceMap.delete(evId);
-              }
-            };
-            onValue(attRef, listener);
-            attendanceListeners.set(evId, () => off(attRef, "value", listener));
+              };
+              onValue(attRef, listener);
+              return () => off(attRef, "value", listener);
+            });
+            attendanceListeners.set(evId, () => {
+              unsubscribers.forEach((unsubscribe) => unsubscribe());
+            });
           }
         });
       }
@@ -5234,11 +5390,17 @@
         countEl.textContent = matching.length ? countText : "";
 
         if (showMoreWrap && showMoreBtn) {
-          if (matching.length > filterState.showCount) {
+          if (matching.length > filterState.showCount || eventHasMore) {
             showMoreWrap.hidden = false;
-            showMoreBtn.onclick = () => {
+            showMoreBtn.disabled = eventPageLoading;
+            showMoreBtn.textContent = eventPageLoading ? "Loading..." : "Show more";
+            showMoreBtn.onclick = async () => {
               filterState.showCount += 20;
-              renderAllEvents();
+              if (filterState.showCount >= matching.length && eventHasMore) {
+                await loadNextEventPage();
+              } else {
+                renderAllEvents();
+              }
             };
           } else {
             showMoreWrap.hidden = true;
@@ -5346,12 +5508,11 @@
                   <span class="year">${y}</span>
                 </div>
                 <div class="event-body">
+                  <h3 class="event-title">${escapeHTML(ev.name)}</h3>
                   <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap; margin-bottom:4px;">
                     <span class="filter-chip" style="font-size:11px; padding:2px 7px;">${escapeHTML(ev.category)}</span>
                     <span class="filter-chip" style="max-width:100%; overflow-wrap:anywhere; font-size:11px; padding:2px 7px;">${escapeHTML(ev.source === "Organizational" && ev.organizationName ? `Organized by ${ev.organizationName}` : ev.source)}</span>
-                    ${statusBadges}
                   </div>
-                  <h3 class="event-title">${escapeHTML(ev.name)}</h3>
                   <div class="event-meta">
                     <span>
                       <svg width="14" height="14" viewBox="0 0 20 20" fill="currentColor" style="vertical-align:-2px; margin-right:4px;">
@@ -5367,6 +5528,7 @@
                     </span>
                   </div>
                   ${slotsHtml}
+                  ${statusBadges ? `<div class="event-status-badges" style="display:flex; align-items:center; gap:6px; flex-wrap:wrap; margin-top:6px;">${statusBadges}</div>` : ""}
                 </div>
                 <div style="display:flex; flex-direction:column; align-items:flex-end; justify-content:center; gap:8px; flex-shrink:0;">
                   ${actionBtn}
@@ -5401,6 +5563,10 @@
       /* ---------------------------------------------------------
          USER ACTIONS: REGISTER & CANCEL
       --------------------------------------------------------- */
+      function registrationFailure(message) {
+        return { success: false, message };
+      }
+
       async function handleRegister(eventId) {
         const ev = rawEventsMap.get(eventId);
         const evName = ev ? ev.name : "event";
@@ -5408,22 +5574,33 @@
         try {
           systemAccessSettings = await readSystemAccessSettings(db);
         } catch (error) {
+          if (isResourceExhausted(error)) {
+          systemAccessSettings = getCachedSystemAccessSettings();
+          const notice = "Firestore is busy. Using your last available registration settings.";
+          console.warn("[Student Events] Using cached registration settings after quota exhaustion.");
+          showToast(notice);
+          announce(notice);
+          } else {
           console.error("[Student Events] Could not verify registration availability:", {
             code: error?.code || "unknown",
             message: error?.message || String(error),
           });
-          showToast("Could not verify event registration availability. Check your connection and try again.");
+          const message = "Could not verify event registration availability. Check your connection and try again.";
+          showToast(message);
           announce("Could not verify event registration availability.");
-          return false;
+          return registrationFailure(message);
+          }
         }
         if (!systemAccessSettings.eventRegistrationEnabled) {
           showToast(EVENT_REGISTRATION_CLOSED_MESSAGE);
           announce(EVENT_REGISTRATION_CLOSED_MESSAGE);
           renderAll();
-          return false;
+          return registrationFailure(EVENT_REGISTRATION_CLOSED_MESSAGE);
         }
 
-        if (registrationPendingIds.has(eventId)) return false;
+        if (registrationPendingIds.has(eventId)) {
+          return registrationFailure("Registration is already in progress.");
+        }
         const eventStatus = String(ev?.status || "").toLowerCase();
         const eventIsClosed = Boolean(
           ev &&
@@ -5436,13 +5613,13 @@
           showToast("Registration Closed");
           announce("Registration Closed");
           renderAll();
-          return false;
+          return registrationFailure("Registration Closed");
         }
         if (ev && !hasOpenSlots(ev)) {
           showToast("Fully Booked");
           announce("Fully Booked");
           renderAll();
-          return false;
+          return registrationFailure("Fully Booked");
         }
         if (registeredEventIds.has(eventId) || getRegistrationState(eventId) === "registered") {
           registeredEventIds.add(eventId);
@@ -5450,7 +5627,7 @@
           showToast("You are already registered for this event.");
           announce("You are already registered for this event.");
           renderAll();
-          return false;
+          return registrationFailure("You are already registered for this event.");
         }
         if (
           ev &&
@@ -5461,12 +5638,13 @@
           showToast(message);
           announce(message);
           renderAll();
-          return false;
+          return registrationFailure(message);
         }
-        if (!db || !isFirebaseConfigured) {
-          showToast("Registration is unavailable. Please try again later.");
+        if (!rtdb || !isRtdbConfigured) {
+          const message = "Registration is unavailable. Please try again later.";
+          showToast(message);
           announce("Registration is unavailable.");
-          return false;
+          return registrationFailure(message);
         }
 
         registrationPendingIds.add(eventId);
@@ -5480,76 +5658,29 @@
           if (!uid || uid !== currentUid) {
             throw new Error("Your session is not ready. Please sign in again.");
           }
-          const eventRef = doc(db, "events", eventId);
-          const registrationRef = doc(db, "events", eventId, "registrations", uid);
-          const accessSettingsRef = doc(db, "systemSettings", "default");
-          const registeredCount = await runTransaction(db, async (transaction) => {
-            const [eventSnapshot, registrationSnapshot, accessSettingsSnapshot] = await Promise.all([
-              transaction.get(eventRef),
-              transaction.get(registrationRef),
-              transaction.get(accessSettingsRef),
-            ]);
-            const accessData = accessSettingsSnapshot.exists()
-              ? accessSettingsSnapshot.data()
-              : {};
-            const registrationEnabled = typeof accessData.eventRegistrationEnabled === "boolean"
-              ? accessData.eventRegistrationEnabled
-              : accessData.registrationEnabled !== false;
-            if (!registrationEnabled) {
-              throw new Error(EVENT_REGISTRATION_CLOSED_MESSAGE);
-            }
-            if (!eventSnapshot.exists()) {
-              throw new Error("This event is no longer available.");
-            }
-            const eventData = eventSnapshot.data();
-            if (
-              registrationSnapshot.exists() &&
-              registrationSnapshot.data()?.status === "registered"
-            ) {
-              const error = new Error("You are already registered for this event.");
-              error.code = "already-exists";
-              throw error;
-            }
-            const status = String(eventData.status || eventData.publicationStatus || "")
-              .trim()
-              .toLowerCase();
-            if (
-              status !== "published" &&
-              eventData.published !== true &&
-              eventData.isPublished !== true
-            ) {
-              throw new Error("Registration is closed because this event is not published.");
-            }
-            const capacity = Number(eventData.capacity ?? eventData.maxCapacity);
-            const count = Math.max(0, Number(eventData.registeredCount) || 0);
-            if (capacity > 0 && count >= capacity) {
-              throw new Error("This event is full.");
-            }
-            const nextCount = count + 1;
-            const now = Date.now();
-            transaction.update(eventRef, {
-              registeredCount: nextCount,
-              updatedAt: now,
-            });
-            if (registrationSnapshot.exists()) {
-              transaction.update(registrationRef, {
-                uid,
-                status: "registered",
-                registeredAt: now,
-                cancelledAt: null,
-                at: now,
-              });
-            } else {
-              transaction.set(registrationRef, {
-                uid,
-                status: "registered",
-                registeredAt: now,
-                at: now,
-              });
-            }
-            return nextCount;
+          const now = Date.now();
+          await writeEventRegistration({
+            rtdb,
+            db,
+            eventId,
+            uid,
+            status: "registered",
+            registeredAt: now,
+            cancelledAt: null,
+            at: now,
+            student: {
+              name: studentProfile.fullName || studentProfile.name,
+              studentNo: studentProfile.studentNo || studentProfile.studentNumber,
+              organization: studentProfile.organization || studentProfile.department,
+            },
           });
-          if (ev) ev.registeredCount = registeredCount;
+          if (ev) {
+              const nextRegisteredCount =
+                Math.max(0, Number(ev.registeredCount) || 0) + 1;
+              ev.registeredCount = Number.isFinite(ev.capacity) && ev.capacity > 0
+                ? Math.min(ev.capacity, nextRegisteredCount)
+                : nextRegisteredCount;
+          }
           registeredEventIds.add(eventId);
           registrationStates.set(eventId, "registered");
           const responseMessage = `Registered for ${evName}.`;
@@ -5591,25 +5722,32 @@
             message.includes("event has ended") ||
             message.includes("event is cancelled") ||
             message.includes("event is canceled");
-          let userMessage = "Could Not Register for this Event. Please try again.";
-          if (code.includes("permission-denied")) {
-            userMessage = "Couldn't register. Please contact the organizer.";
+          let userMessage = error?.message || "Could Not Register for this Event. Please try again.";
+            if (alreadyRegistered) {
+              registeredEventIds.add(eventId);
+              registrationStates.set(eventId, "registered");
+              userMessage = "You are already registered for this event.";
+            } else if (
+              code.includes("resource-exhausted") ||
+              code === "429" ||
+              message.includes("too many requests") ||
+              /\b429\b/.test(message)
+            ) {
+              userMessage = "Registration is busy right now. Please wait a moment and try again.";
+            } else if (code.includes("permission-denied")) {
+              userMessage = "Registration was denied by Realtime Database security rules. Please contact an administrator.";
           } else if (eventIsClosed || message.includes("registration is closed") || message.includes("deadline")) {
             userMessage = "Registration Closed";
           } else if (eventIsFull) {
             userMessage = "Fully Booked";
             if (ev && ev.capacity !== null) ev.registeredCount = ev.capacity;
-          } else if (alreadyRegistered) {
-            registeredEventIds.add(eventId);
-            registrationStates.set(eventId, "registered");
-            userMessage = "You are already registered for this event.";
           } else if (eventHasEndedOrCancelled) {
             userMessage = "This event is no longer open for registration.";
           }
           if (DEBUG) console.error("[Student Events] Registration failed:", error);
           showToast(userMessage);
           announce(userMessage);
-          return false;
+          return registrationFailure(userMessage);
         } finally {
           registrationPendingIds.delete(eventId);
           syncAttendanceListeners();
@@ -5620,7 +5758,7 @@
       async function handleCancelRegistration(eventId) {
         const ev = rawEventsMap.get(eventId);
         if (cancellationPendingIds.has(eventId)) return false;
-        if (!db || !isFirebaseConfigured || !auth?.currentUser?.uid) {
+        if (!rtdb || !isRtdbConfigured || !auth?.currentUser?.uid) {
           const message = "Couldn't cancel. Please contact the organizer.";
           showCancellationError(message, eventId);
           announce(message);
@@ -5631,79 +5769,53 @@
           return false;
         }
         if (getRegistrationState(eventId) !== "registered") {
-          startRegistrationListeners(eventId);
+          startRegistrationListeners(true);
           renderAll();
           return false;
         }
         if (!window.confirm(`Cancel your registration for ${ev.name}?`)) return false;
 
         const uid = String(auth.currentUser.uid);
-        const eventPath = `events/${eventId}`;
-        const registrationPath = `${eventPath}/registrations/${uid}`;
         cancellationPendingIds.add(eventId);
         if (openQrEventId === eventId) openQrEventId = null;
         renderAll();
 
         try {
-          const eventRef = doc(db, "events", eventId);
-          const registrationRef = doc(db, "events", eventId, "registrations", uid);
-          const result = await runTransaction(db, async (transaction) => {
-            const [eventSnapshot, registrationSnapshot] = await Promise.all([
-              transaction.get(eventRef),
-              transaction.get(registrationRef),
-            ]);
-            if (!registrationSnapshot.exists()) {
-              return {
-                cancelled: false,
-                registeredCount: eventSnapshot.exists()
-                  ? Math.max(0, Number(eventSnapshot.data().registeredCount) || 0)
-                  : 0,
-              };
-            }
-            const registration = registrationSnapshot.data();
-            if (registration?.status !== "registered") {
-              return {
-                cancelled: false,
-                registeredCount: eventSnapshot.exists()
-                  ? Math.max(0, Number(eventSnapshot.data().registeredCount) || 0)
-                  : 0,
-              };
-            }
-            if (!eventSnapshot.exists()) {
-              throw new Error("The event could not be found.");
-            }
-            const eventData = eventSnapshot.data();
-            const eventDates = getEventDateRange(eventData);
-            const startAt = eventDates?.start?.getTime();
-            if (Number.isFinite(startAt) && getNow() >= startAt) {
-              const error = new Error("Registration can't be cancelled after the event starts.");
-              error.code = "cancellation-closed";
-              throw error;
-            }
-            const now = Date.now();
-            const registeredCount = Math.max(0, Number(eventData.registeredCount) || 0);
-            const nextCount = Math.max(0, registeredCount - 1);
-            transaction.update(registrationRef, {
-              uid,
-              status: "cancelled",
-              cancelledAt: now,
-              at: now,
-            });
-            transaction.update(eventRef, {
-              registeredCount: nextCount,
-              updatedAt: now,
-            });
-            return { cancelled: true, registeredCount: nextCount };
+          const currentRegistration = mergeUserRegistrationMaps(
+            registrationRecords,
+            rtdbRegistrationRecords,
+          ).get(eventId);
+          const now = Date.now();
+          await writeEventRegistration({
+            rtdb,
+            db,
+            eventId,
+            uid,
+            status: "cancelled",
+            registeredAt: Number(currentRegistration?.registeredAt) || now,
+            cancelledAt: now,
+            at: now,
+            student: {
+              name: studentProfile.fullName || studentProfile.name,
+              studentNo: studentProfile.studentNo || studentProfile.studentNumber,
+              organization: studentProfile.organization || studentProfile.department,
+            },
           });
-          if (!result.cancelled) {
-            registeredEventIds.delete(eventId);
-            registrationStates.set(eventId, "not-registered");
-            startRegistrationListeners(eventId);
-            return true;
-          }
-          ev.registeredCount = result.registeredCount;
+          ev.registeredCount = Math.max(0, (Number(ev.registeredCount) || 0) - 1);
           registeredEventIds.delete(eventId);
           registrationStates.set(eventId, "not-registered");
+          rtdbRegistrationRecords.set(eventId, {
+            ...currentRegistration,
+            uid,
+            status: "cancelled",
+            registeredAt: Number(currentRegistration?.registeredAt) || now,
+            cancelledAt: now,
+            at: now,
+            name: studentProfile.fullName || studentProfile.name,
+            studentNo: studentProfile.studentNo || studentProfile.studentNumber,
+            organization: studentProfile.organization || studentProfile.department,
+          });
+          syncRegistrationStates();
           syncAttendanceListeners();
           const message = "Registration cancelled";
           announce(message);
@@ -5718,14 +5830,7 @@
             : code === "permission-denied"
               ? "Couldn't cancel. Please contact the organizer."
               : "Could not cancel your registration. Please try again.";
-          if (DEBUG) {
-            console.error("[Student Events] Cancellation transaction failed:", {
-              code,
-              eventPath,
-              registrationPath,
-              error,
-            });
-          }
+          if (DEBUG) console.error("[Student Events] Cancellation failed:", error);
           showCancellationError(message, eventId);
           announce(message);
           return false;
@@ -5874,7 +5979,7 @@
             e.preventDefault();
             const eventId = retryRegistrationBtn.dataset.eventId;
             if (eventId) {
-              startRegistrationListeners(eventId);
+              startRegistrationListeners(true);
               renderAll();
             }
             return;
@@ -5944,8 +6049,10 @@
         window.clearTimeout(eventLoadTimer);
         authUnsubscribe?.();
         eventsUnsubscribe?.();
-        registrationUnsubscribes.forEach((unsubscribe) => unsubscribe());
-        registrationUnsubscribes.clear();
+        registrationUnsubscribe?.();
+        rtdbRegistrationUnsubscribe?.();
+        registrationUnsubscribe = null;
+        rtdbRegistrationUnsubscribe = null;
         serverTimeUnsubscribe?.();
         for (const unsub of attendanceListeners.values()) {
           unsub();
