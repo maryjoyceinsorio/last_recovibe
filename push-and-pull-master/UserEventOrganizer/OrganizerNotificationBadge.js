@@ -189,6 +189,23 @@
     };
   }
 
+  function updateRegistrationDocuments(eventId) {
+    const merged = new Map();
+    [...(firestoreRegistrations.get(eventId) || []), ...(rtdbRegistrations.get(eventId) || [])]
+      .forEach((registration, index) => {
+        const key = String(
+          registration.uid ||
+          registration.userId ||
+          registration.studentId ||
+          registration.id ||
+          `record-${index}`,
+        );
+        merged.set(key, registration);
+      });
+    registrations.set(eventId, [...merged.values()]);
+    publish();
+  }
+
   function registrationItems(event) {
     const eventId = event.id;
     const documents = registrations.get(eventId);
@@ -206,22 +223,6 @@
         ).trim();
       }
 
-      function updateRegistrationDocuments(eventId) {
-        const merged = new Map();
-        [...(firestoreRegistrations.get(eventId) || []), ...(rtdbRegistrations.get(eventId) || [])]
-          .forEach((registration, index) => {
-            const key = String(
-              registration.uid ||
-              registration.userId ||
-              registration.studentId ||
-              registration.id ||
-              `record-${index}`,
-            );
-            merged.set(key, registration);
-          });
-        registrations.set(eventId, [...merged.values()]);
-        publish();
-      }
       groups.set(day, group);
     });
     return [...groups.entries()].map(([day, group]) => {

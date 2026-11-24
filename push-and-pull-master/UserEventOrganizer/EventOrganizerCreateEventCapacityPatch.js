@@ -36,6 +36,12 @@
   }
 
   function capacityFor(venue) {
+    const multiVenue = window.createEventMultiVenue;
+    const selectedVenues = multiVenue?.getSelectedVenues?.() || [];
+    if (selectedVenues.length > 1 &&
+        venue === selectedVenues.join(" + ")) {
+      return multiVenue.getCapacityLimit();
+    }
     const override = capacityOverrides.get(venue);
     if (override?.dynamicRooms) return roomCount() * 60;
     if (override) return override.capacity;
@@ -154,6 +160,8 @@
 
   document.addEventListener("input", handleFormChange);
   document.addEventListener("change", handleFormChange);
+  window.addEventListener("create-event-draft-hydrated", scheduleRefresh);
+  window.addEventListener("create-event-multivenue-changed", scheduleRefresh);
   observer = new MutationObserver(() => {
     if (isPatching || isDisposed) return;
     scheduleRefresh();
@@ -168,5 +176,7 @@
     observer?.disconnect();
     document.removeEventListener("input", handleFormChange);
     document.removeEventListener("change", handleFormChange);
+    window.removeEventListener("create-event-draft-hydrated", scheduleRefresh);
+    window.removeEventListener("create-event-multivenue-changed", scheduleRefresh);
   }, { once: true });
 })();

@@ -84,7 +84,10 @@
   }
 
   function isInsidePup(form) {
-    return (form.querySelector("#venue")?.value || "").trim().toLowerCase() === "others | inside pup";
+    return (form.querySelector("#venue")?.value || "")
+      .trim()
+      .toLowerCase()
+      .includes("others | inside pup");
   }
 
   function createVenueControl(tagName, className, text) {
@@ -591,7 +594,10 @@
 
   document.addEventListener("change", (event) => {
     if (!(event.target instanceof Element) || !event.target.matches("#venue")) return;
-    updateVenueControls(root.querySelector("#createEventMainForm"), false);
+    updateVenueControls(
+      root.querySelector("#createEventMainForm"),
+      window.__createEventRestoringDraftVenues === true,
+    );
   });
 
   const syncVenuePreview = (event) => {
@@ -702,5 +708,12 @@
     if (form && form === baselineForm && !userEditedSinceBaseline) {
       captureBaseline(form);
     }
+  });
+
+  window.addEventListener("create-event-draft-hydrated", () => {
+    const form = root.querySelector("#createEventMainForm");
+    if (!form || userEditedSinceBaseline) return;
+    updateVenueControls(form, true);
+    captureBaseline(form);
   });
 })();

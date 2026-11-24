@@ -8,7 +8,19 @@ let rescheduleOriginalDate = "";
 let rescheduleValidationPending = false;
 let isApplyingRescheduleDateConstraint = false;
 let isHandlingRescheduleMutations = false;
+let draftForHydration = null;
+let draftReadPromise = null;
+let draftPageReady = false;
+let draftHydrationApplied = false;
+let draftHydrationScheduled = false;
+let draftHydrationFollowupPending = false;
+let draftHydrationFollowupTimer = 0;
+let isApplyingDraftHydration = false;
+let draftModeActivationAttempted = false;
+const draftUserEditedFields = new Set();
 const favoriteClickStart = new WeakMap();
+const targetSectionPattern = /^\d-\d$/;
+const targetSectionPartialPattern = /^(?:\d(?:-\d?)?)?$/;
 
 function getFavoriteValue(button) {
   const pressed = button.getAttribute("aria-pressed");
@@ -78,6 +90,215 @@ function getForm() {
   return document.getElementById("createEventMainForm");
 }
 
+function markDraftUserEdit(event) {
+  if (!draftPageReady ||
+      draftHydrationApplied && !draftHydrationFollowupPending ||
+      isApplyingDraftHydration ||
+      !event.isTrusted || !(event.target instanceof Element)) return;
+  const form = getForm();
+  if (!form?.contains(event.target)) return;
+
+  const target = event.target;
+  const key = target.getAttribute("name") || target.id;
+  if (key) draftUserEditedFields.add(key);
+  if (target.closest("#btnAddAsFavorite")) draftUserEditedFields.add("favorite");
+  if (target.matches(".ce-cat-checkbox")) draftUserEditedFields.add("categories");
+  if (target.matches(".ce-target-year, #targetAllYears")) {
+    draftUserEditedFields.add("targetYearLevels");
+  }
+  if (target.matches(".ce-target-organization, .ce-target-department")) {
+    draftUserEditedFields.add("targetOrganizations");
+    draftUserEditedFields.add("targetDepartments");
+  }
+  if (target.closest("#targetSectionsList")) draftUserEditedFields.add("targetSections");
+  if (target.id === "targetSectionsMode") draftUserEditedFields.add("targetSections");
+  if (target.closest("#facultyChipsList")) draftUserEditedFields.add("participatingFaculty");
+  if (target.closest("#facultyInChargeChip")) draftUserEditedFields.add("facultyInCharge");
+  if (target.closest("#partnerOrgList")) draftUserEditedFields.add("partnerOrganizations");
+  if (target.closest("#externalGuestsList")) draftUserEditedFields.add("externalGuests");
+  if (target.id === "venue" || target.closest(
+    "#wrap-customVenueName, #wrap-customVenueAddress, #wrap-outsideVenueLocation, #insidePupCampus, #insidePupBuilding, #insidePupRoomInput, #insidePupRoomNumbersState",
+  )) {
+    draftUserEditedFields.add("venueDetails");
+  }
+}
+
+document.addEventListener("input", markDraftUserEdit, true);
+document.addEventListener("change", markDraftUserEdit, true);
+document.addEventListener("click", markDraftUserEdit, true);
+
+function targetSectionsEnabled() {
+  const audience = document.getElementById("targetAudience")?.value || "";
+  const mode = document.getElementById("targetSectionsMode")?.value || "all";
+  return audience !== "Open to All" && mode === "others";
+}
+
+function setTargetSectionsError(message) {
+  const input = document.getElementById("targetSections");
+  const error = document.getElementById("error-targetSections");
+  if (error) {
+    error.textContent = message;
+    error.hidden = !message;
+  }
+  if (input) input.setAttribute("aria-invalid", String(Boolean(message)));
+}
+
+function renderDraftTargetSectionTags(sections) {
+  const list = document.getElementById("targetSectionsList");
+  if (!list) return;
+  list.replaceChildren(...sections.map((section, index) => {
+    const chip = document.createElement("div");
+    chip.className = "ce-chip";
+    chip.dataset.sectionIndex = String(index);
+    const label = document.createElement("span");
+    label.className = "ce-chip-label";
+    label.textContent = section;
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "ce-chip-remove";
+    remove.dataset.removeSectionIdx = String(index);
+    remove.setAttribute("aria-label", `Remove section ${section}`);
+    remove.textContent = "✕";
+    chip.append(label, remove);
+    return chip;
+  }));
+}
+
+function collectTargetSectionChips() {
+  return Array.from(document.querySelectorAll("#targetSectionsList .ce-chip-label"))
+    .map((chip) => chip.textContent.trim())
+    .filter(Boolean);
+}
+
+function validateTargetSections(allowPartialInput = false) {
+  if (!targetSectionsEnabled()) {
+    setTargetSectionsError("");
+    return true;
+  }
+
+  const chips = Array.from(document.querySelectorAll("#targetSectionsList .ce-chip-label"))
+    .map((chip) => chip.textContent.trim())
+    .filter(Boolean);
+  const input = document.getElementById("targetSections");
+  const pending = (input?.value || "")
+    .split(/[,\n]/)
+    .map((section) => section.trim())
+    .filter(Boolean);
+  const invalidChip = chips.find((section) => !targetSectionPattern.test(section));
+  const invalidPending = pending.find((section, index) => {
+    const isPartialEntry = allowPartialInput &&
+      pending.length === 1 &&
+      !/[,\n]/.test(input?.value || "") &&
+      index === 0;
+    return isPartialEntry
+      ? !targetSectionPartialPattern.test(section)
+      : !targetSectionPattern.test(section);
+  });
+  const invalid = invalidChip || invalidPending;
+  setTargetSectionsError(
+    invalid
+      ? `"${invalid}" is not a valid section. Use one digit for each part, such as 1-1.`
+      : "",
+  );
+  return !invalid;
+}
+
+document.addEventListener("keydown", (event) => {
+  const input = event.target;
+  if (!(input instanceof HTMLInputElement) || input.id !== "targetSections") return;
+
+  if (event.key === "Enter" || event.key === ",") {
+    if (input.value.trim() && !validateTargetSections()) {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+    }
+    return;
+  }
+
+  if (event.key.length !== 1 || event.ctrlKey || event.metaKey || event.altKey) return;
+  const start = input.selectionStart ?? input.value.length;
+  const end = input.selectionEnd ?? start;
+  const proposed = `${input.value.slice(0, start)}${event.key}${input.value.slice(end)}`;
+  if (!/^[0-9-]$/.test(event.key) || !targetSectionPartialPattern.test(proposed)) {
+    event.preventDefault();
+    setTargetSectionsError(
+      "Use one digit for each part of the section, separated by a hyphen (for example, 1-1).",
+    );
+    return;
+  }
+  validateTargetSections(true);
+}, true);
+
+document.addEventListener("input", (event) => {
+  const input = event.target;
+  if (!(input instanceof HTMLInputElement) || input.id !== "targetSections") return;
+  if (/[,\n]/.test(input.value) && !validateTargetSections()) {
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    return;
+  }
+  validateTargetSections(true);
+}, true);
+
+document.addEventListener("blur", (event) => {
+  const input = event.target;
+  if (!(input instanceof HTMLInputElement) || input.id !== "targetSections") return;
+  if (input.value.trim() && !validateTargetSections()) {
+    event.stopImmediatePropagation();
+  }
+}, true);
+
+document.addEventListener("change", (event) => {
+  if (!(event.target instanceof HTMLSelectElement) ||
+      !["targetAudience", "targetSectionsMode"].includes(event.target.id)) return;
+  window.queueMicrotask(() => validateTargetSections(true));
+}, true);
+
+document.addEventListener("click", (event) => {
+  if (!(event.target instanceof Element)) return;
+  const remove = event.target.closest("#targetSectionsList [data-remove-section-idx]");
+  if (!remove) return;
+  event.preventDefault();
+  event.stopImmediatePropagation();
+
+  const chip = remove.closest(".ce-chip");
+  const remaining = Array.from(document.querySelectorAll("#targetSectionsList .ce-chip"))
+    .filter((item) => item !== chip)
+    .map((item) => item.querySelector(".ce-chip-label")?.textContent.trim() || "")
+    .filter(Boolean);
+  const mode = document.getElementById("targetSectionsMode");
+  if (!mode) return;
+  mode.value = "all";
+  mode.dispatchEvent(new Event("change", { bubbles: true }));
+  mode.value = "others";
+  mode.dispatchEvent(new Event("change", { bubbles: true }));
+
+  const input = document.getElementById("targetSections");
+  if (input && remaining.length) {
+    input.value = `${remaining.join(",")},`;
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  }
+  window.queueMicrotask(() => validateTargetSections(true));
+}, true);
+
+document.addEventListener("submit", (event) => {
+  if (!(event.target instanceof HTMLFormElement) ||
+      event.target.id !== "createEventMainForm" ||
+      validateTargetSections()) return;
+  event.preventDefault();
+  event.stopImmediatePropagation();
+  document.getElementById("targetSections")?.focus();
+}, true);
+
+document.addEventListener("click", (event) => {
+  if (!(event.target instanceof Element) ||
+      !event.target.closest("#btnSubmitApproval") ||
+      validateTargetSections()) return;
+  event.preventDefault();
+  event.stopImmediatePropagation();
+  document.getElementById("targetSections")?.focus();
+}, true);
+
 function getFieldValue(id) {
   const field = document.getElementById(id);
   return typeof field?.value === "string" ? field.value.trim() : "";
@@ -110,6 +331,80 @@ function collectFormFields(form) {
   return fields;
 }
 
+function collectFormInputSnapshot(form, overrides = {}) {
+  const indexes = new Map();
+  return Array.from(form.querySelectorAll("input, select, textarea"))
+    .map((control, ordinal) => {
+      if (control instanceof HTMLInputElement && control.type === "file") return null;
+      const identity = control.name || control.id || "";
+      const index = indexes.get(identity) || 0;
+      indexes.set(identity, index + 1);
+      const record = {
+        id: control.id || "",
+        name: control.name || "",
+        ordinal,
+        index,
+        type: control.type || "",
+        className: control.className || "",
+      };
+      const overrideKey = control.id && Object.prototype.hasOwnProperty.call(overrides, control.id)
+        ? control.id
+        : control.name && Object.prototype.hasOwnProperty.call(overrides, control.name)
+          ? control.name
+          : "";
+
+      if (overrideKey) {
+        record.value = String(overrides[overrideKey] ?? "");
+      } else if (control instanceof HTMLSelectElement && control.multiple) {
+        record.selectedValues = Array.from(control.selectedOptions, (option) => option.value);
+      } else {
+        record.value = control.value;
+      }
+      if (control instanceof HTMLInputElement &&
+          ["checkbox", "radio"].includes(control.type)) {
+        record.checked = control.checked;
+      }
+      return record;
+    })
+    .filter(Boolean);
+}
+
+function collectInsidePupVenue() {
+  if (!getFieldValue("venue").includes("Others | Inside PUP")) return null;
+
+  const campus = document.getElementById("insidePupCampus")?.value || "";
+  const building = document.getElementById("insidePupBuilding")?.value || "";
+  const chipRooms = Array.from(document.querySelectorAll("#wrap-customVenueAddress .ce-chips-list .ce-chip-name"))
+    .map((chip) => chip.textContent.trim())
+    .filter(Boolean);
+  const storedRooms = (document.getElementById("insidePupRoomNumbersState")?.value || "")
+    .split(/[,\s]+/)
+    .map((room) => room.trim())
+    .filter(Boolean);
+  const rooms = [...new Set([...chipRooms, ...storedRooms])];
+  const pendingRoom = document.getElementById("insidePupRoomInput")?.value || "";
+  const location = campus === "CITE"
+    ? "CITE"
+    : campus === "PUP Biñan"
+      ? [campus, building].filter(Boolean).join(" — ")
+      : "";
+  const customVenueName = location
+    ? `${location}${rooms.length ? ` (Rooms: ${rooms.join(", ")})` : ""}`
+    : getFieldValue("customVenueName");
+  const customVenueAddress = campus
+    ? rooms[0] || ""
+    : getFieldValue("customVenueAddress");
+
+  return {
+    campus,
+    building,
+    rooms,
+    pendingRoom,
+    customVenueName,
+    customVenueAddress,
+  };
+}
+
 function collectExternalGuests() {
   return Array.from(document.querySelectorAll("#externalGuestsList .ce-guest-card"))
     .map((card) => ({
@@ -133,9 +428,7 @@ function collectPartnerOrganizations() {
 }
 
 function collectSections() {
-  const sections = Array.from(document.querySelectorAll("#targetSectionsList .ce-chip-label"))
-    .map((chip) => chip.textContent.trim())
-    .filter(Boolean);
+  const sections = collectTargetSectionChips();
   const pending = getFieldValue("targetSections")
     .split(/[,\n]/)
     .map((section) => section.trim())
@@ -191,6 +484,21 @@ function collectDraftPayload(status = "draft") {
   const partnerOrganizations = collectPartnerOrganizations();
   const approvalDocuments = getFieldValue("adminDoc-adminReview");
   const targetSectionsValue = targetSections;
+  const insidePupVenue = collectInsidePupVenue();
+  const customVenueName = insidePupVenue?.customVenueName ?? getFieldValue("customVenueName");
+  const customVenueAddress = insidePupVenue?.customVenueAddress ?? getFieldValue("customVenueAddress");
+  const formValues = collectFormInputSnapshot(form, {
+    customVenueName,
+    customVenueAddress,
+  });
+  const multiVenue = globalThis.createEventMultiVenue;
+  const selectedVenueState = multiVenue?.getSelectedVenues?.() || [];
+  const selectedVenues = selectedVenueState.length
+    ? selectedVenueState
+    : venue
+      ? venue.split(" + ").filter(Boolean)
+      : [];
+  const venueRooms = multiVenue?.getRoomNumbers?.() || [];
 
   return {
     ...fields,
@@ -210,6 +518,7 @@ function collectDraftPayload(status = "draft") {
     targetYearLevels,
     targetDepartments,
     targetSections: targetSectionsValue,
+    targetSectionsChips: collectTargetSectionChips(),
     date,
     dateISO: date,
     dateStart: date,
@@ -222,8 +531,20 @@ function collectDraftPayload(status = "draft") {
     time: timeStart && timeEnd ? `${timeStart} - ${timeEnd}` : "",
     venue,
     location: venue,
-    customVenueName: getFieldValue("customVenueName"),
-    customVenueAddress: getFieldValue("customVenueAddress"),
+    selectedVenues,
+    venueRooms,
+    customVenueName,
+    customVenueAddress,
+    outsideVenueLocation: getFieldValue("outsideVenueLocation"),
+    venueDetails: insidePupVenue
+      ? {
+          campus: insidePupVenue.campus,
+          building: insidePupVenue.building,
+          rooms: insidePupVenue.rooms,
+          pendingRoom: insidePupVenue.pendingRoom,
+        }
+      : null,
+    formValues,
     onlineMeetingLink: getFieldValue("onlineMeetingLink"),
     maxCapacity: Number.isFinite(maxCapacity) ? maxCapacity : null,
     capacity: Number.isFinite(maxCapacity) ? maxCapacity : null,
@@ -381,30 +702,31 @@ async function loadRescheduleOriginalDate() {
   if (validDateKey(queryDate)) {
     rescheduleOriginalDate = queryDate;
     applyRescheduleDateConstraint();
-    return;
   }
 
   const draftId = getDraftIdFromUrl();
   if (!draftId || !auth || !rtdb) return;
+  let storedDate = "";
   try {
-    const storedDate = sessionStorage.getItem(rescheduleStorageKey(draftId)) || "";
-    if (validDateKey(storedDate)) {
+    storedDate = sessionStorage.getItem(rescheduleStorageKey(draftId)) || "";
+    if (!rescheduleOriginalDate && validDateKey(storedDate)) {
       rescheduleOriginalDate = storedDate;
       applyRescheduleDateConstraint();
-      return;
     }
   } catch (error) {
     console.warn("[CreateEventDrafts] Could not restore the reschedule date from this session:", error);
   }
 
-  rescheduleValidationPending = true;
+  rescheduleValidationPending = !rescheduleOriginalDate;
   try {
     await authReady;
     const user = auth.currentUser;
     if (!user) return;
     const snapshot = await get(ref(rtdb, `drafts/${user.uid}/${draftId}`));
-    const savedDate = snapshot.val()?.rescheduleOriginalDate;
-    if (validDateKey(savedDate)) {
+    const savedDraft = snapshot.val();
+    if (savedDraft?.status === "draft") draftForHydration = savedDraft;
+    const savedDate = savedDraft?.rescheduleOriginalDate;
+    if (!rescheduleOriginalDate && validDateKey(savedDate)) {
       rescheduleOriginalDate = savedDate;
       applyRescheduleDateConstraint();
     }
@@ -412,6 +734,487 @@ async function loadRescheduleOriginalDate() {
     console.error("[CreateEventDrafts] Could not restore the reschedule date constraint:", error);
   } finally {
     rescheduleValidationPending = false;
+  }
+}
+
+function draftControlWasEdited(control, record = {}) {
+  const keys = [control.id, control.name, record.id, record.name].filter(Boolean);
+  if (keys.some((key) => draftUserEditedFields.has(key))) return true;
+  const className = `${control.className || ""} ${record.className || ""}`;
+  if (className.includes("ce-cat-checkbox") &&
+      draftUserEditedFields.has("categories")) return true;
+  if ((className.includes("ce-target-year") || control.id === "targetAllYears") &&
+      draftUserEditedFields.has("targetYearLevels")) return true;
+  if (control.id === "targetYear" &&
+      draftUserEditedFields.has("targetYearLevels")) return true;
+  if ((className.includes("ce-target-organization") ||
+       className.includes("ce-target-department")) &&
+      (draftUserEditedFields.has("targetOrganizations") ||
+       draftUserEditedFields.has("targetDepartments"))) return true;
+  if ((control.id === "targetSections" || control.name === "targetSections") &&
+      draftUserEditedFields.has("targetSections")) return true;
+  if (["addAsFavoriteState", "btnAddAsFavorite"].some((key) => keys.includes(key)) &&
+      draftUserEditedFields.has("favorite")) return true;
+  if (["venue", "customVenueName", "customVenueAddress", "insidePupCampus",
+    "insidePupBuilding", "insidePupRoomInput", "insidePupRoomNumbersState",
+    "outsideVenueLocation"]
+    .some((key) => keys.includes(key)) &&
+      draftUserEditedFields.has("venueDetails")) return true;
+  if (control.closest("#facultyChipsList") &&
+      draftUserEditedFields.has("participatingFaculty")) return true;
+  if (control.closest("#facultyInChargeChip") &&
+      draftUserEditedFields.has("facultyInCharge")) return true;
+  if (control.closest("#partnerOrgList") &&
+      draftUserEditedFields.has("partnerOrganizations")) return true;
+  return Boolean(control.closest("#externalGuestsList") &&
+    draftUserEditedFields.has("externalGuests"));
+}
+
+function restoreFormInputSnapshot(form, values) {
+  if (!Array.isArray(values)) return;
+  const controls = Array.from(form.querySelectorAll("input, select, textarea"));
+  values.forEach((record) => {
+    if (!record || typeof record !== "object") return;
+    const control = findSnapshotControl(controls, record);
+    if (!control || control instanceof HTMLInputElement && control.type === "file" ||
+        draftControlWasEdited(control, record)) return;
+
+    if (control instanceof HTMLSelectElement && Array.isArray(record.selectedValues)) {
+      const selected = new Set(record.selectedValues.map(String));
+      Array.from(control.options).forEach((option) => {
+        option.selected = selected.has(option.value);
+      });
+    } else if (typeof record.value === "string" || typeof record.value === "number") {
+      control.value = String(record.value);
+    }
+    if (control instanceof HTMLInputElement &&
+        typeof record.checked === "boolean") {
+      control.checked = record.checked;
+    }
+  });
+}
+
+function findSnapshotControl(controls, record) {
+  let control = record.id
+    ? controls.find((candidate) => candidate.id === record.id)
+    : null;
+  if (!control && record.name) {
+    control = controls.filter((candidate) => candidate.name === record.name)[record.index || 0] || null;
+  }
+  if (!control && Number.isInteger(record.ordinal)) control = controls[record.ordinal] || null;
+  return control;
+}
+
+function restoreInsidePupVenue(form, venueDetails) {
+  if (!venueDetails || typeof venueDetails !== "object" ||
+      draftUserEditedFields.has("venueDetails")) return;
+  const campus = form.querySelector("#insidePupCampus");
+  const building = form.querySelector("#insidePupBuilding");
+  const roomNumbers = form.querySelector("#insidePupRoomNumbersState");
+  const pendingRoom = form.querySelector("#insidePupRoomInput");
+  if (campus) campus.value = String(venueDetails.campus || "");
+  if (building) building.value = String(venueDetails.building || "");
+  if (roomNumbers) {
+    roomNumbers.value = Array.isArray(venueDetails.rooms)
+      ? venueDetails.rooms.map(String).join(",")
+      : "";
+  }
+  if (pendingRoom) pendingRoom.value = String(venueDetails.pendingRoom || "");
+}
+
+function restoreCanonicalDraftFields(form, draft) {
+  const venueDetails = draft.venueDetails && typeof draft.venueDetails === "object"
+    ? draft.venueDetails
+    : {};
+  const rooms = Array.isArray(venueDetails.rooms)
+    ? venueDetails.rooms.map(String).filter(Boolean)
+    : [];
+  const campus = String(venueDetails.campus || "");
+  const building = String(venueDetails.building || "");
+  const venueLocation = campus === "PUP Biñan"
+    ? [campus, building].filter(Boolean).join(" — ")
+    : campus;
+  const computedVenueName = venueLocation
+    ? `${venueLocation}${rooms.length ? ` (Rooms: ${rooms.join(", ")})` : ""}`
+    : "";
+  const keyDetails = Array.isArray(draft.keyDetails)
+    ? draft.keyDetails.map((line) => `• ${String(line).replace(/^[•*-]\s*/, "")}`).join("\n")
+    : draft.keyDetails;
+  const requirements = Array.isArray(draft.requirements)
+    ? draft.requirements.map((line) => `• ${String(line).replace(/^[•*-]\s*/, "")}`).join("\n")
+    : draft.requirements;
+  const dateStart = [draft.eventDate, draft.dateStart, draft.dateISO, draft.date]
+    .find((value) => value !== null && value !== undefined && String(value).trim()) || "";
+  const timeParts = String(draft.time || "").split(/\s+-\s+/);
+  const values = {
+    eventName: [draft.title, draft.eventName, draft.name],
+    eventSource: [draft.eventSource],
+    targetYear: [
+      Array.isArray(draft.targetYearLevels) ? draft.targetYearLevels.join(", ") : "",
+      draft.targetYear,
+    ],
+    eventDate: [dateStart],
+    eventDateEnd: [draft.eventDateEnd, draft.dateEnd, draft.endDate, draft.endDateISO, dateStart],
+    dailySchedule: [draft.dailySchedule],
+    timeStart: [draft.timeStart, timeParts[0]],
+    timeEnd: [draft.timeEnd, timeParts[1]],
+    venue: [draft.venue, draft.location],
+    customVenueName: [draft.customVenueName, draft.venueName, computedVenueName, draft.building],
+    customVenueAddress: [
+      draft.customVenueAddress,
+      draft.venueAddress,
+      draft.roomNumber,
+      rooms[0],
+    ],
+    outsideVenueLocation: [draft.outsideVenueLocation],
+    maxCapacity: [draft.maxCapacity, draft.capacity],
+    registrationStart: [draft.registrationStart],
+    registrationEnd: [draft.registrationEnd, draft.registrationDeadline],
+    registrationDeadline: [draft.registrationDeadline, draft.registrationEnd],
+    onlineMeetingLink: [draft.onlineMeetingLink, draft.meetingLink],
+    description: [draft.description],
+    rationale: [draft.rationale],
+    keyDetails: [keyDetails, draft.objectives],
+    requirements: [requirements],
+    contactName: [draft.contactPerson?.name, draft.contactName],
+    contactEmail: [draft.contactPerson?.email, draft.contactEmail],
+    contactPhone: [draft.contactPerson?.phone, draft.contactPhone],
+    collaborationNotes: [draft.collaborationNotes],
+  };
+
+  Object.entries(values).forEach(([id, candidates]) => {
+    const control = form.querySelector(`#${id}`);
+    if (!control || draftControlWasEdited(control) ||
+        hasNonEmptySnapshotValue(draft, id)) return;
+    const value = candidates.find((candidate) =>
+      candidate !== null && candidate !== undefined && String(candidate).trim(),
+    );
+    if (value === undefined) return;
+    const stringValue = String(value);
+    if (control instanceof HTMLSelectElement &&
+        !Array.from(control.options).some((option) => option.value === stringValue)) return;
+    control.value = stringValue;
+  });
+}
+
+function hasNonEmptySnapshotValue(draft, id) {
+  const values = draft.formValues;
+  if (!Array.isArray(values)) return false;
+  const record = values.find((candidate) =>
+    candidate && (candidate.id === id || candidate.name === id),
+  );
+  if (!record || typeof record.value !== "string" || !record.value.trim()) return false;
+  if (id === "eventName" && record.value.trim() === "Untitled Event" &&
+      [draft.title, draft.eventName, draft.name].some((value) =>
+        value && String(value).trim() !== "Untitled Event")) return false;
+  if (id === "targetYear" && record.value.trim() === "All Levels" &&
+      Array.isArray(draft.targetYearLevels) && draft.targetYearLevels.length) return false;
+  return true;
+}
+
+function dispatchDraftDependencyChanges(form) {
+  if (!form) return;
+  const dependentIds = new Set([
+    "targetAudience",
+    "targetSectionsMode",
+    "venue",
+    "outsideGuests",
+    "isCollaboration",
+  ]);
+  const previewSelectors = [
+    "#eventName",
+    "#eventSource",
+    "#targetYear",
+    "#description",
+    "#rationale",
+    "#eventDate",
+    "#eventDateEnd",
+    "#dailySchedule",
+    "#timeStart",
+    "#timeEnd",
+    "#customVenueName",
+    "#customVenueAddress",
+    "#maxCapacity",
+    "#registrationStart",
+    "#registrationEnd",
+    "#registrationDeadline",
+    "#onlineMeetingLink",
+    ".ce-cat-checkbox",
+    ".ce-target-year",
+    ".ce-target-organization",
+    ".ce-target-department",
+    "#attendanceRequired",
+  ].join(", ");
+  form.querySelectorAll("input, select, textarea").forEach((control) => {
+    if (draftControlWasEdited(control)) return;
+    if (dependentIds.has(control.id)) {
+      control.dispatchEvent(new Event("change", { bubbles: true }));
+    }
+    if (!control.matches(previewSelectors)) return;
+    if (!(control instanceof HTMLInputElement) ||
+        !["checkbox", "radio"].includes(control.type)) {
+      control.dispatchEvent(new Event("input", { bubbles: true }));
+    }
+    control.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+}
+
+function waitForFormRender() {
+  return new Promise((resolve) => {
+    let finished = false;
+    const finish = () => {
+      if (finished) return;
+      finished = true;
+      window.clearTimeout(timeout);
+      resolve();
+    };
+    const timeout = window.setTimeout(finish, 100);
+    if (typeof window.requestAnimationFrame !== "function") {
+      finish();
+      return;
+    }
+    window.requestAnimationFrame(() => window.requestAnimationFrame(finish));
+  });
+}
+
+function draftFormNeedsReapply(draft, form) {
+  const controls = Array.from(form.querySelectorAll("input, select, textarea"));
+  if (Array.isArray(draft.formValues)) {
+    for (const record of draft.formValues) {
+      if (!record || typeof record !== "object") continue;
+      const control = findSnapshotControl(controls, record);
+      if (!control || draftControlWasEdited(control, record)) continue;
+      if (control instanceof HTMLInputElement &&
+          typeof record.checked === "boolean" &&
+          control.checked !== record.checked) return true;
+      if (control instanceof HTMLSelectElement &&
+          Array.isArray(record.selectedValues)) {
+        const selected = Array.from(control.selectedOptions, (option) => option.value);
+        if (selected.length !== record.selectedValues.length ||
+            selected.some((value, index) => value !== String(record.selectedValues[index]))) return true;
+      } else if (typeof record.value === "string" &&
+          control.value !== record.value) {
+        return true;
+      }
+    }
+  }
+
+  const savedTitle = [draft.title, draft.eventName, draft.name]
+    .find((value) => value && String(value).trim() &&
+      String(value).trim() !== "Untitled Event");
+  const eventNameInput = form.querySelector("#eventName");
+  if (savedTitle && eventNameInput &&
+      !draftControlWasEdited(eventNameInput) &&
+      !eventNameInput.value.trim()) return true;
+  const categories = Array.isArray(draft.categories)
+    ? draft.categories
+    : String(draft.category || "").split(",").map((value) => value.trim()).filter(Boolean);
+  if (categories.length && !draftUserEditedFields.has("categories") &&
+      !form.querySelector(".ce-cat-checkbox:checked")) return true;
+  const expectedFields = [
+    ["eventDate", [draft.eventDate, draft.dateStart, draft.dateISO, draft.date]],
+    ["eventDateEnd", [draft.eventDateEnd, draft.dateEnd, draft.endDate, draft.endDateISO, draft.date]],
+    ["dailySchedule", [draft.dailySchedule]],
+    ["timeStart", [draft.timeStart]],
+    ["timeEnd", [draft.timeEnd]],
+    ["venue", [draft.venue, draft.location]],
+    ["maxCapacity", [draft.maxCapacity, draft.capacity]],
+    ["targetYear", [
+      Array.isArray(draft.targetYearLevels) ? draft.targetYearLevels.join(", ") : "",
+      draft.targetYear,
+    ]],
+    ["description", [draft.description]],
+  ];
+  for (const [id, candidates] of expectedFields) {
+    const control = form.querySelector(`#${id}`);
+    const expected = candidates.find((value) =>
+      value !== null && value !== undefined && String(value).trim(),
+    );
+    if (control && expected !== undefined &&
+        !draftControlWasEdited(control) && !String(control.value).trim()) return true;
+  }
+  return false;
+}
+
+function restoreDraftFormFields(draft) {
+  const form = getForm();
+  if (!form) return;
+
+  const years = Array.isArray(draft.targetYearLevels)
+    ? draft.targetYearLevels.map(String)
+    : String(draft.targetYear || "")
+      .split(",")
+      .map((year) => year.trim())
+      .filter((year) => year && year !== "All Levels");
+  const categories = Array.isArray(draft.categories)
+    ? draft.categories.map(String)
+    : String(draft.category || "").split(",").map((category) => category.trim()).filter(Boolean);
+  const guests = Array.isArray(draft.externalGuests) ? draft.externalGuests : [];
+  const collaboration = typeof draft.isCollaboration === "boolean"
+    ? draft.isCollaboration
+    : Boolean(Array.isArray(draft.partnerOrganizations) && draft.partnerOrganizations.length);
+
+  if (!draftUserEditedFields.has("targetYearLevels")) {
+    form.querySelectorAll(".ce-target-year").forEach((input) => {
+      input.checked = years.includes(input.value);
+    });
+    const allYears = form.querySelector("#targetAllYears");
+    if (allYears) allYears.checked = years.length === 0;
+  }
+  if (!draftUserEditedFields.has("categories")) {
+    form.querySelectorAll(".ce-cat-checkbox").forEach((input) => {
+      input.checked = categories.includes(input.value);
+    });
+  }
+
+  const collaborationInput = form.querySelector("#isCollaboration");
+  if (collaborationInput && !draftUserEditedFields.has("isCollaboration") &&
+      typeof draft.isCollaboration === "boolean") {
+    collaborationInput.checked = draft.isCollaboration;
+  } else if (collaborationInput && !draftUserEditedFields.has("isCollaboration")) {
+    collaborationInput.checked = collaboration;
+  }
+  const attendanceInput = form.querySelector("#attendanceRequired");
+  if (attendanceInput && !draftUserEditedFields.has("attendanceRequired") &&
+      typeof draft.attendanceRequired === "boolean") {
+    attendanceInput.checked = draft.attendanceRequired;
+  }
+  const outsideGuestsInput = form.querySelector("#outsideGuests");
+  if (outsideGuestsInput && !draftUserEditedFields.has("outsideGuests")) {
+    outsideGuestsInput.checked = Boolean(draft.outsideGuests || guests.length);
+  }
+
+  form.querySelectorAll("input[name], select[name], textarea[name]").forEach((control) => {
+    const name = control.name;
+    if (!name || name === "targetSections" || control instanceof HTMLInputElement &&
+        ["checkbox", "radio", "file"].includes(control.type) ||
+        !Object.prototype.hasOwnProperty.call(draft, name) ||
+        draftControlWasEdited(control)) return;
+
+    const savedValue = draft[name];
+    if (Array.isArray(savedValue) || savedValue && typeof savedValue === "object") return;
+    const value = savedValue === null ? "" : String(savedValue);
+    if (control instanceof HTMLSelectElement &&
+        !Array.from(control.options).some((option) => option.value === value)) return;
+    control.value = value;
+  });
+  restoreFormInputSnapshot(form, draft.formValues);
+  restoreInsidePupVenue(form, draft.venueDetails);
+  restoreCanonicalDraftFields(form, draft);
+  const favoriteButton = document.getElementById("btnAddAsFavorite");
+  if (favoriteButton && typeof draft.favorite === "boolean" &&
+      !draftUserEditedFields.has("favorite")) {
+    syncFavoriteControl(favoriteButton, draft.favorite);
+  }
+
+  const sectionsMode = form.querySelector("#targetSectionsMode");
+  const sectionsWrap = form.querySelector("#targetSectionsCustomWrap");
+  if (sectionsMode && typeof draft.targetSectionsMode === "string" &&
+      !draftControlWasEdited(sectionsMode)) {
+    sectionsMode.value = draft.targetSectionsMode;
+  }
+  if (sectionsWrap && sectionsMode) sectionsWrap.hidden = sectionsMode.value !== "others";
+  const savedSectionChips = Array.isArray(draft.targetSectionsChips)
+    ? draft.targetSectionsChips
+    : draft.targetSections;
+  const sections = Array.isArray(savedSectionChips)
+    ? [...new Set(savedSectionChips.map((section) => String(section).trim()).filter(Boolean))]
+    : [];
+  if (sectionsMode?.value === "others" && sections.length &&
+      !draftUserEditedFields.has("targetSections")) {
+    renderDraftTargetSectionTags(sections);
+  }
+}
+
+function synchronizeHydratedDraft(draft) {
+  restoreDraftFormFields(draft);
+  dispatchDraftDependencyChanges(getForm());
+  restoreDraftFormFields(draft);
+  getForm()?.querySelector("#eventName")?.dispatchEvent(
+    new Event("input", { bubbles: true }),
+  );
+  validateTargetSections(true);
+  window.dispatchEvent(new CustomEvent("create-event-draft-hydrated", {
+    detail: { draft },
+  }));
+}
+
+function scheduleDraftHydrationFollowup(draft, draftId) {
+  draftHydrationFollowupPending = true;
+  draftHydrationFollowupTimer = window.setTimeout(() => {
+    draftHydrationFollowupTimer = 0;
+    const form = getForm();
+    try {
+      if (draftId === getDraftIdFromUrl() && form &&
+          document.querySelector(
+            "#createEventRoot .ce-mode-btn[data-mode='new'][aria-checked='true'], " +
+            "#createEventRoot .ce-mode-btn[data-mode='new'].is-active",
+          ) &&
+          draftFormNeedsReapply(draft, form)) {
+        isApplyingDraftHydration = true;
+        synchronizeHydratedDraft(draft);
+      }
+    } catch (error) {
+      console.error("[CreateEventDrafts] Could not complete the final draft restore pass:", error);
+    } finally {
+      isApplyingDraftHydration = false;
+      draftHydrationFollowupPending = false;
+    }
+  }, 180);
+}
+
+function activateNewEventForm() {
+  const button = document.querySelector("#createEventRoot .ce-mode-btn[data-mode='new']");
+  if (!button) return false;
+  if (button.getAttribute("aria-checked") === "true" ||
+      button.classList.contains("is-active")) {
+    draftModeActivationAttempted = true;
+    return true;
+  }
+  if (draftModeActivationAttempted) return false;
+  draftModeActivationAttempted = true;
+  button.click();
+  const activeButton = document.querySelector(
+    "#createEventRoot .ce-mode-btn[data-mode='new']",
+  );
+  return activeButton?.getAttribute("aria-checked") === "true" ||
+    Boolean(activeButton?.classList.contains("is-active"));
+}
+
+async function applyDraftHydration() {
+  if (!draftPageReady || draftHydrationApplied || draftHydrationScheduled ||
+      isApplyingDraftHydration ||
+      !getDraftIdFromUrl() || !draftReadPromise) return;
+  draftHydrationScheduled = true;
+  try {
+    const requestedDraftId = getDraftIdFromUrl();
+    await draftReadPromise;
+    if (draftHydrationApplied || !draftForHydration || !getForm() ||
+        requestedDraftId !== getDraftIdFromUrl()) return;
+    if (!activateNewEventForm()) {
+      draftHydrationScheduled = false;
+      return;
+    }
+    await waitForFormRender();
+    if (requestedDraftId !== getDraftIdFromUrl() ||
+        !document.querySelector(
+          "#createEventRoot .ce-mode-btn[data-mode='new'][aria-checked='true'], " +
+          "#createEventRoot .ce-mode-btn[data-mode='new'].is-active",
+        ) ||
+        !getForm()) {
+      draftHydrationScheduled = false;
+      return;
+    }
+
+    isApplyingDraftHydration = true;
+    synchronizeHydratedDraft(draftForHydration);
+    draftHydrationApplied = true;
+    scheduleDraftHydrationFollowup(draftForHydration, requestedDraftId);
+  } catch (error) {
+    console.error("[CreateEventDrafts] Could not restore all saved draft fields:", error);
+    showDraftError("Some saved fields could not be restored. Refresh the page and continue editing again.");
+  } finally {
+    isApplyingDraftHydration = false;
   }
 }
 
@@ -453,6 +1256,7 @@ async function saveDraftAndRedirect(confirmButton, requestedHref = "") {
   if (saveButton) saveButton.disabled = true;
 
   try {
+    const formSnapshot = serializeFormForServer("draft");
     await authReady;
     const user = auth?.currentUser;
     if (!user) throw new Error("Your session has expired. Sign in again before saving this draft.");
@@ -469,13 +1273,14 @@ async function saveDraftAndRedirect(confirmButton, requestedHref = "") {
     const existingSnapshot = await get(draftRef);
     const existingDraft = existingSnapshot.exists() ? existingSnapshot.val() : null;
     const now = Date.now();
+    const eventName = String(formSnapshot.eventName || "Untitled Event");
     const payload = {
-      ...serializeFormForServer("draft"),
+      ...formSnapshot,
       draftId,
-      name: (getFieldValue("eventName") || "Untitled Event").slice(0, 120),
+      name: eventName.slice(0, 120),
       status: "draft",
       organizerUid: user.uid,
-      organizerName: getFieldValue("eventOrganizer"),
+      organizerName: String(formSnapshot.eventOrganizer || ""),
       createdByRole: "organizer",
       createdAt: typeof existingDraft?.createdAt === "number" ? existingDraft.createdAt : now,
       updatedAt: now,
@@ -567,6 +1372,7 @@ const rescheduleDateObserver = createEventRoot
     if (isHandlingRescheduleMutations || isApplyingRescheduleDateConstraint) return;
     isHandlingRescheduleMutations = true;
     try {
+      if (getDraftIdFromUrl()) activateNewEventForm();
       applyRescheduleDateConstraint();
     } finally {
       rescheduleDateObserver?.takeRecords();
@@ -575,5 +1381,14 @@ const rescheduleDateObserver = createEventRoot
   })
   : null;
 rescheduleDateObserver?.observe(createEventRoot, { childList: true });
-window.addEventListener("pagehide", () => rescheduleDateObserver?.disconnect(), { once: true });
-void loadRescheduleOriginalDate();
+window.addEventListener("pagehide", () => {
+  rescheduleDateObserver?.disconnect();
+  window.clearTimeout(draftHydrationFollowupTimer);
+  draftHydrationFollowupPending = false;
+}, { once: true });
+window.addEventListener("page-data-ready", () => {
+  if (getDraftIdFromUrl()) activateNewEventForm();
+  draftPageReady = true;
+  void applyDraftHydration();
+});
+draftReadPromise = loadRescheduleOriginalDate();
