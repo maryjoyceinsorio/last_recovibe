@@ -639,6 +639,7 @@ a {
 }
 .teacher-event-list {
   display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 12px;
 }
 .teacher-event-card {
@@ -850,6 +851,9 @@ a {
   .teacher-event-card {
     grid-template-columns: 68px minmax(0, 1fr);
   }
+  .teacher-event-list {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
   .teacher-event-actions {
     grid-column: 2;
     justify-content: flex-start;
@@ -861,6 +865,9 @@ a {
 @media (max-width: 640px) {
   .teacher-app {
     display: block;
+  }
+  .teacher-event-list {
+    grid-template-columns: 1fr;
   }
   .teacher-sidebar {
     width: 100%;

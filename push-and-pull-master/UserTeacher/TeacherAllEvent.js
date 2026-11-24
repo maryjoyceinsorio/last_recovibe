@@ -533,15 +533,39 @@ import { teacherEventReadFilters, teacherEventsQuery } from "./TeacherEventQuery
 
     elements.loadState.hidden = true;
     const filtered = filterEvents();
-    const live = filtered.filter((event) => isLive(event));
-    elements.count.textContent = `${filtered.length} ${filtered.length === 1 ? "event" : "events"}`;
+    const live = filtered.filter((event) =>
+      isLive(event) && eventStatus(event).toLowerCase() !== "cancelled",
+    );
+    const displayed = state.status === "all"
+      ? filtered.filter((event) => {
+          const status = eventStatus(event).toLowerCase();
+          return !["completed", "cancelled", "live now"].includes(status);
+        })
+      : filtered;
+    const headingLabels = {
+      all: "Upcoming",
+      upcoming: "Upcoming",
+      completed: "Completed",
+      cancelled: "Cancelled",
+      rescheduled: "Rescheduled",
+      live: "Happening Now",
+    };
+    document.getElementById("teacherAllEventsHeadingText").textContent =
+      headingLabels[state.status] || "Upcoming";
+    const count = state.status === "all"
+      ? filtered.filter((event) => !["completed", "cancelled"].includes(eventStatus(event).toLowerCase())).length
+      : displayed.length;
+    elements.count.textContent = `${count} ${count === 1 ? "event" : "events"}`;
     if (live.length) {
       elements.current.innerHTML = live.map((event) => renderCard(event, "current")).join("");
     } else {
       elements.current.innerHTML = '<div class="teacher-empty">No events happening right now.</div>';
     }
-    if (filtered.length) {
-      elements.all.innerHTML = filtered.map((event) => renderCard(event, "all")).join("");
+    const allEvents = state.status === "all"
+      ? displayed.filter((event) => !isLive(event))
+      : displayed;
+    if (allEvents.length) {
+      elements.all.innerHTML = allEvents.map((event) => renderCard(event, "all")).join("");
     } else if (!events.length) {
       elements.all.innerHTML = '<div class="teacher-empty">No events yet.</div>';
     } else {
@@ -755,6 +779,10 @@ import { teacherEventReadFilters, teacherEventsQuery } from "./TeacherEventQuery
       ? "Not specified"
       : String(event.capacity);
     document.getElementById("teacherModalStatus").textContent = detailStatus(event);
+    window.RecovibeAllEventsDetailsExtras?.renderInto(
+      document.getElementById("teacherModalAdditionalDetails"),
+      event.raw || event,
+    );
     elements.detailsOverlay.hidden = false;
     document.getElementById("teacherModalClose").focus();
   }
@@ -813,6 +841,7 @@ import { teacherEventReadFilters, teacherEventsQuery } from "./TeacherEventQuery
     readUrlFilters();
     writeUrlFilters(true);
     elements.search.addEventListener("input", () => {
+      state.query = elements.search.value;
       clearTimeout(searchTimer);
       searchTimer = setTimeout(onFilterChange, 250);
     });

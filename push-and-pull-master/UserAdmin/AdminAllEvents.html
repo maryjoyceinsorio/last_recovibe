@@ -11,6 +11,8 @@
       rel="stylesheet"
     />
     <link rel="stylesheet" href="AdminAllEvents.css" />
+    <link rel="stylesheet" href="../AllEventsDetailsExtras.css" />
+    <link rel="stylesheet" href="AdminMobileResponsive.css" />
   <style id="page-preloader-style">
     html[data-page-loading="true"] [data-page-load-container] { position: relative; }
     #userAvatar:empty,
@@ -116,12 +118,21 @@
       <span>Loading...</span>
     </div>
         <section class="admin-content" id="allEventsRoot" aria-live="polite">
-          <div class="admin-loading" hidden></div>
+          <h1 class="admin-page-title" id="allEventsHeading">All Events</h1>
+          <div class="events-toolbar" id="allEventsToolbar"></div>
+          <section class="admin-live-section" id="happeningNowSection" aria-labelledby="happeningNowHeading">
+            <h2 class="admin-group-title" id="happeningNowHeading">Happening Now</h2>
+            <div id="happeningNowContent"></div>
+          </section>
+          <div id="allEventsResults">
+            <div class="admin-loading">Loading events...</div>
+          </div>
         </section>
       </main>
     </div>
     <div class="admin-toast" role="status" aria-live="polite" hidden></div>
     <script src="../EventDetailsModal.js"></script>
+    <script src="../AllEventsDetailsExtras.js"></script>
     <script type="module" src="AdminAllEvents.js"></script>
     <script>
     (() => {

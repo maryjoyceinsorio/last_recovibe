@@ -4,7 +4,12 @@ import {
   setPersistence,
   signOut,
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
-import { doc, getDoc } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+import {
+  deleteField,
+  doc,
+  getDoc,
+  setDoc,
+} from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 import { auth, authReady, db, isFirebaseConfigured } from "../UserStudent/firebaseConfig.js";
 import {
   profileCollectionsForRole,
@@ -155,13 +160,26 @@ import {
           code: "profile/role-mismatch",
         });
       }
-      await syncVerifiedProfileEmail(
+      const emailSync = await syncVerifiedProfileEmail(
         auth,
         db,
         credential.user,
         "teacher",
         profileCollectionsForRole("teacher"),
       );
+      if (emailSync) {
+        profile.email = emailSync.email;
+        if (emailSync.pendingEmail) profile.pendingEmail = emailSync.pendingEmail;
+        else delete profile.pendingEmail;
+        await setDoc(
+          doc(db, "users", credential.user.uid),
+          {
+            email: emailSync.email,
+            pendingEmail: emailSync.pendingEmail || deleteField(),
+          },
+          { merge: true },
+        );
+      }
       accessSettings = await readSystemAccessSettings(db);
       if (!accessSettings.userLoginEnabled) {
         await signOut(auth);

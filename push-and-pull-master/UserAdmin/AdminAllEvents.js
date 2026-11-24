@@ -19,10 +19,17 @@ import { auth, authReady, db, isFirebaseConfigured } from "../UserStudent/fireba
     .then(({ startAdminNotificationBadge }) => startAdminNotificationBadge())
     .catch(() => document.querySelectorAll("[data-notification-count]").forEach((badge) => { badge.hidden = true; }));
   let profile = {};
-  const root = document.getElementById("allEventsRoot"),
-    params = new URLSearchParams(location.search),
+  const root = document.getElementById("allEventsRoot");
+  if (!root) return;
+  const heading = document.getElementById("allEventsHeading");
+  const toolbar = document.getElementById("allEventsToolbar");
+  const happeningSection = document.getElementById("happeningNowSection");
+  const happeningContent = document.getElementById("happeningNowContent");
+  const results = document.getElementById("allEventsResults");
+  const params = new URLSearchParams(location.search),
     now = new Date(),
     today = manilaDate(now);
+  let renderedHappeningMarkup = null;
   let shown = 10,
     searchTimer;
   let firestoreEvents = [];
@@ -160,8 +167,11 @@ import { auth, authReady, db, isFirebaseConfigured } from "../UserStudent/fireba
     return profile;
   }
   function showLoadError(message) {
-    root.innerHTML = `<div class="admin-error" role="alert">${esc(message)} <button class="admin-row-action" id="retryAllEvents" type="button">Try again</button></div>`;
-    root.querySelector("#retryAllEvents").addEventListener("click", init);
+    toolbar.replaceChildren();
+    happeningContent.replaceChildren();
+    happeningSection.hidden = true;
+    results.innerHTML = `<div class="admin-error" role="alert">${esc(message)} <button class="admin-row-action" id="retryAllEvents" type="button">Try again</button></div>`;
+    results.querySelector("#retryAllEvents").addEventListener("click", init);
     window.dispatchEvent(new Event("page-data-ready"));
   }
   function normalizeEventDocuments(documents) {
@@ -175,7 +185,7 @@ import { auth, authReady, db, isFirebaseConfigured } from "../UserStudent/fireba
       .map((eventDocument) => {
         const data = eventDocument.data();
         if (!isPublishedEvent(data)) return null;
-        const eventDate = data.eventDate || data.dateISO || data.date || "";
+        const eventDate = eventScheduleDate(data);
         return {
           ...data,
           id: eventDocument.id,
@@ -265,21 +275,92 @@ import { auth, authReady, db, isFirebaseConfigured } from "../UserStudent/fireba
   function timeMins(value) {
     const text = String(value || "").trim();
     let match = /^(\d{1,2}):(\d{2})\s*(AM|PM)$/i.exec(text);
-    if (match)
-      return (
-        ((Number(match[1]) % 12) + (match[3].toUpperCase() === "PM" ? 12 : 0)) *
-          60 +
-        Number(match[2])
-      );
+    if (match) {
+      const hour = Number(match[1]);
+      const minute = Number(match[2]);
+      if (hour < 1 || hour > 12 || minute > 59) return null;
+      return ((hour % 12) + (match[3].toUpperCase() === "PM" ? 12 : 0)) * 60 + minute;
+    }
     match = /^(\d{1,2}):(\d{2})$/.exec(text);
-    return match ? Number(match[1]) * 60 + Number(match[2]) : null;
+    if (!match) return null;
+    const hour = Number(match[1]);
+    const minute = Number(match[2]);
+    return hour <= 23 && minute <= 59 ? hour * 60 + minute : null;
   }
   function eventTimes(event) {
     const parts = String(event.time || "").split(/\s*[-–]\s*/);
-    return [event.startTime || parts[0] || "", event.endTime || parts[1] || ""];
+    return [
+      event.startTime || event.timeStart || parts[0] || "",
+      event.endTime || event.timeEnd || parts[1] || "",
+    ];
+  }
+  function dateKey(year, month, day) {
+    const timestamp = Date.UTC(year, month - 1, day);
+    const parsed = new Date(timestamp);
+    if (
+      parsed.getUTCFullYear() !== year ||
+      parsed.getUTCMonth() !== month - 1 ||
+      parsed.getUTCDate() !== day
+    ) return "";
+    return `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+  }
+  function eventScheduleDate(event) {
+    const values = [
+      event.startDate,
+      event.date,
+      event.eventDate,
+      event.scheduleDate,
+      event.dateISO,
+    ];
+    for (let value of values) {
+      if (value?.toDate) value = value.toDate();
+      if (value instanceof Date) {
+        if (Number.isNaN(value.getTime())) continue;
+        const parts = new Intl.DateTimeFormat("en-CA", {
+          timeZone: "Asia/Manila",
+          year: "numeric",
+          month: "2-digit",
+          day: "2-digit",
+        }).formatToParts(value);
+        const part = (type) => Number(parts.find((item) => item.type === type)?.value);
+        const key = dateKey(part("year"), part("month"), part("day"));
+        if (key) return key;
+        continue;
+      }
+
+      const text = String(value || "").trim();
+      if (!text) continue;
+      const iso = /^(\d{4})-(\d{1,2})-(\d{1,2})(?:$|T)/.exec(text);
+      if (iso) {
+        const key = dateKey(Number(iso[1]), Number(iso[2]), Number(iso[3]));
+        if (key) return key;
+        continue;
+      }
+      const numeric = /^(\d{1,2})[/-](\d{1,2})[/-](\d{2,4})$/.exec(text);
+      if (numeric) {
+        let year = Number(numeric[3]);
+        if (year < 100) year += year < 50 ? 2000 : 1900;
+        const key = dateKey(year, Number(numeric[1]), Number(numeric[2]));
+        if (key) return key;
+        continue;
+      }
+      const monthName = /^([A-Za-z]+)\s+(\d{1,2}),?\s+(\d{4})$/.exec(text);
+      if (monthName) {
+        const month = new Date(`${monthName[1]} 1, ${monthName[3]}`).getMonth() + 1;
+        const key = dateKey(Number(monthName[3]), month, Number(monthName[2]));
+        if (month && key) return key;
+        continue;
+      }
+      const parsed = new Date(text);
+      if (!Number.isNaN(parsed.getTime())) {
+        const key = dateKey(parsed.getFullYear(), parsed.getMonth() + 1, parsed.getDate());
+        if (key) return key;
+      }
+    }
+    return "";
   }
   function instant(event, which) {
-    const date = (event.dateISO || event.date || "").slice(0, 10),
+    const date = eventScheduleDate(event),
       time = eventTimes(event)[which],
       mins = timeMins(time);
     if (!date || mins === null) return null;
@@ -323,7 +404,7 @@ import { auth, authReady, db, isFirebaseConfigured } from "../UserStudent/fireba
   function matches(event) {
     const date = (event.dateISO || event.date || "").slice(0, 10),
       st = status(event),
-      query = state.q.toLowerCase();
+      query = state.q.trim().toLowerCase();
     const text =
       `${event.title || ""} ${event.organization || event.organizerName || event.organizer || ""} ${event.location || event.venue || ""}`.toLowerCase();
     const monthMatch =
@@ -353,40 +434,95 @@ import { auth, authReady, db, isFirebaseConfigured } from "../UserStudent/fireba
     );
   }
   function dateStart(event) {
-    return (
-      instant(event, 0)?.getTime() ??
-      new Date(
-        `${(event.dateISO || event.date || "").slice(0, 10)}T00:00:00+08:00`,
-      ).getTime()
-    );
+    const date = eventScheduleDate(event);
+    if (!date) return Number.POSITIVE_INFINITY;
+    const [year, month, day] = date.split("-").map(Number);
+    const startMinutes = timeMins(eventTimes(event)[0]) ?? 0;
+    return Date.UTC(year, month - 1, day) + startMinutes * 60000;
+  }
+  function compareSchedule(first, second, direction) {
+    const firstValue = dateStart(first);
+    const secondValue = dateStart(second);
+    const firstValid = Number.isFinite(firstValue);
+    const secondValid = Number.isFinite(secondValue);
+    if (firstValid !== secondValid) return firstValid ? -1 : 1;
+    if (!firstValid) return 0;
+    return (firstValue - secondValue) * direction;
   }
   function render() {
+    const activeSearch = toolbar.querySelector("#eventSearch");
+    const restoreSearchFocus = document.activeElement === activeSearch;
+    const selectionStart = restoreSearchFocus ? activeSearch.selectionStart : null;
+    const selectionEnd = restoreSearchFocus ? activeSearch.selectionEnd : null;
+    const selectionDirection = restoreSearchFocus ? activeSearch.selectionDirection : null;
     try {
       const selected = allEvents().filter(matches);
+      const happeningEvents = allEvents()
+        .filter((event) => status(event) === "Happening")
+        .sort((a, b) => compareSchedule(a, b, 1));
+      const happeningMarkup = happeningEvents.length
+        ? `<div class="admin-event-grid">${happeningEvents.map(card).join("")}</div>`
+        : '<div class="admin-empty">No events happening now.</div>';
+      if (happeningMarkup !== renderedHappeningMarkup) {
+        happeningContent.innerHTML = happeningMarkup;
+        renderedHappeningMarkup = happeningMarkup;
+      }
+      happeningSection.hidden = false;
+
+      const headingLabels = {
+        Happening: "Happening Now",
+        Upcoming: "Upcoming",
+        Completed: "Completed",
+        Cancelled: "Cancelled",
+        Rescheduled: "Rescheduled",
+      };
+      const pageTitle = headingLabels[state.status] || "All Events";
+      heading.textContent = pageTitle;
+      document.title = `${pageTitle} · RecoVibe`;
+
       const groupOrder = state.status
-        ? [state.status]
-        : ["Happening", "Upcoming", "Completed", "Cancelled"];
-      const asc = (a, b) => dateStart(a) - dateStart(b);
+        ? state.status === "Happening" ? [] : [state.status]
+        : ["Upcoming"];
+      const lowerEvents = selected.filter((event) =>
+        groupOrder.includes(status(event)),
+      );
       const sections = groupOrder
         .map((group) => {
-          const list = selected
+          const list = lowerEvents
             .filter((event) => status(event) === group)
             .sort((a, b) =>
-              ["Completed", "Cancelled"].includes(group)
-                ? asc(b, a)
-                : asc(a, b),
+              compareSchedule(a, b, ["Completed", "Cancelled"].includes(group) ? -1 : 1),
             );
           if (!list.length) return "";
           return `<section><h2 class="admin-group-title">${group === "Happening" ? "Happening Now" : group}</h2><div class="admin-event-grid">${list.slice(0, shown).map(card).join("")}</div></section>`;
         })
         .join("");
-      const canLoadMore = selected.length > shown || eventHasMore;
-      root.innerHTML = `<div class="events-toolbar"><input class="admin-search" id="eventSearch" type="search" placeholder="Search events, organizer or venue" aria-label="Search events" value="${esc(state.q)}">${dropdown("source", "All Sources", ["All Sources", ...sources])}${dropdown("category", "All Categories", ["All Categories", ...categories])}${monthDropdown()}${dropdown("status", "Event Status", ["Event Status", "Happening", "Upcoming", "Cancelled", "Completed", "Rescheduled"])}${dropdown("availability", "Availability", ["Availability", "Available", "Full"])}<button type="button" id="clearEvents" class="admin-link-button" ${hasFilters() ? "" : "hidden"}>Clear filters</button></div>${sections || '<div class="admin-empty">No events match these filters.</div>'}${eventPageError ? `<p class="admin-error" role="alert">${esc(eventPageError)}</p>` : ""}${canLoadMore ? `<div class="admin-section-heading"><button class="admin-row-action" id="loadMore" type="button" ${eventPageLoading ? "disabled" : ""}>${eventPageLoading ? "Loading..." : "Load more"}</button></div>` : ""}`;
+      const canLoadMore = state.status === "Happening"
+        ? eventHasMore
+        : lowerEvents.length > shown || eventHasMore;
+      toolbar.innerHTML = `<input class="admin-search" id="eventSearch" type="search" placeholder="Search events, organizer or venue" aria-label="Search events" value="${esc(state.q)}">${dropdown("source", "All Sources", ["All Sources", ...sources])}${dropdown("category", "All Categories", ["All Categories", ...categories])}${monthDropdown()}${dropdown("status", "Event Status", ["Event Status", "Happening", "Upcoming", "Cancelled", "Completed", "Rescheduled"])}<button type="button" id="clearEvents" class="admin-link-button" ${hasFilters() ? "" : "hidden"}>Clear filters</button>`;
+      const emptyResults = state.status === "Happening"
+        ? ""
+        : `<div class="admin-empty">${state.status ? "No events match these filters." : "No upcoming events."}</div>`;
+      results.innerHTML = `${sections || emptyResults}${eventPageError ? `<p class="admin-error" role="alert">${esc(eventPageError)}</p>` : ""}${canLoadMore ? `<div class="admin-section-heading"><button class="admin-row-action" id="loadMore" type="button" ${eventPageLoading ? "disabled" : ""}>${eventPageLoading ? "Loading..." : "Load more"}</button></div>` : ""}`;
       wire();
+      if (restoreSearchFocus) {
+        const nextSearch = toolbar.querySelector("#eventSearch");
+        if (nextSearch) {
+          nextSearch.focus({ preventScroll: true });
+          if (selectionStart !== null && selectionEnd !== null) {
+            nextSearch.setSelectionRange(
+              selectionStart,
+              selectionEnd,
+              selectionDirection || "none",
+            );
+          }
+        }
+      }
       root.querySelectorAll("[data-event-view]").forEach(
         (button) =>
           (button.onclick = () => {
-            const event = selected.find(
+            const event = allEvents().find(
               (item) =>
                 String(item.eventId || item.id) === button.dataset.eventView,
             );
@@ -395,14 +531,14 @@ import { auth, authReady, db, isFirebaseConfigured } from "../UserStudent/fireba
       );
       document.querySelector("[data-queue-count]").hidden = true;
     } catch (error) {
-      root.innerHTML =
+      results.innerHTML =
         '<div class="admin-error">Could not load events. <button id="retryEvents" class="admin-row-action">Retry</button></div>';
-      root.querySelector("#retryEvents").onclick = render;
+      results.querySelector("#retryEvents").onclick = render;
     }
   }
   function hasFilters() {
     return Boolean(
-      state.q ||
+      state.q.trim() ||
       state.source ||
       state.category ||
       state.month ||
@@ -474,16 +610,6 @@ import { auth, authReady, db, isFirebaseConfigured } from "../UserStudent/fireba
     history.replaceState({}, "", next);
   }
   function wire() {
-    const search = root.querySelector("#eventSearch");
-    search.addEventListener("input", () => {
-      clearTimeout(searchTimer);
-      searchTimer = setTimeout(() => {
-        state.q = search.value;
-        shown = 10;
-        pushState();
-        render();
-      }, 300);
-    });
     root.querySelectorAll(".admin-filter").forEach((filter) => {
       const button = filter.querySelector("button[aria-haspopup]"),
         menu = filter.querySelector("[role=listbox]");
@@ -557,17 +683,17 @@ import { auth, authReady, db, isFirebaseConfigured } from "../UserStudent/fireba
         render();
       }
     });
-    document.addEventListener(
-      "click",
-      (event) => {
-        if (!event.target.closest(".admin-filter"))
-          root
-            .querySelectorAll(".admin-filter-menu")
-            .forEach((menu) => (menu.hidden = true));
-      },
-      { once: true },
-    );
   }
+  root.addEventListener("input", (event) => {
+    if (!(event.target instanceof HTMLInputElement) || event.target.id !== "eventSearch") return;
+    state.q = event.target.value;
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(() => {
+      shown = 10;
+      pushState();
+      render();
+    }, 300);
+  });
   root.addEventListener(
     "click",
     (event) => {
@@ -627,10 +753,6 @@ import { auth, authReady, db, isFirebaseConfigured } from "../UserStudent/fireba
         menu.previousElementSibling?.setAttribute("aria-expanded", "false");
       });
   });
-  new MutationObserver(() => {
-    const clear = root.querySelector("#clearEvents");
-    if (clear) clear.style.display = hasFilters() ? "inline-flex" : "none";
-  }).observe(root, { childList: true, subtree: true });
   async function init() {
     clearTimeout(loadTimer);
     unsubscribeEvents?.();
@@ -646,7 +768,11 @@ import { auth, authReady, db, isFirebaseConfigured } from "../UserStudent/fireba
       showLoadError("Event data is unavailable. Please check your connection and try again.");
       return;
     }
-    root.replaceChildren();
+    toolbar.replaceChildren();
+    happeningContent.replaceChildren();
+    happeningSection.hidden = true;
+    results.innerHTML = '<div class="admin-loading">Loading events...</div>';
+    renderedHappeningMarkup = null;
     loadExpired = false;
     loadTimer = setTimeout(() => {
       loadExpired = true;

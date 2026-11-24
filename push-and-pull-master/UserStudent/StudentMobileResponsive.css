@@ -1,0 +1,174 @@
+@media (max-width: 420px) {
+  .app-container .sidebar,
+  .app .sidebar {
+    display: grid;
+    grid-template-columns: 38px minmax(0, 1fr) 40px;
+    grid-template-rows: 44px;
+    align-items: center;
+    width: 100%;
+    height: auto;
+    min-height: 64px;
+    padding: 10px 12px;
+    gap: 0 8px;
+    overflow: visible;
+  }
+
+  .app-container .sidebar-top,
+  .app .sidebar-top {
+    grid-column: 1;
+    grid-row: 1;
+    width: 38px;
+    min-width: 0;
+    margin: 0;
+  }
+
+  .app-container .sidebar .nav,
+  .app .sidebar .nav {
+    grid-column: 2;
+    grid-row: 1;
+    display: grid;
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+    grid-auto-rows: 44px;
+    justify-items: center;
+    min-width: 0;
+    gap: 0;
+    padding: 0;
+    overflow: visible;
+  }
+
+  .app-container .sidebar .nav-item,
+  .app .sidebar .nav-item {
+    width: 44px;
+    min-width: 44px;
+    height: 44px;
+    min-height: 44px;
+    flex: none;
+    justify-self: center;
+    padding: 10px;
+  }
+
+  .app-container .sidebar .nav-label,
+  .app .sidebar .nav-label,
+  .app-container .sidebar .brand-text,
+  .app .sidebar .brand-text {
+    display: none;
+  }
+
+  .app-container .sidebar-bottom,
+  .app .sidebar-bottom {
+    grid-column: 3;
+    grid-row: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 40px;
+    min-width: 0;
+    margin: 0;
+    padding: 0;
+    border: 0;
+  }
+
+  .app-container .sidebar-bottom .user-card,
+  .app .sidebar-bottom .user-card,
+  .app-container .sidebar-bottom .user-meta,
+  .app .sidebar-bottom .user-meta {
+    display: none;
+  }
+
+  .app-container .sidebar-bottom .nav-item.logout,
+  .app .sidebar-bottom .nav-item.logout {
+    width: 40px;
+    min-width: 40px;
+    height: 44px;
+    min-height: 44px;
+    flex: none;
+  }
+}
+
+@media (max-width: 360px) {
+  .app-container .sidebar,
+  .app .sidebar {
+    grid-template-columns: 36px minmax(0, 1fr) 36px;
+    grid-template-rows: repeat(2, 44px);
+    min-height: 108px;
+    padding: 8px;
+    gap: 0 4px;
+  }
+
+  .app-container .sidebar-top,
+  .app .sidebar-top {
+    grid-row: 1 / span 2;
+  }
+
+  .app-container .sidebar .nav,
+  .app .sidebar .nav {
+    grid-row: 1 / span 2;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    grid-auto-rows: 44px;
+  }
+
+  .app-container .sidebar-bottom,
+  .app .sidebar-bottom {
+    grid-column: 3;
+    grid-row: 1 / span 2;
+    width: 36px;
+  }
+
+  .app-container .sidebar-bottom .nav-item.logout,
+  .app .sidebar-bottom .nav-item.logout {
+    width: 36px;
+    min-width: 36px;
+  }
+}
+
+@media (max-width: 768px) {
+  .app,
+  .app-container,
+  .main,
+  .content-container,
+  .student-notifications,
+  .calendar-page,
+  .profile-cards-grid,
+  .participation-list,
+  .participation-list-group-cards {
+    min-width: 0;
+  }
+
+  #eventsMain .event-card {
+    display: grid;
+    grid-template-columns: 56px minmax(0, 1fr);
+    align-items: start;
+    min-width: 0;
+    gap: 12px;
+  }
+
+  #eventsMain .event-card > .event-body {
+    min-width: 0;
+  }
+
+  #eventsMain .event-card-actions {
+    grid-column: 2;
+    display: flex;
+    align-items: center;
+    justify-content: flex-start;
+    flex-wrap: wrap;
+    gap: 8px;
+    min-width: 0;
+    max-width: 100%;
+  }
+
+  #eventsMain .event-card-actions > button,
+  #eventsMain .live-card-buttons > button {
+    min-width: 0;
+    max-width: 100%;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+
+  #eventsMain .live-card-actions,
+  #eventsMain .live-card-buttons {
+    min-width: 0;
+    max-width: 100%;
+    flex-wrap: wrap;
+  }
+}

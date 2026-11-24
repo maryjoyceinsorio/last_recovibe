@@ -498,6 +498,18 @@ body {
   border: 1px solid #eee9e9;
   border-radius: 8px;
 }
+body[data-dashboard-ui-patch="adviser-osas"] .dashboard-notifications {
+  display: none;
+}
+body[data-dashboard-ui-patch="adviser-osas"] .admin-table-wrap {
+  max-height: none;
+  overflow-x: auto;
+  overflow-y: visible;
+  overscroll-behavior: auto;
+}
+body[data-dashboard-ui-patch="adviser-osas"] .admin-table th {
+  position: static;
+}
 .admin-table {
   width: 100%;
   min-width: 1000px;

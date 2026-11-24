@@ -288,7 +288,16 @@
 
 @media (max-width: 900px) {
   .scan-layout-grid {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .scan-layout-grid > * {
+    min-width: 0;
+  }
+
+  .scan-side-panel > *,
+  .manual-input-group input {
+    min-width: 0;
   }
 }
 
@@ -1244,4 +1253,10 @@ body.dark-mode .roster-table tbody tr:hover {
   line-height: 1.2;
 }
 
+@media (max-width: 560px) {
+  .scan-event-selector-field {
+    min-width: 0;
+    flex-basis: 100%;
+  }
+}
 

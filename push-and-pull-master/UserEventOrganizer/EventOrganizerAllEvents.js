@@ -35,6 +35,10 @@ import { syncOrganizerOrganization } from "../organizationScope.js";
   const happeningNowRows = document.getElementById("happeningNowEvents");
   const upcomingRows = document.getElementById("upcomingEvents");
   const completedRows = document.getElementById("completedEvents");
+  const cancelledRows = document.getElementById("cancelledEvents");
+  const upcomingSection = document.getElementById("upcomingEventsSection");
+  const completedSection = document.getElementById("completedEventsSection");
+  const cancelledSection = document.getElementById("cancelledEventsSection");
   const upcomingHeading = document.querySelector("#upcomingEventsSection h2");
   const search = document.getElementById("eventSearch");
   const status = document.getElementById("eventStatusFilter");
@@ -48,9 +52,12 @@ import { syncOrganizerOrganization } from "../organizationScope.js";
   loadMoreEventsButton.type = "button";
   loadMoreEventsButton.className = "filter-button";
   loadMoreEventsButton.textContent = "Load more events";
-  if (completedRows) {
-    completedRows.insertAdjacentElement("afterend", eventPageStatus);
-    eventPageStatus.insertAdjacentElement("afterend", loadMoreEventsButton);
+  const loadMoreEventsWrap = document.createElement("div");
+  loadMoreEventsWrap.className = "organizer-load-more-wrap";
+  loadMoreEventsWrap.appendChild(loadMoreEventsButton);
+  if (cancelledRows || completedRows) {
+    (cancelledRows || completedRows).insertAdjacentElement("afterend", eventPageStatus);
+    eventPageStatus.insertAdjacentElement("afterend", loadMoreEventsWrap);
   }
   loadMoreEventsButton.addEventListener("click", loadNextEventPage);
   let pageLoadSignaled = false;
@@ -373,18 +380,27 @@ import { syncOrganizerOrganization } from "../organizationScope.js";
       );
     const happeningNow = visible.filter((event) => eventPhase(event) === "ongoing");
     const completed = visible.filter((event) => eventPhase(event) === "completed");
+    const cancelled = visible.filter((event) => eventPhase(event) === "cancelled");
     const upcoming = visible.filter((event) =>
-      !happeningNow.includes(event) && !completed.includes(event),
+      !happeningNow.includes(event) &&
+      !completed.includes(event) &&
+      !cancelled.includes(event),
     );
     if (upcomingHeading) {
       const headingLabel = state.status === "all"
-        ? "Upcoming & Other Events"
+        ? "Upcoming"
         : state.status.charAt(0).toUpperCase() + state.status.slice(1);
       upcomingHeading.textContent = headingLabel;
     }
+    if (upcomingSection) {
+      upcomingSection.hidden = !["all", "upcoming", "rescheduled"].includes(state.status);
+    }
+    if (completedSection) completedSection.hidden = state.status !== "completed";
+    if (cancelledSection) cancelledSection.hidden = state.status !== "canceled";
     renderList(happeningNowRows, happeningNow, "No ongoing events");
     renderList(upcomingRows, upcoming);
     renderList(completedRows, completed, "No completed events");
+    renderList(cancelledRows, cancelled, "No canceled events");
     updateEventPagination();
   }
 

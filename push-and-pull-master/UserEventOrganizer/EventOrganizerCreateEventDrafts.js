@@ -6,11 +6,15 @@ let pendingNavigationHref = "";
 let saveInProgress = false;
 let rescheduleOriginalDate = "";
 let rescheduleValidationPending = false;
+let isApplyingRescheduleDateConstraint = false;
+let isHandlingRescheduleMutations = false;
 const favoriteClickStart = new WeakMap();
 
 function getFavoriteValue(button) {
+  const pressed = button.getAttribute("aria-pressed");
+  if (pressed === "true" || pressed === "false") return pressed === "true";
   const input = document.getElementById("addAsFavoriteState");
-  return input ? input.value === "true" : button.getAttribute("aria-pressed") === "true";
+  return input?.value === "true";
 }
 
 function syncFavoriteControl(button, favorite) {
@@ -22,7 +26,25 @@ function syncFavoriteControl(button, favorite) {
   }
   button.classList.toggle("is-active", favorite);
   button.setAttribute("aria-pressed", String(favorite));
+  button.setAttribute(
+    "aria-label",
+    favorite ? "Remove this event from favorites" : "Add this event to favorites",
+  );
   button.textContent = favorite ? "★ Added as Favorite" : "☆ Add as Favorite";
+
+  let status = document.getElementById("createEventFavoriteStatus");
+  if (!status || !button.parentElement?.contains(status)) {
+    status = document.createElement("span");
+    status.id = "createEventFavoriteStatus";
+    status.className = "sr-only";
+    status.setAttribute("role", "status");
+    status.setAttribute("aria-live", "polite");
+    button.insertAdjacentElement("afterend", status);
+  }
+  const statusText = favorite
+    ? "This event will be added to Favorite Events after it is saved."
+    : "This event will not be added to Favorite Events.";
+  if (status.textContent !== statusText) status.textContent = statusText;
 }
 
 document.addEventListener("click", (event) => {
@@ -38,8 +60,17 @@ document.addEventListener("click", (event) => {
   if (!button || button.disabled || !favoriteClickStart.has(event)) return;
 
   const startingValue = favoriteClickStart.get(event);
-  const currentValue = getFavoriteValue(button);
-  const nextValue = currentValue === startingValue ? !startingValue : currentValue;
+  const input = document.getElementById("addAsFavoriteState");
+  const ariaValue = button.getAttribute("aria-pressed");
+  const inputValue = input ? input.value === "true" : null;
+  const changedAriaValue = ariaValue === "true" || ariaValue === "false"
+    ? ariaValue === "true"
+    : null;
+  const nextValue = changedAriaValue !== null && changedAriaValue !== startingValue
+    ? changedAriaValue
+    : inputValue !== null && inputValue !== startingValue
+      ? inputValue
+      : !startingValue;
   syncFavoriteControl(button, nextValue);
 }, false);
 
@@ -292,12 +323,21 @@ function rescheduleStorageKey(draftId) {
 }
 
 function applyRescheduleDateConstraint() {
+  if (isApplyingRescheduleDateConstraint) return;
   const input = document.getElementById("eventDate");
   if (!input || !rescheduleOriginalDate) return;
-  const tomorrow = addDateKeyDays(localDateKey(new Date()), 1);
-  const afterOriginal = addDateKeyDays(rescheduleOriginalDate, 1);
-  input.min = tomorrow > afterOriginal ? tomorrow : afterOriginal;
-  input.dataset.rescheduleOriginalDate = rescheduleOriginalDate;
+  isApplyingRescheduleDateConstraint = true;
+  try {
+    const tomorrow = addDateKeyDays(localDateKey(new Date()), 1);
+    const afterOriginal = addDateKeyDays(rescheduleOriginalDate, 1);
+    const minimumDate = tomorrow > afterOriginal ? tomorrow : afterOriginal;
+    if (input.min !== minimumDate) input.min = minimumDate;
+    if (input.dataset.rescheduleOriginalDate !== rescheduleOriginalDate) {
+      input.dataset.rescheduleOriginalDate = rescheduleOriginalDate;
+    }
+  } finally {
+    isApplyingRescheduleDateConstraint = false;
+  }
 }
 
 function validateRescheduleDate() {
@@ -523,7 +563,17 @@ document.addEventListener("input", (event) => {
 
 const createEventRoot = document.getElementById("createEventRoot");
 const rescheduleDateObserver = createEventRoot
-  ? new MutationObserver(applyRescheduleDateConstraint)
+  ? new MutationObserver(() => {
+    if (isHandlingRescheduleMutations || isApplyingRescheduleDateConstraint) return;
+    isHandlingRescheduleMutations = true;
+    try {
+      applyRescheduleDateConstraint();
+    } finally {
+      rescheduleDateObserver?.takeRecords();
+      isHandlingRescheduleMutations = false;
+    }
+  })
   : null;
-rescheduleDateObserver?.observe(createEventRoot, { childList: true, subtree: true });
+rescheduleDateObserver?.observe(createEventRoot, { childList: true });
+window.addEventListener("pagehide", () => rescheduleDateObserver?.disconnect(), { once: true });
 void loadRescheduleOriginalDate();

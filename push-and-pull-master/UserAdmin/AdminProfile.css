@@ -369,6 +369,9 @@ body {
 .field-item { display: flex; flex-direction: column; }
 .field-label { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .08em; color: #6b5459; margin-bottom: 6px; display: flex; align-items: center; gap: 4px; }
 .field-value { font-size: 16px; font-weight: 500; color: #2b1a1d; word-break: break-word; }
+#contactSummary #viewEmail { word-break: normal; overflow-wrap: normal; }
+#contactSummary #viewEmail .contact-email-local { white-space: nowrap; word-break: normal; }
+#contactSummary #viewEmail .contact-email-domain { white-space: nowrap; word-break: normal; }
 .empty-muted { color: #6b5459; font-style: italic; font-weight: 400; }
 .card-title-locked-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 .badge-locked { display: inline-flex; align-items: center; gap: 5px; background-color: rgba(107, 84, 89, 0.1); color: #6b5459; border: 1px solid #eadfd5; font-size: 12px; font-weight: 600; padding: 3px 10px; border-radius: 999px; letter-spacing: 0.02em; }
@@ -384,9 +387,33 @@ body {
 .admin-correction-dialog textarea { resize: vertical; }
 .admin-profile-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 15px; }
 .admin-profile-form { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 8px 14px; }
+.admin-profile-form .admin-error-text,
+.admin-profile-form .admin-profile-actions,
+.admin-profile-form .admin-checkbox { grid-column: 1 / -1; }
 .admin-profile-form[hidden], .card-view-mode[hidden], .card-edit-mode[hidden] { display: none !important; }
 .admin-checkbox { display: flex; align-items: center; gap: 7px; font-size: 10px; }
 .admin-password-dialog { width: min(430px, 100%); }
+.admin-password-dialog .password-control { position: relative; display: flex; align-items: center; width: 100%; }
+.admin-password-dialog .password-control input { width: 100%; padding-right: 48px; }
+.admin-password-dialog .password-control button {
+  position: absolute;
+  top: 50%;
+  right: 6px;
+  display: grid;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  place-items: center;
+  transform: translateY(-50%);
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: #6b5459;
+  font: 600 18px/1 Inter, sans-serif;
+  cursor: pointer;
+}
+.admin-password-dialog .password-control button:hover { background: rgba(43,26,29,.07); color: #7a1f2e; }
+.admin-password-dialog .password-control button:focus-visible { outline: 2px solid #e0b13a; outline-offset: 1px; }
 @media (max-width: 650px) {
   .profile-summary-grid,
   .admin-profile-form {

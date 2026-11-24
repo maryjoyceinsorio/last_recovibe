@@ -589,17 +589,17 @@
   }
 
   .sa-summary {
-    display: flex;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 9px;
-    margin-right: -15px;
-    padding: 2px 15px 7px 2px;
-    overflow-x: auto;
-    scroll-snap-type: x mandatory;
+    margin-right: 0;
+    padding: 2px 0 7px;
+    overflow: visible;
   }
 
   .sa-summary-card {
-    flex: 0 0 148px;
-    scroll-snap-align: start;
+    min-width: 0;
+    width: 100%;
   }
 
   .sa-filter-top {

@@ -2384,3 +2384,31 @@ body.dark-mode mark.search-highlight {
   background: transparent !important;
   cursor: default !important;
 }
+
+@media (max-width: 760px) {
+  .event-card,
+  .event-body,
+  .event-foot,
+  .event-actions {
+    min-width: 0;
+  }
+
+  .event-foot {
+    align-items: flex-start;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .event-foot > *,
+  .event-actions > * {
+    min-width: 0;
+    max-width: 100%;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+
+  .event-actions {
+    justify-content: flex-start;
+    flex-wrap: wrap;
+  }
+}

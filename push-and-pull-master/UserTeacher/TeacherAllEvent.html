@@ -10,6 +10,7 @@
       rel="stylesheet"
     />
     <link rel="stylesheet" href="TeacherAllEvent.css" />
+    <link rel="stylesheet" href="../AllEventsDetailsExtras.css" />
   <style id="page-preloader-style">
     html[data-page-loading="true"] [data-page-load-container] { position: relative; }
     #userAvatar:empty,
@@ -354,7 +355,7 @@
           aria-labelledby="teacherCurrentHeadingText"
         >
           <div class="teacher-results-bar" id="teacherCurrentHeading">
-            <h2 id="teacherCurrentHeadingText">Events Happening Now</h2>
+            <h2 id="teacherCurrentHeadingText">Happening Now</h2>
           </div>
           <section
             class="teacher-event-list"
@@ -368,7 +369,7 @@
           aria-labelledby="teacherAllEventsHeadingText"
         >
           <div class="teacher-results-bar">
-            <h2 id="teacherAllEventsHeadingText">All Events</h2>
+            <h2 id="teacherAllEventsHeadingText">Upcoming</h2>
             <span id="teacherResultCount"></span>
           </div>
           <section
@@ -420,10 +421,12 @@
             ><span id="teacherModalStatus"></span>
           </div>
         </div>
+        <div id="teacherModalAdditionalDetails"></div>
       </article>
     </div>
 
     <script src="TeacherEventVisibility.js"></script>
+    <script src="../AllEventsDetailsExtras.js"></script>
     <script type="module" src="TeacherAllEvent.js"></script>
     <script>
     (() => {

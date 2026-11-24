@@ -37,8 +37,37 @@ service cloud.firestore {
     function isOsasAccount() {
       let profile = currentAdminProfile();
       let role = normalizeAccessKey(profile.get("role", profile.get("userRole", "")));
+      let osasMarker = normalizeAccessKey(profile.get("userRole", "")) == "osas"
+        || normalizeAccessKey(profile.get("roleSuffix", "")).matches(".*osas.*")
+        || normalizeAccessKey(profile.get("approverRole", "")).matches(".*osas.*")
+        || normalizeAccessKey(profile.get("approver_role", "")).matches(".*osas.*")
+        || normalizeAccessKey(profile.get("position", "")).matches(".*osas.*")
+        || normalizeAccessKey(profile.get("title", "")).matches(".*osas.*")
+        || normalizeAccessKey(profile.get("role_title", "")).matches(".*osas.*")
+        || normalizeAccessKey(profile.get("adminId", "")).matches(".*osas.*")
+        || normalizeAccessKey(profile.get("admin_id", "")).matches(".*osas.*")
+        || normalizeAccessKey(profile.get("accountNumber", "")).matches(".*osas.*")
+        || normalizeAccessKey(profile.get("accountNo", "")).matches(".*osas.*")
+        || normalizeAccessKey(profile.get("account_number", "")).matches(".*osas.*")
+        || normalizeAccessKey(profile.get("account_no", "")).matches(".*osas.*")
+        || normalizeAccessKey(profile.get("approverId", "")).matches(".*osas.*")
+        || normalizeAccessKey(profile.get("approver_id", "")).matches(".*osas.*")
+        || normalizeAccessKey(profile.get("employeeId", "")).matches(".*osas.*")
+        || normalizeAccessKey(profile.get("employee_id", "")).matches(".*osas.*")
+        || normalizeAccessKey(profile.get("approvalStage", "")).matches(".*osas.*")
+        || normalizeAccessKey(profile.get("approvalStageKey", "")).matches(".*osas.*")
+        || normalizeAccessKey(profile.get("assignedApprovalStage", "")).matches(".*osas.*")
+        || normalizeAccessKey(profile.get("approverStage", "")).matches(".*osas.*")
+        || normalizeAccessKey(profile.get("approverKey", "")).matches(".*osas.*")
+        || normalizeAccessKey(profile.get("approvalRole", "")).matches(".*osas.*")
+        || normalizeAccessKey(profile.get("assignedRole", "")).matches(".*osas.*")
+        || normalizeAccessKey(profile.get("assignedApprover", "")).matches(".*osas.*")
+        || normalizeAccessKey(profile.get("adminRole", "")).matches(".*osas.*")
+        || normalizeAccessKey(profile.get("roleName", "")).matches(".*osas.*")
+        || normalizeAccessKey(profile.get("stageKey", "")).matches(".*osas.*");
       let status = normalizeAccessKey(profile.get("status", "Active"));
-      return role == "osas" && !(status in ["disabled", "inactive", "suspended"]);
+      return (role == "osas" || (role in ["admin", "superadmin"] && osasMarker))
+        && !(status in ["disabled", "inactive", "suspended"]);
     }
 
     function isOrganizationAdviser() {
@@ -192,13 +221,88 @@ service cloud.firestore {
     }
 
     match /adminUser/{userId} {
+      function validOwnProfileUpdate() {
+        let changed = request.resource.data.diff(resource.data).affectedKeys();
+        return changed.hasOnly([
+            "firstName", "middleName", "lastName", "fullName", "name",
+            "contactNumber", "contact", "email", "pendingEmail"
+          ])
+          && (!changed.hasAny(["firstName"])
+            || (request.resource.data.get("firstName", "") is string
+              && request.resource.data.get("firstName", "").size() > 0
+              && request.resource.data.get("firstName", "").size() <= 100))
+          && (!changed.hasAny(["middleName"])
+            || (request.resource.data.get("middleName", "") is string
+              && request.resource.data.get("middleName", "").size() <= 100))
+          && (!changed.hasAny(["lastName"])
+            || (request.resource.data.get("lastName", "") is string
+              && request.resource.data.get("lastName", "").size() > 0
+              && request.resource.data.get("lastName", "").size() <= 100))
+          && (!changed.hasAny(["fullName"])
+            || (request.resource.data.get("fullName", "") is string
+              && request.resource.data.get("fullName", "").size() > 0
+              && request.resource.data.get("fullName", "").size() <= 302))
+          && (!changed.hasAny(["name"])
+            || (request.resource.data.get("name", "") is string
+              && request.resource.data.get("name", "").size() > 0
+              && request.resource.data.get("name", "").size() <= 302))
+          && (!changed.hasAny(["contactNumber"])
+            || (request.resource.data.get("contactNumber", "") is string
+              && request.resource.data.get("contactNumber", "").matches("^09[0-9]{9}$")))
+          && (!changed.hasAny(["contact"])
+            || (request.resource.data.get("contact", "") is string
+              && request.resource.data.get("contact", "").matches("^09[0-9]{9}$")))
+          && (!changed.hasAny(["email"])
+            || (request.resource.data.get("email", "") is string
+              && request.resource.data.get("email", "").size() > 0
+              && request.resource.data.get("email", "").size() <= 254))
+          && (!changed.hasAny(["pendingEmail"])
+            || (request.resource.data.get("pendingEmail", "") is string
+              && request.resource.data.get("pendingEmail", "").size() <= 254));
+      }
+      function validOsasOwnAdminDetailsUpdate() {
+        let changed = request.resource.data.diff(resource.data).affectedKeys();
+        return changed.hasOnly([
+            "position", "campus", "department", "designation",
+            "organization", "adminId", "updatedAt"
+          ])
+          && changed.hasAny([
+            "position", "campus", "department", "designation",
+            "organization", "adminId"
+          ])
+          && (!changed.hasAny(["position"])
+            || (request.resource.data.get("position", "") is string
+              && request.resource.data.get("position", "").size() > 0
+              && request.resource.data.get("position", "").size() <= 150))
+          && (!changed.hasAny(["campus"])
+            || (request.resource.data.get("campus", "") is string
+              && request.resource.data.get("campus", "").size() > 0
+              && request.resource.data.get("campus", "").size() <= 150))
+          && (!changed.hasAny(["department"])
+            || (request.resource.data.get("department", "") is string
+              && request.resource.data.get("department", "").size() <= 150))
+          && (!changed.hasAny(["designation"])
+            || (request.resource.data.get("designation", "") is string
+              && request.resource.data.get("designation", "").size() <= 150))
+          && (!changed.hasAny(["organization"])
+            || (request.resource.data.get("organization", "") is string
+              && request.resource.data.get("organization", "").size() <= 200))
+          && (!changed.hasAny(["adminId"])
+            || (request.resource.data.get("adminId", "") is string
+              && request.resource.data.get("adminId", "").size() > 0
+              && request.resource.data.get("adminId", "").size() <= 100))
+          && (!changed.hasAny(["updatedAt"])
+            || request.resource.data.get("updatedAt", null) is timestamp);
+      }
       allow read: if signedIn();
       allow create, update, delete: if signedIn()
         && isSuperAdminAccount();
       allow update: if signedIn()
         && request.auth.uid == userId
-        && request.resource.data.diff(resource.data).affectedKeys()
-          .hasOnly(["lastActiveAt", "isLoggedIn"]);
+        && (
+          validOwnProfileUpdate()
+          || (isOsasAccount() && validOsasOwnAdminDetailsUpdate())
+        );
     }
 
     match /approverOrganizations/{userId} {

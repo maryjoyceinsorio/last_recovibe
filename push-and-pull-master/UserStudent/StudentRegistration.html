@@ -180,7 +180,7 @@
                 <input
                   type="text"
                   id="reg-lastname"
-                  placeholder="David"
+                  placeholder="Enter your Last Name"
                   required
                   minlength="2"
                   maxlength="50"
@@ -195,7 +195,7 @@
                 <input
                   type="text"
                   id="reg-firstname"
-                  placeholder="Marv"
+                  placeholder="Enter your First Name"
                   required
                   minlength="2"
                   maxlength="50"
@@ -210,7 +210,7 @@
                 <input
                   type="text"
                   id="reg-middlename"
-                  placeholder="Lebron"
+                  placeholder="Enter your Middle Name (optional)"
                   minlength="2"
                   maxlength="50"
                   autocomplete="additional-name"
@@ -229,7 +229,7 @@
               <div class="field" id="field-reg-gender">
                 <label for="reg-gender">Gender</label>
                 <select id="reg-gender" required aria-describedby="reg-gender-error">
-                  <option value="">Select gender</option>
+                  <option value="">Select your Gender</option>
                   <option value="Male">Male</option>
                   <option value="Female">Female</option>
                   <option value="Prefer not to say">Prefer not to say</option>
@@ -241,7 +241,7 @@
                 <input
                   type="text"
                   id="reg-student-id"
-                  placeholder="2025-12345-BN-0"
+                  placeholder="Enter your Student Number"
                   required
                   maxlength="15"
                   autocomplete="username"
@@ -257,6 +257,7 @@
                   type="tel"
                   id="reg-contact"
                   value="09"
+                  placeholder="Enter your Contact Number"
                   required
                   pattern="09[0-9]{9}"
                   maxlength="11"
@@ -269,7 +270,7 @@
               <div class="field" id="field-reg-department">
                 <label for="reg-department">Department</label>
                 <select id="reg-department" required aria-describedby="reg-department-error">
-                  <option value="">Select department</option>
+                  <option value="">Select your Department</option>
                   <option value="BSCpE" title="Bachelor of Science in Computer Engineering">
                     Bachelor of Science in Computer Engineering (BSCpE)
                   </option>
@@ -305,7 +306,7 @@
                 <input
                   type="text"
                   id="reg-year"
-                  placeholder="2-3"
+                  placeholder="Enter your Year and Section"
                   required
                   maxlength="3"
                   inputmode="numeric"
@@ -320,7 +321,7 @@
                   required
                   aria-describedby="reg-course-organization-error"
                 >
-                  <option value="">Select course organization</option>
+                  <option value="">Select your Course Organization</option>
                   <option value="ACES">ACES &mdash; Association of Computer Engineering Students</option>
                   <option value="HRSS">HRSS &mdash; Human Resource Students Society</option>
                   <option value="IBITS">IBITS &mdash; Institute of Bachelors in Information Technology Studies</option>
@@ -337,7 +338,7 @@
               <input
                 type="email"
                 id="reg-email"
-                placeholder="Enter your email address"
+                placeholder="Enter your Email Address"
                 required
                 maxlength="254"
                 autocomplete="email"
@@ -355,7 +356,7 @@
                 <input
                   type="password"
                   id="reg-pass"
-                  placeholder="At least 8 characters"
+                  placeholder="Enter your Password (8+ characters)"
                   required
                   maxlength="64"
                   autocomplete="new-password"
@@ -411,7 +412,7 @@
                 <input
                   type="password"
                   id="reg-confirm"
-                  placeholder="••••••••"
+                  placeholder="Re-enter your Password"
                   required
                   autocomplete="new-password"
                   aria-describedby="reg-confirm-error"
@@ -458,6 +459,7 @@
                   </svg>
                 </button>
               </div>
+              <div class="error-msg confirm-error" id="reg-confirm-error" role="alert"></div>
             </div>
 
             <ul class="password-checklist" id="reg-pass-checklist">
@@ -468,7 +470,6 @@
               <li data-rule="special">Special character</li>
             </ul>
             <div class="error-msg password-error" id="reg-pass-error" role="alert"></div>
-            <div class="error-msg confirm-error" id="reg-confirm-error" role="alert"></div>
             <div class="form-error" id="registration-form-error" role="alert" aria-live="assertive"></div>
             <button type="submit" class="btn-primary" id="create-account">
               Create account

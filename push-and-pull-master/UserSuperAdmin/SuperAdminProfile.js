@@ -12,6 +12,8 @@ import {
 
 (async () => {
   await authReady;
+  const validNamePattern = /^(?=.*\p{L})[\p{L}\p{M} .'-]+$/u;
+  const isValidNamePart = (value) => validNamePattern.test(String(value || "").trim());
   const storageKey = "recovibeAdminProfile";
   const fallback = {
     firstName: "",
@@ -82,6 +84,21 @@ import {
 
   const detailsView = document.getElementById("detailsCardView");
   const detailsEdit = document.getElementById("detailsCardEdit");
+  const detailsInputs = ["inputDepartment", "inputDesignation", "inputCampus"]
+    .map((id) => document.getElementById(id));
+  const detailsSaveButton = document.getElementById("detailsSaveBtn");
+  const detailsUnsavedCount = document.getElementById("detailsUnsavedCount");
+  const originalDetails = () => [
+    profile.department || profile.organization || "",
+    profile.designation || profile.role || "",
+    profile.campus || "",
+  ];
+  function updateDetailsDirty() {
+    const originals = originalDetails();
+    const changed = detailsInputs.some((input, index) => input.value.trim() !== originals[index]);
+    detailsUnsavedCount.textContent = changed ? "Unsaved changes" : "No changes yet";
+    detailsSaveButton.disabled = !changed;
+  }
   document.getElementById("btnEditDetails")?.addEventListener("click", () => {
     document.getElementById("inputDepartment").value = profile.department || profile.organization || "";
     document.getElementById("inputDesignation").value = profile.designation || profile.role || "";
@@ -89,47 +106,133 @@ import {
     document.getElementById("editAdminId").textContent = profile.accountNumber || profile.accountNo || profile.employeeId || profile.uid || "Not set";
     detailsView.hidden = true;
     detailsEdit.hidden = false;
+    updateDetailsDirty();
   });
+  detailsInputs.forEach((input) => input.addEventListener("input", updateDetailsDirty));
   document.getElementById("detailsCancelBtn")?.addEventListener("click", () => {
     detailsEdit.hidden = true;
     detailsView.hidden = false;
   });
-  detailsEdit?.addEventListener("submit", (event) => {
+  detailsEdit?.addEventListener("submit", async (event) => {
     event.preventDefault();
-    profile.department = document.getElementById("inputDepartment").value.trim();
-    profile.designation = document.getElementById("inputDesignation").value.trim();
-    profile.campus = document.getElementById("inputCampus").value.trim();
-    saveProfile();
-    updateDisplay();
-    detailsEdit.hidden = true;
-    detailsView.hidden = false;
-    showFeedback("Super Admin details updated successfully.");
+    const authUser = auth?.currentUser;
+    if (!authUser?.uid || !db) {
+      showFeedback("Sign in again before updating your profile details.", true);
+      return;
+    }
+    const updatedDetails = {
+      department: detailsInputs[0].value.trim(),
+      designation: detailsInputs[1].value.trim(),
+      campus: detailsInputs[2].value.trim(),
+    };
+    detailsSaveButton.disabled = true;
+    detailsSaveButton.textContent = "Saving...";
+    try {
+      await saveProfileFields(
+        db,
+        authUser.uid,
+        "superadmin",
+        updatedDetails,
+        profileCollectionsForRole("superadmin"),
+      );
+      profile = { ...profile, uid: authUser.uid, ...updatedDetails };
+      saveProfile();
+      updateDisplay();
+      detailsEdit.hidden = true;
+      detailsView.hidden = false;
+      showFeedback("Super Admin details updated successfully.");
+    } catch (error) {
+      console.error("[SuperAdminProfile] Could not update profile details:", error);
+      showFeedback(error?.message || "Could not save your profile details.", true);
+    } finally {
+      detailsSaveButton.textContent = "Save";
+      updateDetailsDirty();
+    }
   });
 
   const nameView = document.getElementById("nameCardView");
   const nameEdit = document.getElementById("nameCardEdit");
+  const nameInputs = ["inputFirstName", "inputMiddleName", "inputLastName"]
+    .map((id) => document.getElementById(id));
+  nameInputs.forEach((input) => { input.maxLength = 100; });
+  const nameSaveButton = document.getElementById("nameSaveBtn");
+  const nameUnsavedCount = document.getElementById("nameUnsavedCount");
+  function updateNameDirty() {
+    const [first, middle, last] = nameInputs.map((input) => input.value.trim());
+    const changed =
+      first !== String(profile.firstName || "").trim() ||
+      middle !== String(profile.middleName || "").trim() ||
+      last !== String(profile.lastName || "").trim();
+    nameUnsavedCount.textContent = changed ? "Unsaved changes" : "No changes yet";
+    nameSaveButton.disabled = !changed;
+  }
   document.getElementById("btnEditName")?.addEventListener("click", () => {
-    document.getElementById("inputFirstName").value = profile.firstName || "";
-    document.getElementById("inputMiddleName").value = profile.middleName || "";
-    document.getElementById("inputLastName").value = profile.lastName || "";
+    nameInputs[0].value = profile.firstName || "";
+    nameInputs[1].value = profile.middleName || "";
+    nameInputs[2].value = profile.lastName || "";
     nameView.hidden = true;
     nameEdit.hidden = false;
+    updateNameDirty();
+    nameInputs[0].focus();
   });
+  nameInputs.forEach((input) => input.addEventListener("input", updateNameDirty));
   document.getElementById("nameCancelBtn")?.addEventListener("click", () => {
     nameEdit.hidden = true;
     nameView.hidden = false;
   });
-  nameEdit?.addEventListener("submit", (event) => {
+  nameEdit?.addEventListener("submit", async (event) => {
     event.preventDefault();
-    profile.firstName = document.getElementById("inputFirstName").value.trim();
-    profile.middleName = document.getElementById("inputMiddleName").value.trim();
-    profile.lastName = document.getElementById("inputLastName").value.trim();
-    if (!profile.firstName || !profile.lastName) return;
-    saveProfile();
-    updateDisplay();
-    nameEdit.hidden = true;
-    nameView.hidden = false;
-    showFeedback("Profile name updated successfully.");
+    const [firstName, middleName, lastName] = nameInputs.map((input) => input.value.trim());
+    if (
+      !isValidNamePart(firstName) ||
+      (middleName && !isValidNamePart(middleName)) ||
+      !isValidNamePart(lastName)
+    ) {
+      showFeedback("Enter valid first and last names; middle name may be left blank.", true);
+      const invalidInput = !isValidNamePart(firstName)
+        ? nameInputs[0]
+        : middleName && !isValidNamePart(middleName)
+          ? nameInputs[1]
+          : nameInputs[2];
+      invalidInput.focus();
+      return;
+    }
+    const authUser = auth?.currentUser;
+    if (!authUser?.uid || !db) {
+      showFeedback("Sign in again before updating your profile name.", true);
+      return;
+    }
+    const fullName = [firstName, middleName, lastName].filter(Boolean).join(" ");
+    const updatedName = {
+      firstName,
+      middleName,
+      lastName,
+      fullName,
+      name: fullName,
+    };
+    nameSaveButton.disabled = true;
+    nameSaveButton.textContent = "Saving...";
+    try {
+      await saveProfileFields(
+        db,
+        authUser.uid,
+        "superadmin",
+        updatedName,
+        profileCollectionsForRole("superadmin"),
+      );
+      profile = { ...profile, uid: authUser.uid, ...updatedName };
+      saveProfile();
+      updateDisplay();
+      nameEdit.hidden = true;
+      nameView.hidden = false;
+      showFeedback("Profile name updated successfully.");
+    } catch (error) {
+      console.error("[SuperAdminProfile] Could not update profile name:", error);
+      showFeedback(error?.message || "Could not save your profile name.", true);
+    } finally {
+      nameSaveButton.textContent = "Save";
+      updateNameDirty();
+    }
   });
 
   const contactView = document.getElementById("contactCardView");
@@ -146,6 +249,7 @@ import {
   });
   const contactEmailInput = document.getElementById("inputContactEmail");
   const contactPhoneInput = document.getElementById("inputContactPhone");
+  contactEmailInput.maxLength = 254;
   contactPhoneInput?.addEventListener("input", () => {
     contactPhoneInput.value = formatPhilippineMobile(contactPhoneInput.value);
   });

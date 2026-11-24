@@ -523,7 +523,7 @@ body {
 }
 .admin-calendar-toolbar {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   gap: 12px;
   margin-bottom: 14px;
@@ -535,7 +535,7 @@ body {
   gap: 8px;
 }
 .admin-calendar-navigation {
-  justify-content: center;
+  justify-content: flex-end;
 }
 .admin-calendar-selectors select,
 .admin-calendar-toolbar button,
@@ -858,7 +858,8 @@ body {
     min-width: 82px;
   }
   .admin-calendar-navigation {
-    justify-content: flex-start;
+    grid-column: 1 / -1;
+    justify-content: flex-end;
     gap: 6px;
   }
   .admin-calendar-toolbar button,

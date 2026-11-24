@@ -308,13 +308,18 @@ import {
         return;
       }
 
-      await syncVerifiedProfileEmail(
+      const emailSync = await syncVerifiedProfileEmail(
         auth,
         db,
         credential.user,
         "admin",
         profileCollectionsForRole("admin"),
       );
+      if (emailSync) {
+        profile.email = emailSync.email;
+        if (emailSync.pendingEmail) profile.pendingEmail = emailSync.pendingEmail;
+        else delete profile.pendingEmail;
+      }
       const authenticatedEmail = credential.user.email || normalizedEmail;
       const name = profileName(profile, authenticatedEmail);
       const authenticatedProfile = {

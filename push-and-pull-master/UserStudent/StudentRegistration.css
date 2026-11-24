@@ -483,7 +483,6 @@ body.is-leaving {
     "email pass confirm"
     "checklist checklist checklist"
     "password-error password-error password-error"
-    "confirm-error confirm-error confirm-error"
     "form-error form-error form-error"
     "create create create";
   gap: 12px 22px;
@@ -603,7 +602,6 @@ body.is-leaving {
       "confirm"
       "checklist"
       "password-error"
-      "confirm-error"
       "create";
   }
 }
@@ -872,7 +870,6 @@ body.is-leaving {
       "pass confirm"
       "checklist checklist"
       "password-error password-error"
-      "confirm-error confirm-error"
       "form-error form-error"
       "create create";
   }
@@ -906,7 +903,6 @@ body.is-leaving {
       "confirm"
       "checklist"
       "password-error"
-      "confirm-error"
       "form-error"
       "create";
     column-gap: 0;
@@ -951,7 +947,6 @@ body.is-leaving {
     "email pass confirm"
     "checklist checklist checklist"
     "password-error password-error password-error"
-    "confirm-error confirm-error confirm-error"
     "form-error form-error form-error"
     "create create create";
   column-gap: 16px;
@@ -975,6 +970,10 @@ body.is-leaving {
 #student-registration-form #field-reg-pass,
 #student-registration-form #field-reg-confirm {
   grid-template-rows: auto 40px;
+}
+
+#student-registration-form #field-reg-confirm {
+  grid-template-rows: auto 40px auto;
 }
 
 #student-registration-form .field#field-reg-pass::before,
@@ -1007,6 +1006,15 @@ body.is-leaving {
   overflow: hidden;
   font-size: 11px;
   line-height: 14px;
+}
+
+#student-registration-form #field-reg-confirm > #reg-confirm-error {
+  grid-row: 3;
+  height: auto;
+  min-height: 18px;
+  overflow: visible;
+  color: #ffffff;
+  font-weight: 600;
 }
 
 #student-registration-form .field input,
@@ -1136,8 +1144,6 @@ body.is-leaving {
 }
 
 #student-registration-form #reg-confirm-error {
-  grid-area: confirm-error;
-  grid-column: 1 / -1;
   align-self: start;
   width: 100%;
   height: auto;
@@ -1195,7 +1201,6 @@ body.is-leaving {
       "pass confirm"
       "checklist checklist"
       "password-error password-error"
-      "confirm-error confirm-error"
       "form-error form-error"
       "create create";
     column-gap: 16px;
@@ -1225,7 +1230,6 @@ body.is-leaving {
       "confirm"
       "checklist"
       "password-error"
-      "confirm-error"
       "form-error"
       "create";
     column-gap: 0;
@@ -1376,6 +1380,10 @@ body.is-leaving {
     grid-template-rows: auto 34px;
   }
 
+  #student-registration-form #field-reg-confirm {
+    grid-template-rows: auto 34px auto;
+  }
+
   #student-registration-form .field input,
   #student-registration-form .field select,
   #student-registration-form .field .native-filter-dropdown .filter-button,
@@ -1425,6 +1433,12 @@ body.is-leaving {
     min-height: 12px;
     font-size: 10px;
     line-height: 12px;
+  }
+
+  #student-registration-form #field-reg-confirm > #reg-confirm-error {
+    height: auto;
+    min-height: 12px;
+    overflow: visible;
   }
 
   #student-registration-form #create-account {

@@ -2,14 +2,18 @@ import {
   onAuthStateChanged,
   verifyBeforeUpdateEmail,
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
+import {
+  deleteField,
+  doc,
+  setDoc,
+  writeBatch,
+} from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 import { auth, authReady, db, isFirebaseConfigured } from "../UserStudent/firebaseConfig.js";
 import {
   formatPhilippineMobile,
   isValidPhilippineMobile,
   mobileDigits,
   profileCollectionsForRole,
-  savePendingProfileEmail,
-  saveProfileFields,
   syncVerifiedProfileEmail,
 } from "../portalProfileAccount.js";
 import {
@@ -24,8 +28,38 @@ import {
   const storageKey = "recovibeCurrentTeacher";
   const teacherIdKey = "recovibeTeacherId";
 
+  async function saveAccountProfileFields(uid, fields) {
+    const batch = writeBatch(db);
+    batch.set(doc(db, "users", uid), fields, { merge: true });
+    batch.set(doc(db, "adminUser", uid), fields, { merge: true });
+    await batch.commit();
+  }
+
   function formatPhilippinePhone(raw) {
     return formatPhilippineMobile(raw);
+  }
+
+  const validNamePattern = /^[\p{L}\p{M}]+(?:[ .'-][\p{L}\p{M}]+)*\.?$/u;
+  const numberNameError = "Numbers are not allowed in names. Use letters, spaces, hyphens, periods, and apostrophes only.";
+  const invalidNameError = "Use letters, spaces, hyphens, periods, and apostrophes only.";
+  function isValidNamePart(value) {
+    const normalized = String(value || "").trim().normalize("NFC");
+    const length = Array.from(normalized).length;
+    return length >= 1 && length <= 50 && validNamePattern.test(normalized);
+  }
+  function sanitizeNameInput(input) {
+    const originalValue = input.value;
+    const selectionStart = input.selectionStart === null ? originalValue.length : input.selectionStart;
+    const selectionEnd = input.selectionEnd === null ? selectionStart : input.selectionEnd;
+    const safeBeforeStart = originalValue.slice(0, selectionStart).replace(/[^\p{L}\p{M} .'-]/gu, "");
+    const safeSelection = originalValue.slice(selectionStart, selectionEnd).replace(/[^\p{L}\p{M} .'-]/gu, "");
+    const sanitizedValue = originalValue.replace(/[^\p{L}\p{M} .'-]/gu, "");
+    if (sanitizedValue === originalValue) return;
+    input.value = sanitizedValue;
+    input.setSelectionRange(
+      safeBeforeStart.length,
+      safeBeforeStart.length + safeSelection.length,
+    );
   }
 
   let profile = {};
@@ -135,7 +169,11 @@ import {
     const viewRole = document.getElementById("viewRole");
     if (viewRole) viewRole.textContent = profile.role || "";
     const viewCampus = document.getElementById("viewCampus");
-    if (viewCampus) viewCampus.textContent = profile.campus || "";
+    if (viewCampus) {
+      viewCampus.textContent = profile.campus || "";
+      const campusField = viewCampus.closest(".field-item");
+      if (campusField) campusField.hidden = true;
+    }
   }
 
   function syncProfileEmail(authUser) {
@@ -145,8 +183,16 @@ import {
       authUser,
       "teacher",
       profileCollectionsForRole("teacher"),
-    ).then((result) => {
+    ).then(async (result) => {
       if (!result || auth?.currentUser?.uid !== authUser.uid) return;
+      await setDoc(
+        doc(db, "users", authUser.uid),
+        {
+          email: result.email,
+          pendingEmail: result.pendingEmail || deleteField(),
+        },
+        { merge: true },
+      );
       profile.uid = authUser.uid;
       profile.email = result.email;
       if (result.pendingEmail) profile.pendingEmail = result.pendingEmail;
@@ -156,6 +202,7 @@ import {
       if (result.changed) showFeedback("Email address verified and updated.");
     }).catch((error) => {
       console.warn("[TeacherProfile] Could not sync verified email:", error);
+      showFeedback(error?.message || "Could not sync the verified email to your profile.", true);
     });
   }
 
@@ -173,9 +220,16 @@ import {
   const nameSaveBtn = document.getElementById("nameSaveBtn");
   const errFirstName = document.getElementById("errFirstName");
   const errLastName = document.getElementById("errLastName");
+  let nameInputFeedback = "";
+  let nameInputFeedbackTarget = null;
+  [inputFirstName, inputMiddleName, inputLastName].forEach((input) => {
+    if (input) input.maxLength = 100;
+  });
 
   function setNameEditMode(editing) {
     if (!nameCardView || !nameCardEdit) return;
+    nameInputFeedback = "";
+    nameInputFeedbackTarget = null;
     if (editing) {
       inputFirstName.value = profile.firstName || "";
       inputMiddleName.value = profile.middleName || "";
@@ -184,7 +238,7 @@ import {
       inputLastName.classList.remove("is-invalid");
       if (errFirstName) errFirstName.classList.remove("is-visible");
       if (errLastName) errLastName.classList.remove("is-visible");
-      checkNameDirty();
+      handleNameInput();
       nameCardView.hidden = true;
       nameCardEdit.hidden = false;
       inputFirstName.focus();
@@ -207,7 +261,11 @@ import {
     if (curMid !== origMid) changes++;
     if (curLast !== origLast) changes++;
 
-    const isValid = Boolean(curFirst && curLast);
+    const isValid =
+      isValidNamePart(curFirst) &&
+      (!curMid || isValidNamePart(curMid)) &&
+      isValidNamePart(curLast) &&
+      !nameInputFeedback;
     const isDirty = changes > 0;
 
     nameSaveBtn.disabled = !isDirty || !isValid;
@@ -225,30 +283,130 @@ import {
   if (nameCancelBtn) {
     nameCancelBtn.addEventListener("click", () => setNameEditMode(false));
   }
-  if (inputFirstName) inputFirstName.addEventListener("input", checkNameDirty);
-  if (inputMiddleName) inputMiddleName.addEventListener("input", checkNameDirty);
-  if (inputLastName) inputLastName.addEventListener("input", checkNameDirty);
+  function validateNameField(input, errorElement, required, label, feedback = "") {
+    if (!input || !errorElement) return;
+    const value = input.value.trim();
+    const hasDigits = /\d/.test(value);
+    const validValue = required ? isValidNamePart(value) : !value || isValidNamePart(value);
+    const valid = validValue && !feedback;
+    input.classList.toggle("is-invalid", !valid);
+    errorElement.classList.toggle("is-visible", !valid);
+    if (!valid) {
+      errorElement.textContent = feedback || (hasDigits
+        ? numberNameError
+        : value
+          ? invalidNameError
+          : `${label} name is required.`);
+    } else {
+      errorElement.textContent = "";
+    }
+  }
+  function handleNameInput(input = null) {
+    if (input) {
+      const originalValue = input.value;
+      const hasDigits = /\d/.test(originalValue);
+      const hasInvalidCharacters = /[^\p{L}\p{M} .'-]/u.test(originalValue);
+      sanitizeNameInput(input);
+      nameInputFeedback = hasDigits
+        ? numberNameError
+        : hasInvalidCharacters
+          ? invalidNameError
+          : "";
+      nameInputFeedbackTarget = nameInputFeedback ? input : null;
+    }
+    validateNameField(inputFirstName, errFirstName, true, "First",
+      input === inputFirstName ? nameInputFeedback : "");
+    validateNameField(inputMiddleName, document.getElementById("errMiddleName"), false, "Middle",
+      input === inputMiddleName ? nameInputFeedback : "");
+    validateNameField(inputLastName, errLastName, true, "Last",
+      input === inputLastName ? nameInputFeedback : "");
+    checkNameDirty();
+  }
+  [
+    { input: inputFirstName, error: errFirstName, required: true, label: "First" },
+    { input: inputMiddleName, error: document.getElementById("errMiddleName"), required: false, label: "Middle" },
+    { input: inputLastName, error: errLastName, required: true, label: "Last" },
+  ].forEach(({ input, error, required, label }) => {
+    if (!input) return;
+    const rejectDigit = (event) => {
+      if (!/^[0-9]$/.test(event.key)) return;
+      event.preventDefault();
+      nameInputFeedback = numberNameError;
+      nameInputFeedbackTarget = input;
+      validateNameField(input, error, required, label, nameInputFeedback);
+      checkNameDirty();
+    };
+    input.addEventListener("keydown", rejectDigit);
+    input.addEventListener("beforeinput", (event) => {
+      if (typeof event.data !== "string" || !/\d/.test(event.data)) return;
+      event.preventDefault();
+      nameInputFeedback = numberNameError;
+      nameInputFeedbackTarget = input;
+      validateNameField(input, error, required, label, nameInputFeedback);
+      checkNameDirty();
+    });
+    input.addEventListener("input", () => handleNameInput(input));
+  });
 
   if (nameCardEdit) {
-    nameCardEdit.addEventListener("submit", (e) => {
+    nameCardEdit.addEventListener("submit", async (e) => {
       e.preventDefault();
       const first = inputFirstName.value.trim();
       const mid = inputMiddleName.value.trim();
       const last = inputLastName.value.trim();
 
+      if (nameInputFeedback) {
+        const feedbackInput = nameInputFeedbackTarget || inputFirstName;
+        const feedbackError = feedbackInput === inputFirstName
+          ? errFirstName
+          : feedbackInput === inputMiddleName
+            ? document.getElementById("errMiddleName")
+            : errLastName;
+        feedbackInput.classList.add("is-invalid");
+        if (feedbackError) {
+          feedbackError.textContent = nameInputFeedback;
+          feedbackError.classList.add("is-visible");
+        }
+        return;
+      }
+
       let hasError = false;
-      if (!first) {
+      if (!isValidNamePart(first)) {
         inputFirstName.classList.add("is-invalid");
-        if (errFirstName) errFirstName.classList.add("is-visible");
+        if (errFirstName) {
+          errFirstName.textContent = first
+            ? (/\d/.test(first) ? numberNameError : invalidNameError)
+            : "First name is required.";
+          errFirstName.classList.add("is-visible");
+        }
         hasError = true;
       } else {
         inputFirstName.classList.remove("is-invalid");
         if (errFirstName) errFirstName.classList.remove("is-visible");
       }
 
-      if (!last) {
+      if (mid && !isValidNamePart(mid)) {
+        inputMiddleName.classList.add("is-invalid");
+        const errMiddleName = document.getElementById("errMiddleName");
+        if (errMiddleName) {
+          errMiddleName.textContent = /\d/.test(mid) ? numberNameError : invalidNameError;
+          errMiddleName.classList.add("is-visible");
+        }
+        hasError = true;
+      } else {
+        inputMiddleName.classList.remove("is-invalid");
+        const errMiddleName = document.getElementById("errMiddleName");
+        if (errMiddleName) errMiddleName.classList.remove("is-visible");
+      }
+
+      if (!isValidNamePart(last)) {
         inputLastName.classList.add("is-invalid");
-        if (errLastName) errLastName.classList.add("is-visible");
+        if (errLastName) {
+          errLastName.textContent = last
+            ? (/\d/.test(last) ? numberNameError : invalidNameError)
+            : "Last name is required.";
+          errLastName.classList.add("is-visible");
+        }
         hasError = true;
       } else {
         inputLastName.classList.remove("is-invalid");
@@ -257,15 +415,39 @@ import {
 
       if (hasError) return;
 
-      profile.firstName = first;
-      profile.middleName = mid;
-      profile.lastName = last;
-      profile.name = [first, mid, last].filter(Boolean).join(" ");
+      const authUser = auth?.currentUser;
+      if (!authUser?.uid || authUser.uid !== profile.uid || !db) {
+        showFeedback("Sign in again before updating your profile name.", true);
+        return;
+      }
 
-      localStorage.setItem(storageKey, JSON.stringify(profile));
-      updateDisplay();
-      setNameEditMode(false);
-      showFeedback("Profile name updated successfully.");
+      const updatedName = [first, mid, last].filter(Boolean).join(" ");
+      const updatedNameFields = {
+        firstName: first,
+        middleName: mid,
+        lastName: last,
+        fullName: updatedName,
+        name: updatedName,
+      };
+      nameSaveBtn.disabled = true;
+      nameSaveBtn.textContent = "Saving...";
+      try {
+        await saveAccountProfileFields(authUser.uid, updatedNameFields);
+        profile = {
+          ...profile,
+          ...updatedNameFields,
+        };
+        localStorage.setItem(storageKey, JSON.stringify(profile));
+        updateDisplay();
+        setNameEditMode(false);
+        showFeedback("Profile name updated successfully.");
+      } catch (error) {
+        console.error("[TeacherProfile] Could not update profile name:", error);
+        showFeedback(error?.message || "Could not save your name. Please try again.", true);
+      } finally {
+        nameSaveBtn.textContent = "Save";
+        checkNameDirty();
+      }
     });
 
   }
@@ -283,6 +465,7 @@ import {
   const contactSaveBtn = document.getElementById("contactSaveBtn");
   const errContactEmail = document.getElementById("errContactEmail");
   const errContactPhone = document.getElementById("errContactPhone");
+  if (inputContactEmail) inputContactEmail.maxLength = 254;
 
   function setContactEditMode(editing) {
     if (!contactCardView || !contactCardEdit) return;
@@ -315,8 +498,16 @@ import {
 
     const isEmailValid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(curEmail);
     const isPhoneValid = isValidPhilippineMobile(curPhone);
-    const isValid = isEmailValid && (curPhone.length === 0 || isPhoneValid);
+    const isValid = isEmailValid && isPhoneValid;
     const isDirty = changes > 0;
+
+    inputContactEmail.classList.toggle("is-invalid", !isEmailValid);
+    if (errContactEmail) errContactEmail.classList.toggle("is-visible", !isEmailValid);
+    inputContactPhone.classList.toggle("is-invalid", !isPhoneValid);
+    if (errContactPhone) {
+      errContactPhone.textContent = "Enter a valid 11-digit mobile number starting with 09.";
+      errContactPhone.classList.toggle("is-visible", !isPhoneValid);
+    }
 
     contactSaveBtn.disabled = !isDirty || !isValid;
     contactUnsavedCount.classList.toggle("is-dirty", isDirty);
@@ -383,29 +574,27 @@ import {
       contactSaveBtn.disabled = true;
       contactSaveBtn.textContent = "Saving...";
       try {
-        if (phoneChanged) {
-          await saveProfileFields(
-            db,
-            authUser.uid,
-            "teacher",
-            { contactNumber: rawPhone },
-            profileCollectionsForRole("teacher"),
-          );
-          profile.contactNumber = rawPhone;
-        }
         if (emailChanged) {
           await verifyBeforeUpdateEmail(authUser, emailVal);
+        }
+        const updatedContactFields = {};
+        if (phoneChanged) {
+          updatedContactFields.contactNumber = rawPhone;
+          updatedContactFields.contact = rawPhone;
+        }
+        if (emailChanged) updatedContactFields.pendingEmail = emailVal;
+        if (Object.keys(updatedContactFields).length) {
+          await saveAccountProfileFields(authUser.uid, updatedContactFields);
+        }
+        if (phoneChanged) {
+          profile.contactNumber = rawPhone;
+          profile.contact = rawPhone;
+        }
+        if (emailChanged) {
           profile.pendingEmail = emailVal;
           localStorage.setItem(
             `recovibe_pending_email_${authUser.uid}`,
             JSON.stringify({ pendingEmail: emailVal, oldEmail: profile.email, timestamp: Date.now() }),
-          );
-          await savePendingProfileEmail(
-            db,
-            authUser.uid,
-            "teacher",
-            emailVal,
-            profileCollectionsForRole("teacher"),
           );
         }
         localStorage.setItem(storageKey, JSON.stringify(profile));

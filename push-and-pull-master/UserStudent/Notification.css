@@ -1009,4 +1009,11 @@ body {
     max-width: calc(100% - 24px);
     overflow-wrap: anywhere;
   }
+
+  .notification-card-actions > * {
+    min-width: 0;
+    max-width: 100%;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
 }

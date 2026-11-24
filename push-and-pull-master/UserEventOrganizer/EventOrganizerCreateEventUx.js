@@ -11,6 +11,9 @@
   let venueUiForm = null;
   let venueUiState = null;
   let isUpdatingVenueControls = false;
+  let isUpdatingVenuePreview = false;
+  let isHandlingMutationRecords = false;
+  let observer = null;
   let autoDismissedCleanModal = null;
 
   function formSnapshot(form) {
@@ -101,8 +104,12 @@
   function parseRoomNumbers(name, address) {
     const match = name.match(/\(Rooms:\s*([^)]+)\)/i);
     const rooms = match ? match[1].split(/[,\s]+/) : [];
-    if (/^\d{1,3}$/.test(address) && !rooms.includes(address)) rooms.unshift(address);
-    return [...new Set(rooms.filter((room) => /^\d{1,3}$/.test(room)))];
+    if (address) rooms.unshift(...address.split(/[,\s]+/));
+    const roomTokens = rooms.map((room) => room.trim()).filter(Boolean);
+    return {
+      rooms: [...new Set(roomTokens.filter((room) => /^\d{1,3}$/.test(room)))],
+      hasInvalidRoom: roomTokens.some((room) => !/^\d{1,3}$/.test(room)),
+    };
   }
 
   function renderRoomTags(state) {
@@ -130,7 +137,11 @@
   function readVenueDetails(state) {
     const name = state.legacyName.value.trim();
     const strippedName = name.replace(/\s*\(Rooms:[^)]+\)/i, "").trim();
-    state.rooms = parseRoomNumbers(name, state.legacyAddress.value.trim());
+    const parsedRooms = parseRoomNumbers(name, state.legacyAddress.value.trim());
+    state.rooms = parsedRooms.rooms;
+    state.roomInputError = parsedRooms.hasInvalidRoom
+      ? "Room numbers must contain digits only; hyphens are not allowed."
+      : "";
     state.legacyBuildingName = "";
 
     if (/^CITE$/i.test(strippedName) || /^PUP CITE$/i.test(strippedName)) {
@@ -181,23 +192,30 @@
   }
 
   function updateVenuePreview(state) {
-    if (!state || !isInsidePup(state.form)) return;
+    if (!state || isUpdatingVenuePreview ||
+        state.form !== root.querySelector("#createEventMainForm") ||
+        !isInsidePup(state.form)) return;
     const preview = root.querySelector("#previewVenue");
     if (!preview) return;
-    const details = [];
-    if (state.campus.value) details.push(state.campus.value);
-    if (state.campus.value === "PUP Biñan") {
-      const building = state.building.value || state.legacyBuildingName;
-      if (building) details.push(building);
+    isUpdatingVenuePreview = true;
+    try {
+      const details = [];
+      if (state.campus.value) details.push(state.campus.value);
+      if (state.campus.value === "PUP Biñan") {
+        const building = state.building.value || state.legacyBuildingName;
+        if (building) details.push(building);
+      }
+      if (state.rooms.length) {
+        details.push(`Room${state.rooms.length === 1 ? "" : "s"}: ${state.rooms.join(", ")}`);
+      }
+      const text = details.length
+        ? `Others | Inside PUP (${details.join(", ")})`
+        : "Others | Inside PUP";
+      if (preview.textContent !== text) preview.textContent = text;
+      preview.classList.remove("is-muted");
+    } finally {
+      isUpdatingVenuePreview = false;
     }
-    if (state.rooms.length) {
-      details.push(`Room${state.rooms.length === 1 ? "" : "s"}: ${state.rooms.join(", ")}`);
-    }
-    const text = details.length
-      ? `Others | Inside PUP (${details.join(", ")})`
-      : "Others | Inside PUP";
-    if (preview.textContent !== text) preview.textContent = text;
-    preview.classList.remove("is-muted");
   }
 
   function showVenueValidation(state) {
@@ -207,11 +225,14 @@
     }
     let message = "";
     let validationTarget = state.roomWrap;
+    const missingBuilding = state.campus.value === "PUP Biñan" &&
+      !state.building.value && !state.legacyBuildingName;
     if (!state.campus.value) message = "Choose PUP Biñan or CITE.";
-    else if (state.campus.value === "PUP Biñan" &&
-             !state.building.value && !state.legacyBuildingName) {
+    else if (missingBuilding) {
       message = "Choose Old Building or New Building.";
       validationTarget = state.buildingWrap;
+    } else if (state.roomInputError) {
+      message = state.roomInputError;
     } else if (!state.rooms.length) {
       message = "Add at least one room number.";
     }
@@ -223,19 +244,60 @@
       state.validationError.textContent = message;
     }
     state.validationError.hidden = !message;
+    state.campus.setAttribute("aria-invalid", String(!state.campus.value));
+    state.building.setAttribute(
+      "aria-invalid",
+      String(state.campus.value === "PUP Biñan" && missingBuilding),
+    );
+    state.roomInput.setAttribute(
+      "aria-invalid",
+      String(Boolean(state.roomInputError || (
+        state.campus.value && !missingBuilding && !state.rooms.length
+      ))),
+    );
     return !message;
   }
 
-  function addRoom(state, value) {
-    const room = String(value || "").replace(/\D/g, "").slice(0, 3);
+  function roomInputError(value) {
+    return String(value || "").includes("-")
+      ? "Room numbers cannot contain hyphens."
+      : "Room numbers must contain 1 to 3 digits only.";
+  }
+
+  function addRoom(state, value, preserveError = false) {
+    if (state.roomInputError && !preserveError) {
+      showVenueValidation(state);
+      return false;
+    }
+    const room = String(value || "").trim();
+    if (!room) {
+      if (!preserveError) {
+        state.roomInputError = "Enter a room number using digits only.";
+        showVenueValidation(state);
+      }
+      return false;
+    }
+    if (!/^\d{1,3}$/.test(room)) {
+      if (!preserveError) {
+        state.roomInputError = roomInputError(room);
+        showVenueValidation(state);
+      }
+      return false;
+    }
     state.roomInput.value = "";
-    if (!/^\d{1,3}$/.test(room) || state.rooms.includes(room)) return;
+    if (state.rooms.includes(room)) {
+      if (!preserveError) state.roomInputError = "";
+      showVenueValidation(state);
+      return false;
+    }
+    if (!preserveError) state.roomInputError = "";
     state.hasInsideState = true;
     state.rooms.push(room);
     renderRoomTags(state);
     writeLegacyVenueFields(state);
     showVenueValidation(state);
     updateVenuePreview(state);
+    return true;
   }
 
   function createVenueControls(form) {
@@ -268,6 +330,7 @@
     roomInput.maxLength = 3;
     roomInput.placeholder = "Type a room number and press Enter";
     roomInput.setAttribute("aria-label", "Add room number");
+    roomInput.setAttribute("aria-describedby", "insidePupVenueError");
     addVenueLabel(roomWrap, "Room Numbers", roomInput);
     const chipContainer = createVenueControl("div", "ce-chips-container");
     const roomList = createVenueControl("div", "ce-chips-list");
@@ -281,6 +344,7 @@
 
     const validationError = createVenueControl("p", "ce-error");
     validationError.id = "insidePupVenueError";
+    validationError.setAttribute("role", "alert");
     validationError.hidden = true;
 
     const roomNumbersState = createVenueControl("input");
@@ -312,6 +376,7 @@
       legacyName,
       legacyAddress,
       rooms: [],
+      roomInputError: "",
       legacyBuildingName: "",
       outsideName: "",
       outsideAddress: "",
@@ -330,6 +395,8 @@
         state.legacyBuildingName = "";
       }
       state.rooms = [];
+      state.roomInput.value = "";
+      state.roomInputError = "";
       state.buildingWrap.hidden = state.campus.value !== "PUP Biñan";
       state.roomWrap.hidden = !state.campus.value;
       renderRoomTags(state);
@@ -347,24 +414,53 @@
     });
 
     roomInput.addEventListener("input", () => {
-      const cleaned = roomInput.value.replace(/\D/g, "").slice(0, 3);
-      if (roomInput.value !== cleaned) roomInput.value = cleaned;
+      const entered = roomInput.value;
+      if (/\D/.test(entered)) {
+        state.roomInputError = roomInputError(entered);
+        roomInput.value = entered.replace(/\D/g, "").slice(0, 3);
+      } else {
+        state.roomInputError = "";
+        if (roomInput.value.length > 3) roomInput.value = roomInput.value.slice(0, 3);
+      }
+      showVenueValidation(state);
     });
     roomInput.addEventListener("keydown", (event) => {
+      if (event.key === "-" || event.code === "NumpadSubtract") {
+        event.preventDefault();
+        state.roomInputError = "Room numbers cannot contain hyphens.";
+        showVenueValidation(state);
+        return;
+      }
       if (event.key === "Enter" || event.key === ",") {
         event.preventDefault();
+        if (state.roomInputError) {
+          showVenueValidation(state);
+          return;
+        }
         addRoom(state, roomInput.value);
       }
     });
     roomInput.addEventListener("paste", (event) => {
       event.preventDefault();
       if (event.isTrusted) userEditedSinceBaseline = true;
-      (event.clipboardData?.getData("text") || "")
+      const values = (event.clipboardData?.getData("text") || "")
         .split(/[,\s]+/)
-        .forEach((value) => addRoom(state, value));
+        .filter(Boolean);
+      const invalidValues = values.filter((value) => !/^\d{1,3}$/.test(value));
+      values
+        .filter((value) => /^\d{1,3}$/.test(value))
+        .forEach((value) => addRoom(state, value, true));
+      roomInput.value = "";
+      state.roomInputError = invalidValues.length
+        ? roomInputError(invalidValues[0])
+        : values.length
+          ? ""
+          : "Enter a room number using digits only.";
+      showVenueValidation(state);
     });
     roomInput.addEventListener("blur", () => {
       if (roomInput.value) addRoom(state, roomInput.value);
+      else showVenueValidation(state);
     });
     roomList.addEventListener("click", (event) => {
       const remove = event.target instanceof Element
@@ -498,11 +594,13 @@
     updateVenueControls(root.querySelector("#createEventMainForm"), false);
   });
 
-  document.addEventListener("input", (event) => {
-    if (!(event.target instanceof Element) ||
-        !event.target.matches("#customVenueName, #customVenueAddress")) return;
+  const syncVenuePreview = (event) => {
+    if (isUpdatingVenuePreview || !(event.target instanceof Element) ||
+        !event.target.closest("#createEventMainForm")) return;
     updateVenuePreview(venueUiState);
-  });
+  };
+  document.addEventListener("input", syncVenuePreview);
+  document.addEventListener("change", syncVenuePreview);
 
   document.addEventListener("click", (event) => {
     if (!(event.target instanceof Element)) return;
@@ -564,21 +662,30 @@
     if (title === "Discard Changes?") confirmedDiscard = true;
   }, true);
 
-  const observer = new MutationObserver((records) => {
-    if (records.some((record) =>
-      mutationTouches(record, ".ce-existing-col-title, #searchPastEvents"))) {
-      updateExistingEventsLabels();
-    }
-    const form = root.querySelector("#createEventMainForm");
-    if (form && form !== venueUiForm) {
-      updateVenueControls(form, false);
-      dismissCleanConfirmation();
-    } else if (records.some((record) => mutationTouches(record, "#ceConfirmModal"))) {
-      dismissCleanConfirmation();
-    }
-    if (form && form !== baselineForm) {
-      if (userEditedSinceBaseline && !confirmedDiscard) return;
-      captureBaseline(form);
+  observer = new MutationObserver((records) => {
+    if (isHandlingMutationRecords || isUpdatingVenueControls) return;
+    isHandlingMutationRecords = true;
+    try {
+      if (records.some((record) =>
+        mutationTouches(record, ".ce-existing-col-title, #searchPastEvents"))) {
+        updateExistingEventsLabels();
+      }
+      const form = root.querySelector("#createEventMainForm");
+      if (form && form !== venueUiForm) {
+        updateVenueControls(form, false);
+        dismissCleanConfirmation();
+      } else if (records.some((record) => mutationTouches(record, "#ceConfirmModal"))) {
+        dismissCleanConfirmation();
+      }
+      if (form && form !== baselineForm) {
+        if (userEditedSinceBaseline && !confirmedDiscard) return;
+        captureBaseline(form);
+      }
+    } finally {
+      if (root.querySelector("#createEventMainForm") === venueUiForm) {
+        observer.takeRecords();
+      }
+      isHandlingMutationRecords = false;
     }
   });
   observer.observe(root, {
@@ -587,6 +694,7 @@
     attributes: true,
     attributeFilter: ["hidden"],
   });
+  window.addEventListener("pagehide", () => observer.disconnect(), { once: true });
 
   window.addEventListener("page-data-ready", () => {
     const form = root.querySelector("#createEventMainForm");

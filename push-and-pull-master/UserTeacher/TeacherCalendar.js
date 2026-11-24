@@ -92,6 +92,7 @@ import { teacherEventReadFilters, teacherEventsQuery } from "./TeacherEventQuery
   let activePublicEventsCallback = null;
   let activeOrganizerEventsRef = null;
   let activeOrganizerEventsCallback = null;
+  const approvedEventsRequests = new Map();
   let holidayRequestSequence = 0;
   let initialCalendarEventsReady = false;
   let initialCalendarHolidaysReady = false;
@@ -871,6 +872,22 @@ import { teacherEventReadFilters, teacherEventsQuery } from "./TeacherEventQuery
   }
 
   async function fetchApprovedEvents() {
+    const uid = String(state.currentUser?.uid || "");
+    const pendingRequest = approvedEventsRequests.get(uid);
+    if (pendingRequest) return pendingRequest;
+
+    const request = fetchApprovedEventsUncached();
+    approvedEventsRequests.set(uid, request);
+    try {
+      return await request;
+    } finally {
+      if (approvedEventsRequests.get(uid) === request) {
+        approvedEventsRequests.delete(uid);
+      }
+    }
+  }
+
+  async function fetchApprovedEventsUncached() {
     const list = [];
     const seen = new Set();
 

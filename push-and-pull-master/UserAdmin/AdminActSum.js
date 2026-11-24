@@ -555,6 +555,16 @@ import { auth, authReady, db, isFirebaseConfigured } from "../UserStudent/fireba
     renderRoomUtilization(rangeEvents);
     renderParticipationSummary(rangeEvents);
     renderEventChanges(rangeEvents);
+    dataContainer.dispatchEvent(new CustomEvent("admin-activity-summary-data", {
+      detail: {
+        events: allEvents.map((event) => ({
+          ...event,
+          summaryState: computeEventState(event),
+        })),
+        today: formatDateISO(now),
+        lastUpdated: `${formatDateLong(now)} ${formatTime(now)}`,
+      },
+    }));
   }
 
   function updateOccupancyAsOf() {

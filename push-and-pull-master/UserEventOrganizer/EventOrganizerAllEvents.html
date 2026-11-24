@@ -11,6 +11,7 @@
       rel="stylesheet"
     />
     <link rel="stylesheet" href="EventOrganizerAllEvents.css" />
+    <link rel="stylesheet" href="../AllEventsDetailsExtras.css" />
     <link rel="stylesheet" href="OrganizerNotificationBadge.css" />
   <style id="page-preloader-style">
     html[data-page-loading="true"] [data-page-load-container],
@@ -294,7 +295,7 @@
           </div>
           <div class="organizer-events-section" id="happeningNowSection">
             <div class="organizer-events-section-heading">
-              <h2>Events Happening Now</h2>
+              <h2>Happening Now</h2>
             </div>
             <div
               class="published-event-list"
@@ -304,7 +305,7 @@
           </div>
           <div class="organizer-events-section" id="upcomingEventsSection">
             <div class="organizer-events-section-heading">
-              <h2>Upcoming &amp; Other Events</h2>
+              <h2>Upcoming</h2>
             </div>
             <div
               class="published-event-list"
@@ -312,13 +313,23 @@
               aria-live="polite"
             ></div>
           </div>
-          <div class="organizer-events-section" id="completedEventsSection">
+          <div class="organizer-events-section" id="completedEventsSection" hidden>
             <div class="organizer-events-section-heading">
-              <h2>Completed Events</h2>
+              <h2>Completed</h2>
             </div>
             <div
               class="published-event-list"
               id="completedEvents"
+              aria-live="polite"
+            ></div>
+          </div>
+          <div class="organizer-events-section" id="cancelledEventsSection" hidden>
+            <div class="organizer-events-section-heading">
+              <h2>Cancelled</h2>
+            </div>
+            <div
+              class="published-event-list"
+              id="cancelledEvents"
               aria-live="polite"
             ></div>
           </div>
@@ -410,6 +421,7 @@
     </div>
     <script src="OrganizerNotificationBadge.js"></script>
     <script src="../EventDetailsModal.js"></script>
+    <script src="../AllEventsDetailsExtras.js"></script>
     <script type="module" src="EventOrganizerAllEvents.js"></script>
     <script type="module" src="OrganizerSidebarProfile.js"></script>
     <script>

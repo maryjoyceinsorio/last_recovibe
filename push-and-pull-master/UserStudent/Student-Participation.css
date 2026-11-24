@@ -68,6 +68,27 @@
   flex-direction: column;
   gap: 10px;
 }
+.participation-list-group {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.participation-list-group-title {
+  margin: 14px 0 0;
+  color: var(--ink-900);
+  font: 600 18px var(--font-display);
+}
+.participation-list-group:first-child .participation-list-group-title {
+  margin-top: 0;
+}
+.participation-list-group-cards {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.participation-group-empty {
+  padding: 18px 16px;
+}
 .participation-card {
   display: grid;
   grid-template-columns: 58px minmax(0, 1fr) auto;
@@ -184,6 +205,11 @@
   color: #15803d;
   border: 1px solid #a7e4be;
 }
+.attendance-tag.is-happening {
+  background: #e8f7ee;
+  color: #15803d;
+  border: 1px solid #a7e4be;
+}
 .attendance-tag svg {
   width: 12px;
   height: 12px;
@@ -225,15 +251,45 @@
   }
   .participation-card {
     grid-template-columns: 50px minmax(0, 1fr);
+    min-width: 0;
+    gap: 12px;
   }
   .participation-date {
     width: 50px;
     height: 58px;
   }
+  .participation-body,
+  .participation-title,
+  .participation-source,
+  .participation-meta,
+  .participation-meta span {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+  .participation-meta {
+    gap: 8px;
+  }
   .participation-action {
     grid-column: 2;
     justify-self: start;
     margin-top: 0;
+    min-width: 0;
+    max-width: 100%;
+  }
+  .participation-action > *,
+  .participation-action button {
+    min-width: 0;
+    max-width: 100%;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+  .attendance-tag {
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+  .btn-show-qr {
+    min-width: 0;
+    max-width: 100%;
   }
   .today {
     display: none;
@@ -1394,3 +1450,83 @@ body.dark-mode .qr-modal-close {
     margin-left: 0;
   }
 }
+
+  @media (max-width: 768px) {
+    #participationPage,
+    #participationMain {
+      min-width: 0;
+      max-width: 100%;
+      overflow-x: clip;
+    }
+
+    #participationPage > .sidebar {
+      z-index: 60;
+    }
+
+    #participationMain {
+      display: flex;
+      flex-direction: column;
+    }
+
+    .participation-page-heading {
+      order: 0;
+      min-width: 0;
+      margin-bottom: 12px;
+    }
+
+    #participationFilterSection {
+      order: 1;
+      z-index: 30;
+    }
+
+    #participationMetrics {
+      order: 2;
+    }
+
+    #activeChipsRow {
+      order: 3;
+    }
+
+    #participationSection {
+      order: 4;
+    }
+
+    .participation-toolbar {
+      align-items: stretch;
+      flex-direction: column;
+      gap: 10px;
+      min-width: 0;
+      width: 100%;
+    }
+
+    .participation-toolbar .search-box {
+      flex: 0 1 auto;
+      width: 100%;
+      min-width: 0;
+      max-width: 100%;
+    }
+
+    .participation-toolbar input {
+      flex: 1 1 0;
+      min-width: 0;
+    }
+
+    .participation-filter-group {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px;
+      min-width: 0;
+      width: 100%;
+    }
+
+    .participation-filter-group .filter-dropdown {
+      min-width: 0;
+      width: 100%;
+    }
+
+    .participation-filter-group .filter-button {
+      min-width: 0;
+      width: 100%;
+      max-width: 100%;
+    }
+  }

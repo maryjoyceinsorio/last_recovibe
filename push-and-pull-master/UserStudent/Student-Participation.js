@@ -459,6 +459,55 @@ function getRegistrationStatus(registration = {}) {
     .replace(/[\s_-]+/g, "");
 }
 
+function normalizeUserIdentifier(value) {
+  return String(value ?? "").normalize("NFKC").trim().toLowerCase();
+}
+
+function normalizeStudentIdentifier(value) {
+  return normalizeUserIdentifier(value).replace(/[^a-z0-9]/g, "");
+}
+
+function registrationMatchesCurrentUser(registration, uid = currentUid) {
+  const recordIdentifiers = [
+    registration?.uid,
+    registration?.userId,
+    registration?.userID,
+    registration?.user_id,
+    registration?.studentId,
+    registration?.studentID,
+    registration?.student_id,
+    registration?.studentNumber,
+    registration?.student_number,
+    registration?.studentNo,
+    registration?.username,
+    registration?.email,
+  ]
+    .filter((value) => value != null && String(value).trim())
+    .flatMap((value) => [
+      normalizeUserIdentifier(value),
+      normalizeStudentIdentifier(value),
+    ]);
+  if (!recordIdentifiers.length) return true;
+
+  const currentIdentifiers = [
+    uid,
+    studentProfile.studentNo,
+    auth?.currentUser?.email,
+  ]
+    .filter(Boolean)
+    .flatMap((value) => [
+      normalizeUserIdentifier(value),
+      normalizeStudentIdentifier(value),
+    ]);
+  return recordIdentifiers.some((identifier) =>
+    currentIdentifiers.includes(identifier),
+  );
+}
+
+function normalizeEventId(value) {
+  return String(value ?? "").trim();
+}
+
 function isActiveRegistration(registration) {
   return ["registered", "active", "confirmed"].includes(
     getRegistrationStatus(registration),
@@ -487,19 +536,34 @@ function getParticipationStatus(registration, event, now) {
       registration.attended ||
       ["attended", "completed", "checkedin"].includes(registrationStatus),
     );
+  const eventMarkedCompleted = [
+    "completed",
+    "complete",
+    "ended",
+    "finished",
+  ].includes(eventStatus);
   let status;
   if (
     ["cancelled", "canceled"].includes(eventStatus) ||
     ["cancelled", "canceled"].includes(registrationStatus)
   ) {
     status = "cancelled";
-  } else if (!event?.endAt || now < event.endAt) {
-    status = "upcoming";
-  } else {
+  } else if (
+    eventMarkedCompleted ||
+    (Number(event?.endAt) > 0 && now > Number(event.endAt))
+  ) {
     status = attended ? "completed" : "absent";
+  } else {
+    status = "upcoming";
   }
 
   return status;
+}
+
+function isEventHappeningNow(event, now = getNow()) {
+  return Number(event?.startAt) > 0 &&
+    Number(event.startAt) <= now &&
+    Number(event?.endAt) > now;
 }
 
 function refreshUserRegistrations() {
@@ -583,24 +647,35 @@ function listenForFirestoreRegistrations(uid) {
       pendingInitialRegistrationSnapshots.clear();
       snapshot.forEach((eventSnapshot) => {
         const registration = eventSnapshot.data();
-        const eventRef = eventSnapshot.ref.parent.parent;
-        if (!eventRef) {
+        if (!registrationMatchesCurrentUser(registration, uid)) return;
+        const parentEventRef = eventSnapshot.ref.parent.parent;
+        const eventCollectionId = parentEventRef?.parent?.id;
+        const eventId = normalizeEventId(
+          eventCollectionId === "events"
+            ? parentEventRef.id
+            : registration.eventId || registration.eventID || eventSnapshot.id,
+        );
+        if (!eventId) {
           console.warn(
             `[My Participation] Could not resolve parent event for registration ${eventSnapshot.ref.path}.`,
           );
           return;
         }
-        const eventId = eventRef.id;
         firestoreRegistrationsMap.set(eventId, {
           ...registration,
           eventId,
           uid: registration.uid || uid,
-          status: registration.status || "registered",
+          status: registration.status || registration.registrationStatus || "registered",
           at: registration.registeredAt || registration.at || 0,
         });
         if (!rawEventsMap.has(eventId)) {
           pendingInitialRegistrationSnapshots.add(eventId);
-          eventSnapshots.push({ eventId, eventRef });
+          eventSnapshots.push({
+            eventId,
+            eventRef: eventCollectionId === "events"
+              ? parentEventRef
+              : doc(db, "events", eventId),
+          });
         }
       });
 
@@ -956,7 +1031,9 @@ function render() {
           : filterState.status === "attended"
             ? "completed"
             : filterState.status;
-      if (expectedStatus === "rescheduled") {
+      if (expectedStatus === "completed") {
+        if (status !== "completed" && status !== "absent") return false;
+      } else if (expectedStatus === "rescheduled") {
         if (!String(event.status || "").toLowerCase().includes("resched")) return false;
       } else if (status !== expectedStatus) {
         return false;
@@ -984,6 +1061,9 @@ function render() {
     countEl.textContent = `${visibleRows.length} event${visibleRows.length === 1 ? "" : "s"}`;
   }
 
+  const showScheduleGroups =
+    filterState.status === "participating" ||
+    filterState.status === "registered";
   if (visibleRows.length === 0) {
     if (firestoreParticipationError) {
       listEl.innerHTML = `
@@ -995,17 +1075,18 @@ function render() {
       renderActiveChips(participationRows.length, visibleRows.length);
       return;
     }
-    listEl.innerHTML = `
-      <div class="empty-participation">
-        <p style="margin:0 0 6px; font-weight:600; color:var(--ink-700);">No events match your filters.</p>
-        <button type="button" class="btn-view-details" data-action="clear-participation-filters">Clear filters</button>
-      </div>`;
-    renderActiveChips(participationRows.length, visibleRows.length);
-    return;
+    if (!showScheduleGroups) {
+      listEl.innerHTML = `
+        <div class="empty-participation">
+          <p style="margin:0 0 6px; font-weight:600; color:var(--ink-700);">No events match your filters.</p>
+          <button type="button" class="btn-view-details" data-action="clear-participation-filters">Clear filters</button>
+        </div>`;
+      renderActiveChips(participationRows.length, visibleRows.length);
+      return;
+    }
   }
 
-  listEl.innerHTML = visibleRows
-    .map(({ event, registration, status }) => {
+  const renderParticipationCard = ({ event, registration, status }) => {
       const att = attendanceMap.get(event.id);
 
       const startDateObj = new Date(event.startAt || getNow());
@@ -1028,6 +1109,8 @@ function render() {
         statusBadgeHtml = `<span class="attendance-tag is-absent">Absent</span>`;
       } else if (status === "cancelled") {
         statusBadgeHtml = `<span class="attendance-tag is-cancelled">Cancelled</span>`;
+      } else if (isEventHappeningNow(event)) {
+        statusBadgeHtml = `<span class="attendance-tag is-happening">Happening Now</span>`;
       } else {
         statusBadgeHtml = `<span class="attendance-tag is-registered">Upcoming</span>`;
       }
@@ -1074,8 +1157,33 @@ function render() {
             </button>
           </div>
         </article>`;
-    })
-    .join("");
+  };
+
+  if (showScheduleGroups) {
+    const now = getNow();
+    const happeningRows = visibleRows.filter(({ event }) =>
+      isEventHappeningNow(event, now),
+    );
+    const upcomingRows = visibleRows.filter(({ event }) =>
+      !isEventHappeningNow(event, now),
+    );
+    const renderGroup = (title, rows, emptyMessage) => `
+      <section class="participation-list-group" aria-label="${title}">
+        <h3 class="participation-list-group-title">${title}</h3>
+        <div class="participation-list-group-cards">
+          ${rows.length
+            ? rows.map(renderParticipationCard).join("")
+            : `<div class="empty-participation participation-group-empty">${emptyMessage}</div>`}
+        </div>
+      </section>`;
+    listEl.innerHTML = `${renderGroup(
+      "Happening Now",
+      happeningRows,
+      "No events happening right now.",
+    )}${renderGroup("Upcoming", upcomingRows, "No upcoming events.")}`;
+  } else {
+    listEl.innerHTML = visibleRows.map(renderParticipationCard).join("");
+  }
 
   renderActiveChips(participationRows.length, visibleRows.length);
 }
@@ -2401,9 +2509,21 @@ function cleanupParticipationListeners() {
             rtdbRegistrationsMap.clear();
             const data = snap.val() || {};
             Object.entries(data).forEach(([evId, reg]) => {
-              if (reg) {
-                rtdbRegistrationsMap.set(evId, reg);
-              }
+              if (
+                !reg ||
+                (typeof reg !== "object" && reg !== true)
+              ) return;
+              const record = reg === true ? {} : reg;
+              const eventId = normalizeEventId(
+                record.eventId || record.eventID || evId,
+              );
+              if (!eventId) return;
+              rtdbRegistrationsMap.set(eventId, {
+                ...record,
+                eventId,
+                uid: record.uid || currentUid,
+                status: record.status || record.registrationStatus || "registered",
+              });
             });
             refreshUserRegistrations();
           }, (error) => {

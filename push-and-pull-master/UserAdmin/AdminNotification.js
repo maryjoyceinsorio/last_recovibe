@@ -35,6 +35,7 @@ import { isOsasReviewer } from "../correctionAccess.js";
   let filter = "all",
     deleted = false,
     search = "",
+  searchRenderTimer = 0,
     undoSnapshot = null,
     undoTimer,
     currentAdminUid = null,
@@ -967,6 +968,13 @@ import { isOsasReviewer } from "../correctionAccess.js";
     }
   }
   function render() {
+    window.clearTimeout(searchRenderTimer);
+    searchRenderTimer = 0;
+    const activeSearch = root.querySelector("#notificationSearch");
+    const restoreSearchFocus = document.activeElement === activeSearch;
+    const selectionStart = restoreSearchFocus ? activeSearch.selectionStart : null;
+    const selectionEnd = restoreSearchFocus ? activeSearch.selectionEnd : null;
+    const selectionDirection = restoreSearchFocus ? activeSearch.selectionDirection : null;
     try {
       if (sharedNotificationState.error) {
         root.innerHTML = `<div class="admin-error" role="alert">${esc(sharedNotificationState.error)} <button class="admin-row-action" id="retryFirestoreNotifications" type="button">Retry</button></div>`;
@@ -979,12 +987,13 @@ import { isOsasReviewer } from "../correctionAccess.js";
       const retainedTrash = read(trashKey, []).filter((item) => item.expiresAt > Date.now());
       localStorage.setItem(trashKey, JSON.stringify(retainedTrash));
       const source = deleted ? trash : live;
+      const searchQuery = search.trim().toLowerCase();
       const visible = source.filter(
         (item) =>
-          (!search ||
+          (!searchQuery ||
             `${item.title} ${item.message}`
               .toLowerCase()
-              .includes(search.toLowerCase())) &&
+              .includes(searchQuery)) &&
           (deleted ||
             filter === "all" ||
             (filter === "read" ? item.read : !item.read)),
@@ -1051,6 +1060,19 @@ import { isOsasReviewer } from "../correctionAccess.js";
       });
       wire();
       renderCorrectionPanel();
+      if (restoreSearchFocus) {
+        const nextSearch = root.querySelector("#notificationSearch");
+        if (nextSearch) {
+          nextSearch.focus({ preventScroll: true });
+          if (selectionStart !== null && selectionEnd !== null) {
+            nextSearch.setSelectionRange(
+              selectionStart,
+              selectionEnd,
+              selectionDirection || "none",
+            );
+          }
+        }
+      }
     } catch (error) {
       console.error("[AdminNotifications] render failed:", error.code, error.message);
       root.innerHTML =
@@ -1120,10 +1142,6 @@ import { isOsasReviewer } from "../correctionAccess.js";
     if (retryFirestoreNotifications) {
       retryFirestoreNotifications.onclick = retryNotificationSources;
     }
-    root.querySelector("#notificationSearch").oninput = (event) => {
-      search = event.target.value;
-      render();
-    };
     root.querySelectorAll("[data-filter]").forEach(
       (button) =>
         (button.onclick = () => {
@@ -1256,6 +1274,15 @@ import { isOsasReviewer } from "../correctionAccess.js";
       }[type] || "pending_approval"
     );
   }
+  root.addEventListener("input", (event) => {
+    if (!(event.target instanceof HTMLInputElement) || event.target.id !== "notificationSearch") return;
+    search = event.target.value;
+    window.clearTimeout(searchRenderTimer);
+    searchRenderTimer = window.setTimeout(() => {
+      searchRenderTimer = 0;
+      render();
+    }, 120);
+  });
   function toastUndo(message) {
     const toast = document.querySelector(".admin-toast");
     toast.innerHTML = `${esc(message)} <button type="button">Undo</button>`;

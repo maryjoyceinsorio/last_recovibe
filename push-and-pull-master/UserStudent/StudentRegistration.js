@@ -108,6 +108,10 @@ function normalizeName(value) {
     );
 }
 
+function normalizeNameInput(value) {
+  return normalizeName(value.replace(/[0-9]/g, ""));
+}
+
 function normalizeYear(value) {
   const allowed = value.replace(/[^0-9-]/g, "");
   const first = allowed[0];
@@ -293,9 +297,12 @@ function validateField(name) {
   }
 
   if (name === "confirmation") {
-    const valid = Boolean(fields.confirmation.value) &&
-      fields.confirmation.value === fields.password.value;
-    setInvalid("field-reg-confirm", !valid, "Passwords do not match.");
+    const confirmation = fields.confirmation.value;
+    const valid = Boolean(confirmation) && confirmation === fields.password.value;
+    const message = confirmation
+      ? "Passwords do not match."
+      : "Confirm your password.";
+    setInvalid("field-reg-confirm", !valid, message);
     return valid;
   }
 
@@ -471,13 +478,10 @@ fields.studentId.addEventListener("paste", (event) => {
 });
 
 Object.entries(fields).forEach(([name, control]) => {
+  const isNameField = ["lastName", "firstName", "middleName"].includes(name);
   const normalize = () => {
-    if (
-      name === "lastName" ||
-      name === "firstName" ||
-      name === "middleName"
-    ) {
-      normalizeWithCaret(control, normalizeName);
+    if (isNameField) {
+      normalizeWithCaret(control, normalizeNameInput);
     } else if (name === "email") {
       normalizeWithCaret(control, (value) => value.toLowerCase());
     } else if (name === "studentId") {
@@ -501,6 +505,11 @@ Object.entries(fields).forEach(([name, control]) => {
       updateLiveValidation(name);
     });
   } else {
+    if (isNameField) {
+      control.addEventListener("keydown", (event) => {
+        if (/^[0-9]$/.test(event.key)) event.preventDefault();
+      });
+    }
     control.addEventListener("input", () => {
       if (name === "studentId") {
         studentNumberPasteError = "";

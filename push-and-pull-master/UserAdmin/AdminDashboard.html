@@ -11,6 +11,7 @@
       rel="stylesheet"
     />
     <link rel="stylesheet" href="AdminDashboard.css" />
+    <link rel="stylesheet" href="AdminMobileResponsive.css" />
   <style id="page-preloader-style">
     html[data-page-loading="true"] [data-page-load-container] { position: relative; }
     #userAvatar:empty,
@@ -132,6 +133,7 @@
     </div>
     <div class="admin-toast" role="status" aria-live="polite" hidden></div>
     <script type="module" src="AdminDashboard.js"></script>
+    <script defer src="adminDashboardUiPatch.js"></script>
     <script>
     (() => {
       const root = document.documentElement;

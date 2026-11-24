@@ -9,7 +9,7 @@ import {
   saveCalendarEntries,
   updateCalendarEntry,
 } from "../academicCalendarStore.js";
-import { isOsasReviewer } from "../correctionAccess.js";
+import { isOsasProfile } from "../correctionAccess.js";
 
 (() => {
   "use strict";
@@ -365,7 +365,7 @@ import { isOsasReviewer } from "../correctionAccess.js";
     roleElement.textContent = getApprovalPosition(profile);
     roleElement.title = roleElement.textContent;
     const manageButton = document.getElementById("manageAcademicCalendar");
-    const canManageAcademicCalendar = await isOsasReviewer(db, auth);
+    const canManageAcademicCalendar = isOsasProfile(profile);
     if (manageButton) manageButton.hidden = !canManageAcademicCalendar;
     if (canManageAcademicCalendar) setupAcademicManager();
     return true;

@@ -10,6 +10,8 @@
       rel="stylesheet"
     />
     <script src="https://cdn.jsdelivr.net/npm/qrcode/build/qrcode.min.js"></script>
+    <link rel="stylesheet" href="../AllEventsDetailsExtras.css" />
+    <link rel="stylesheet" href="StudentAllEventsUi.css" />
     <style>
       :root {
         --maroon-900: #4f1420;
@@ -80,9 +82,10 @@
         height: 100vh;
         height: 100dvh;
         min-height: 0;
-        position: sticky;
+        position: fixed;
         top: 0;
         left: 0;
+        z-index: 40;
         overflow: hidden;
         box-sizing: border-box;
         background: linear-gradient(
@@ -344,6 +347,7 @@
       .main {
         flex: 1;
         min-width: 0;
+        margin-left: 264px;
         padding: 32px 40px 56px;
       }
 
@@ -557,18 +561,27 @@
         stroke-linecap: round;
         stroke-linejoin: round;
       }
-      @media (max-width: 700px) {
+      @media (max-width: 768px) {
         .search-row {
+          width: 100%;
+          min-width: 0;
           flex-wrap: wrap;
         }
         .filter-pills {
+          width: 100%;
+          min-width: 0;
+          flex: 1 1 100%;
           flex-wrap: wrap;
         }
         .filter-dropdown {
-          flex: 1 1 140px;
+          min-width: 0;
+          flex: 1 1 calc(50% - 4px);
         }
-        .filter-button {
+        .filter-pills .filter-button {
           width: 100%;
+          min-width: 0;
+          gap: 8px;
+          padding: 8px 10px;
         }
         .filter-menu {
           max-width: calc(100vw - 32px);
@@ -1416,6 +1429,7 @@
         }
         .main {
           width: 100%;
+          margin-left: 0;
           padding: 24px 18px 40px;
         }
         .topbar {
@@ -2600,6 +2614,7 @@
       .page-preloader-spinner { animation: none; border-color: #7a1f2e; }
     }
   </style>
+    <link rel="stylesheet" href="StudentMobileResponsive.css" />
   </head>
   <body>
     <div class="app" id="eventsPage">
@@ -3085,7 +3100,7 @@
         <section class="events-panel" aria-labelledby="allEventsHeading">
           <div class="panel-head">
             <h2 id="allEventsHeading">
-              All Events <span class="showing-count" id="allEventsShowingCount" style="font-size:0.875rem; font-weight:400; color:var(--text-subtle, #666); margin-left:8px;"></span>
+              Upcoming <span class="showing-count" id="allEventsShowingCount" style="font-size:0.875rem; font-weight:400; color:var(--text-subtle, #666); margin-left:8px;"></span>
             </h2>
           </div>
           <div
@@ -3093,7 +3108,7 @@
             id="upcomingEventsList"
             data-event-group="all-events"
           ></div>
-          <div class="all-events-show-more-wrap" id="allEventsShowMoreWrap" style="display:none; text-align:center; margin:24px 0 12px;">
+          <div class="all-events-show-more-wrap" id="allEventsShowMoreWrap" hidden>
             <button type="button" class="btn-show-more" id="allEventsShowMoreBtn">Show more</button>
           </div>
         </section>
@@ -3156,6 +3171,7 @@
     <script src="events-data.js"></script>
     <script src="notification-count.js"></script>
     <script src="../EventDetailsModal.js"></script>
+    <script src="../AllEventsDetailsExtras.js"></script>
     <script type="module">
       import { auth, db, rtdb, isFirebaseConfigured, isRtdbConfigured } from "./firebaseConfig.js";
       import {
@@ -3772,7 +3788,8 @@
         const classification = getEventClassification(ev, now);
 
         const evStatus = String(ev.status || "").toLowerCase();
-        const isCancelled = evStatus === "cancelled" || evStatus === "canceled";
+        const isCancelled = ev.cancelled === true || ev.canceled === true ||
+          evStatus === "cancelled" || evStatus === "canceled";
         const isRescheduled = evStatus === "rescheduled" || Boolean(ev.rescheduledFrom || ev.rescheduledDate);
         const isCompleted = evStatus === "completed" || classification === "ended";
         const isUpcoming = !isCancelled && !isRescheduled && !isCompleted && (classification === "upcoming" || classification === "live");
@@ -5163,7 +5180,10 @@
 
         rawEventsMap.forEach((ev) => {
           const classification = getEventClassification(ev, now);
-          if (classification === "live" && matchesFilters(ev, true)) {
+          const status = String(ev.status || "").toLowerCase();
+          const cancelled = ev.cancelled === true || ev.canceled === true ||
+            status === "cancelled" || status === "canceled";
+          if (!cancelled && classification === "live" && matchesFilters(ev, true)) {
             liveEvents.push(ev);
           } else if (classification === "upcoming") {
             upcomingEvents.push(ev);
@@ -5370,6 +5390,18 @@
 
         const now = getNow();
         const hasRange = Boolean(filterState.from && filterState.to);
+        const activeStatus = String(filterState.status || filterState.reg || "all").toLowerCase();
+        const headingLabels = {
+          all: "Upcoming",
+          upcoming: "Upcoming",
+          cancelled: "Cancelled",
+          rescheduled: "Rescheduled",
+          completed: "Completed",
+        };
+        const heading = document.getElementById("allEventsHeading");
+        if (heading?.firstChild?.nodeType === Node.TEXT_NODE) {
+          heading.firstChild.nodeValue = `\n              ${headingLabels[activeStatus] || "Upcoming"} `;
+        }
 
         const matching = [];
         rawEventsMap.forEach((ev) => {
@@ -5381,16 +5413,28 @@
         // Sorted by start time ascending
         matching.sort((a, b) => a.startAt - b.startAt);
 
-        const visibleCount = Math.min(matching.length, filterState.showCount);
+        const displayedEvents = matching.filter((ev) => {
+          const status = String(ev.status || "").toLowerCase();
+          const cancelled = ev.cancelled === true || ev.canceled === true ||
+            status === "cancelled" || status === "canceled";
+          if (activeStatus === "cancelled") return cancelled;
+          if (cancelled) return false;
+          if (activeStatus === "completed") return true;
+          if (activeStatus !== "all") return true;
+          const completed = ["completed", "complete", "ended", "finished"].includes(status) ||
+            getEventClassification(ev, now) === "ended";
+          return !completed && getEventClassification(ev, now) !== "live";
+        });
+        const visibleCount = Math.min(displayedEvents.length, filterState.showCount);
 
         let countText = `Showing ${visibleCount} event${visibleCount === 1 ? "" : "s"}`;
         if (hasRange) {
           countText += ` from ${formatPhDateDisplay(filterState.from)} to ${formatPhDateDisplay(filterState.to)}`;
         }
-        countEl.textContent = matching.length ? countText : "";
+        countEl.textContent = displayedEvents.length ? countText : "";
 
         if (showMoreWrap && showMoreBtn) {
-          if (matching.length > filterState.showCount || eventHasMore) {
+          if (displayedEvents.length > filterState.showCount || eventHasMore) {
             showMoreWrap.hidden = false;
             showMoreBtn.disabled = eventPageLoading;
             showMoreBtn.textContent = eventPageLoading ? "Loading..." : "Show more";
@@ -5407,7 +5451,7 @@
           }
         }
 
-        if (matching.length === 0) {
+        if (displayedEvents.length === 0) {
           list.innerHTML = `
             <div class="empty-state-card">
               <p>No events match your filters.</p>
@@ -5419,7 +5463,7 @@
           return;
         }
 
-        const eventsToDisplay = matching.slice(0, filterState.showCount);
+        const eventsToDisplay = displayedEvents.slice(0, filterState.showCount);
 
         list.innerHTML = eventsToDisplay
           .map((ev) => {
@@ -5530,7 +5574,7 @@
                   ${slotsHtml}
                   ${statusBadges ? `<div class="event-status-badges" style="display:flex; align-items:center; gap:6px; flex-wrap:wrap; margin-top:6px;">${statusBadges}</div>` : ""}
                 </div>
-                <div style="display:flex; flex-direction:column; align-items:flex-end; justify-content:center; gap:8px; flex-shrink:0;">
+                <div class="event-card-actions">
                   ${actionBtn}
                   <button type="button" class="btn-live-details" data-action="open-modal" data-event-id="${ev.id}">Details</button>
                 </div>
