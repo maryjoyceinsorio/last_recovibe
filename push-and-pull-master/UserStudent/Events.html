@@ -170,7 +170,7 @@
         gap: 14px;
       }
 
-      .collapse-btn { display: none !important; 
+      .collapse-btn { display: none !important;
         width: 28px;
         height: 28px;
         padding: 0;
@@ -584,7 +584,13 @@
           padding: 8px 10px;
         }
         .filter-menu {
-          max-width: calc(100vw - 32px);
+          left: 0;
+          right: auto;
+          max-width: min(250px, calc(100vw - 32px));
+          transform-origin: top left;
+        }
+        .filter-pills > .filter-dropdown:focus-within {
+          z-index: 2101;
         }
       }
       @media (prefers-reduced-motion: reduce) {
@@ -1363,7 +1369,7 @@
           min-width: 0;
           margin-bottom: 0;
         }
-        .sidebar .collapse-btn { display: none !important; 
+        .sidebar .collapse-btn { display: none !important;
           display: none;
         }
         .brand-text {
@@ -2615,6 +2621,8 @@
     }
   </style>
     <link rel="stylesheet" href="StudentMobileResponsive.css" />
+   <link rel="stylesheet" href="../SidebarLayout.css" />
+   <script defer src="../SidebarLayout.js"></script>
   </head>
   <body>
     <div class="app" id="eventsPage">
@@ -2925,6 +2933,7 @@
                 class="date-range-panel"
                 id="dateRangePanel"
                 role="dialog"
+                aria-modal="true"
                 aria-label="Date range selector"
                 hidden
               >
@@ -3294,6 +3303,12 @@
         pendingPreset: "all",
         hoverDate: "",
         previousBodyOverflow: null,
+        previousBodyPosition: null,
+        previousBodyTop: null,
+        previousBodyWidth: null,
+        previousScrollY: null,
+        panelParent: null,
+        panelNextSibling: null,
       };
 
       /* ---------------------------------------------------------
@@ -4295,6 +4310,7 @@
           panel.style.right = "";
           panel.style.top = "";
           panel.style.position = "";
+          panel.style.width = "";
           return;
         }
 
@@ -4331,8 +4347,20 @@
           datePickerState.viewMonth = now.getMonth();
         }
 
+        if (panel.parentElement !== document.body) {
+          datePickerState.panelParent = panel.parentElement;
+          datePickerState.panelNextSibling = panel.nextSibling;
+          document.body.appendChild(panel);
+        }
         panel.hidden = false;
         datePickerState.previousBodyOverflow = document.body.style.overflow;
+        datePickerState.previousBodyPosition = document.body.style.position;
+        datePickerState.previousBodyTop = document.body.style.top;
+        datePickerState.previousBodyWidth = document.body.style.width;
+        datePickerState.previousScrollY = window.scrollY;
+        document.body.style.position = "fixed";
+        document.body.style.top = `-${datePickerState.previousScrollY}px`;
+        document.body.style.width = "100%";
         document.body.style.overflow = "hidden";
         btn.setAttribute("aria-expanded", "true");
         btn.classList.add("is-open");
@@ -4353,15 +4381,37 @@
         panel.style.right = "";
         panel.style.top = "";
         panel.style.position = "";
+        panel.style.width = "";
+        if (datePickerState.panelParent) {
+          const parent = datePickerState.panelParent;
+          const nextSibling = datePickerState.panelNextSibling;
+          parent.insertBefore(
+            panel,
+            nextSibling && nextSibling.parentNode === parent ? nextSibling : null,
+          );
+          datePickerState.panelParent = null;
+          datePickerState.panelNextSibling = null;
+        }
         if (datePickerState.previousBodyOverflow !== null) {
           document.body.style.overflow = datePickerState.previousBodyOverflow;
+          document.body.style.position = datePickerState.previousBodyPosition;
+          document.body.style.top = datePickerState.previousBodyTop;
+          document.body.style.width = datePickerState.previousBodyWidth;
+          const scrollY = datePickerState.previousScrollY;
           datePickerState.previousBodyOverflow = null;
+          datePickerState.previousBodyPosition = null;
+          datePickerState.previousBodyTop = null;
+          datePickerState.previousBodyWidth = null;
+          datePickerState.previousScrollY = null;
+          btn.focus({ preventScroll: true });
+          window.scrollTo(0, scrollY);
+        } else {
+          btn.focus();
         }
         datePickerState.pendingStart = filterState.from || "";
         datePickerState.pendingEnd = filterState.to || "";
         datePickerState.pendingPreset = filterState.from ? (filterState.quickPreset || "") : "all";
         datePickerState.hoverDate = "";
-        btn.focus();
         validateAndSyncDatePickerInputs();
         renderDatePickerCalendars();
       }

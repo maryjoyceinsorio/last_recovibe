@@ -623,8 +623,7 @@ import {
     const range = eventDateRange(event);
     return Boolean(
       range &&
-        manilaDateKey(range.end) >= "2025-01-01" &&
-        manilaDateKey(range.start) <= todayISO(),
+        manilaDateKey(range.end) >= "2025-01-01",
     );
   }
 

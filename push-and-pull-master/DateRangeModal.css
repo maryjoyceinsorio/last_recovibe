@@ -1,0 +1,119 @@
+.date-range-panel {
+  z-index: 12000;
+}
+
+@media (max-width: 768px) {
+  .date-range-panel {
+    position: fixed !important;
+    inset:
+      max(12px, env(safe-area-inset-top))
+      max(12px, env(safe-area-inset-right))
+      auto
+      max(12px, env(safe-area-inset-left)) !important;
+    width: auto !important;
+    height: auto !important;
+    max-width: none !important;
+    max-height: calc(100dvh - 24px) !important;
+    margin: 0;
+    transform: none !important;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas: "topbar" "sidebar" "main";
+    grid-template-rows: 44px auto minmax(0, 1fr);
+    overflow: hidden;
+    overscroll-behavior: contain;
+    border-radius: 16px;
+    box-shadow:
+      0 0 0 100vmax rgba(20, 17, 15, 0.48),
+      0 18px 48px rgba(20, 17, 15, 0.24);
+  }
+
+  .date-range-panel .date-range-sidebar,
+  .date-range-panel .date-range-panel__sidebar {
+    width: 100%;
+    min-width: 0;
+    border-right: 0;
+    border-bottom: 1px solid var(--line, #e6e0d3);
+    flex-direction: row;
+    flex-wrap: wrap;
+    padding: 10px 12px;
+    overflow: hidden;
+  }
+
+  .date-range-panel .date-range-presets-title {
+    width: 100%;
+    margin-bottom: 4px;
+  }
+
+  .date-range-panel .date-range-quick-list {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(68px, 1fr));
+    gap: 6px;
+    width: 100%;
+    min-width: 0;
+    overflow: visible;
+  }
+
+  .date-range-panel .date-range-quick-btn {
+    width: 100%;
+    min-width: 0;
+    min-height: 40px;
+    padding: 6px 4px;
+    font-size: 12px;
+    line-height: 1.15;
+    text-align: center;
+    white-space: normal;
+    overflow-wrap: normal;
+  }
+
+  .date-range-panel .date-range-main,
+  .date-range-panel .date-range-panel__main {
+    width: 100%;
+    min-width: 0;
+    min-height: 0;
+    max-width: none;
+    overflow: hidden;
+    padding: 10px 12px 12px;
+  }
+
+  .date-range-panel .date-range-main__content {
+    min-width: 0;
+    min-height: 0;
+    overflow: auto;
+    overscroll-behavior: contain;
+  }
+
+  .date-range-panel .date-range-calendars,
+  .date-range-panel .date-range-calendars-row {
+    min-width: 0;
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .date-range-panel .date-range-inputs-row {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+  }
+
+  .date-range-panel .date-range-input-group,
+  .date-range-panel .date-range-input-group input {
+    min-width: 0;
+    width: 100%;
+  }
+
+  .date-range-panel .date-range-footer {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+  }
+
+  .date-range-panel .date-cal-month,
+  .date-range-panel .date-cal-day-names,
+  .date-range-panel .date-cal-grid {
+    min-width: 0;
+    width: 100%;
+    grid-template-columns: repeat(7, minmax(0, 1fr));
+  }
+}

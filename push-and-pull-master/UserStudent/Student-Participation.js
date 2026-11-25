@@ -114,6 +114,12 @@ const datePickerState = {
   pendingPreset: "all",
   hoverDate: "",
   previousBodyOverflow: null,
+  previousBodyPosition: null,
+  previousBodyTop: null,
+  previousBodyWidth: null,
+  previousScrollY: null,
+  panelParent: null,
+  panelNextSibling: null,
 };
 
 const publicEventListeners = new Map();
@@ -1520,8 +1526,20 @@ function openDateRangePanel() {
   const panel = document.getElementById("dateRangePanel");
   if (!panel || !btn) return;
 
+  if (panel.parentElement !== document.body) {
+    datePickerState.panelParent = panel.parentElement;
+    datePickerState.panelNextSibling = panel.nextSibling;
+    document.body.appendChild(panel);
+  }
   panel.hidden = false;
   datePickerState.previousBodyOverflow = document.body.style.overflow;
+  datePickerState.previousBodyPosition = document.body.style.position;
+  datePickerState.previousBodyTop = document.body.style.top;
+  datePickerState.previousBodyWidth = document.body.style.width;
+  datePickerState.previousScrollY = window.scrollY;
+  document.body.style.position = "fixed";
+  document.body.style.top = `-${datePickerState.previousScrollY}px`;
+  document.body.style.width = "100%";
   document.body.style.overflow = "hidden";
   btn.setAttribute("aria-expanded", "true");
   btn.classList.add("is-open");
@@ -1559,9 +1577,32 @@ function closeDateRangePanel() {
   panel.style.top = "";
   panel.style.position = "";
   panel.style.width = "";
+  panel.style.right = "";
+  if (datePickerState.panelParent) {
+    const parent = datePickerState.panelParent;
+    const nextSibling = datePickerState.panelNextSibling;
+    parent.insertBefore(
+      panel,
+      nextSibling && nextSibling.parentNode === parent ? nextSibling : null,
+    );
+    datePickerState.panelParent = null;
+    datePickerState.panelNextSibling = null;
+  }
   if (datePickerState.previousBodyOverflow !== null) {
     document.body.style.overflow = datePickerState.previousBodyOverflow;
+    document.body.style.position = datePickerState.previousBodyPosition;
+    document.body.style.top = datePickerState.previousBodyTop;
+    document.body.style.width = datePickerState.previousBodyWidth;
+    const scrollY = datePickerState.previousScrollY;
     datePickerState.previousBodyOverflow = null;
+    datePickerState.previousBodyPosition = null;
+    datePickerState.previousBodyTop = null;
+    datePickerState.previousBodyWidth = null;
+    datePickerState.previousScrollY = null;
+    btn.focus({ preventScroll: true });
+    window.scrollTo(0, scrollY);
+  } else {
+    btn.focus();
   }
   datePickerState.pendingStart = filterState.from || null;
   datePickerState.pendingEnd = filterState.to || null;
@@ -1569,7 +1610,6 @@ function closeDateRangePanel() {
   datePickerState.hoverDate = "";
   syncDateInputsFromPending();
   renderDatePickerCalendars();
-  btn.focus();
 }
 
 function positionDateRangePanel() {

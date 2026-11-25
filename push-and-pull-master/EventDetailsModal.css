@@ -1298,17 +1298,24 @@ a.event-details-document:hover {
   }
   .student-event-overlay:not(.student-event-confirm-overlay) .student-event-footer,
   .student-event-overlay:not(.student-event-confirm-overlay) .event-details-footer {
-    flex-direction: row;
-    align-items: center;
-    gap: 10px;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
     padding: 10px 14px;
   }
   .student-event-notice {
+    flex: none;
+    width: 100%;
     min-width: 0;
+    margin: 0;
+    overflow-wrap: normal;
+    word-break: normal;
   }
   .student-event-overlay:not(.student-event-confirm-overlay) .student-event-action,
   .student-event-overlay:not(.student-event-confirm-overlay) .event-details-action {
+    width: 100%;
     min-width: 130px;
+    white-space: nowrap;
   }
 }
 
