@@ -222,9 +222,6 @@ import {
       event.feedSource,
       event.origin,
       event.campus,
-      event.title,
-      event.eventName,
-      event.name,
     ].flatMap((value) => Array.isArray(value) ? value : [value])
       .map((value) => String(value || "").trim())
       .filter(Boolean);
@@ -234,22 +231,31 @@ import {
         .trim()
         .toLowerCase(),
     );
+    const titleSources = [event.title, event.eventName, event.name]
+      .flatMap((value) => Array.isArray(value) ? value : [value])
+      .map((value) => String(value || "").trim())
+      .filter(Boolean)
+      .map((source) => source.normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .trim()
+        .toLowerCase());
+    const allSources = [...normalizedSources, ...titleSources];
 
-    const sourceText = normalizedSources.join(" ");
+    const sourceText = allSources.join(" ");
     if (
       sourceText.includes("pup") &&
       /\b(?:sta\.?\s*mesa|santa\s+mesa)\b/.test(sourceText)
     ) return "PUP Official";
-    if (normalizedSources.some((source) => source.includes("holiday"))) return "Holiday";
-    if (normalizedSources.some((source) =>
+    if (allSources.some((source) => source.includes("holiday"))) return "Holiday";
+    if (allSources.some((source) =>
       /(^|[^a-z])csc([^a-z]|$)/.test(source) ||
       source.includes("campus student council") ||
       source.includes("central student council"),
     )) return "Organizational";
-    if (normalizedSources.some((source) => source.includes("binan"))) {
+    if (allSources.some((source) => source.includes("binan"))) {
       return "PUP Biñan Campus";
     }
-    const hasOrganizationalCategory = normalizedSources.some((source) =>
+    const hasOrganizationalCategory = allSources.some((source) =>
       source.includes("organization") ||
       source.includes("organizational") ||
       source.includes("event organizer") ||
@@ -257,34 +263,20 @@ import {
       /(^|[^a-z0-9])(ibits|aces|jpcs|pice|iie|piie|hrss|sms|yes|jma|jphia|pasoa|chrms|cites)(?=$|[^a-z0-9])/i.test(source),
     );
     if (hasOrganizationalCategory) return "Organizational";
-    if (normalizedSources.some((source) =>
-      source.includes("pup") ||
-      source.includes("official") ||
-      source.includes("cite") ||
-      source.includes("teacher") ||
-      source.includes("faculty"),
-    )) return "PUP Official";
     if (
-      event.organizerId ||
-      event.organization ||
-      Array.isArray(event.targetOrgs) && event.targetOrgs.length > 0 ||
-      Array.isArray(event.targetOrganizations) && event.targetOrganizations.length > 0
-    ) return "Organizational";
-    return "Others/External";
+      normalizedSources.some((source) => source.includes("pup")) ||
+      allSources.some((source) =>
+        source.includes("official") ||
+        source.includes("cite") ||
+        source.includes("teacher") ||
+        source.includes("faculty"),
+      )
+    ) return "PUP Official";
+    return "Organizational";
   }
 
   function eventSourceGroups(event) {
-    const source = eventSource(event);
-    if (source !== "Organizational") return [source];
-    const rawSources = [
-      event.category, event.categories, event.eventSource, event.source,
-      event.organization, event.organizer, event.organizerName, event.tag,
-      event.calendarSource, event.calendarName, event.feedSource, event.origin,
-      event.campus, event.title, event.eventName, event.name,
-    ].flatMap((value) => Array.isArray(value) ? value : [value])
-      .map((value) => String(value || "").normalize("NFD")
-        .replace(/[\u0300-\u036f]/g, "").toLowerCase());
-    return ["Organizational", "Others/External"];
+    return [eventSource(event)];
   }
 
   function isHolidayEvent(event) {

@@ -2,8 +2,25 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   buildManualAttendeeIndex,
+  normalizeManualWalkInEntry,
   searchManualAttendees,
 } from "./scanAttendanceManualLookup.js";
+
+test("manual walk-in entry requires a name and safely allows blank optional fields", () => {
+  assert.deepEqual(
+    normalizeManualWalkInEntry({
+      name: "  Alex Guest  ",
+      studentNo: " ",
+      organization: "",
+    }),
+    {
+      name: "Alex Guest",
+      studentNo: "",
+      organization: "",
+    },
+  );
+  assert.equal(normalizeManualWalkInEntry({ name: "  " }), null);
+});
 
 test("manual attendee index merges Firestore details with UID-only RTDB registrations", () => {
   const attendees = buildManualAttendeeIndex(

@@ -17,6 +17,7 @@ import {
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 import {
   buildManualAttendeeIndex,
+  normalizeManualWalkInEntry,
   searchManualAttendees,
 } from "./scanAttendanceManualLookup.js";
 import { writeEventAttendance } from "../UserStudent/eventRtdb.js";
@@ -69,6 +70,14 @@ const manualStudentNo = document.getElementById("manualStudentNo");
 const btnManualSubmit = document.getElementById("btnManualSubmit");
 const manualValidationError = document.getElementById("manualValidationError");
 const manualSearchResult = document.getElementById("manualSearchResult");
+const manualHint = document.getElementById("manualHint");
+const manualWalkInEntry = document.getElementById("manualWalkInEntry");
+const manualWalkInForm = document.getElementById("manualWalkInForm");
+const manualWalkInName = document.getElementById("manualWalkInName");
+const manualWalkInStudentNo = document.getElementById("manualWalkInStudentNo");
+const manualWalkInOrganization = document.getElementById("manualWalkInOrganization");
+const manualWalkInError = document.getElementById("manualWalkInError");
+const btnManualWalkInSubmit = document.getElementById("btnManualWalkInSubmit");
 
 const btnCompleteEvent = document.getElementById("btnCompleteEvent");
 const scanEmptyEventsBox = document.getElementById("scanEmptyEventsBox");
@@ -875,7 +884,8 @@ async function populateEventDropdown() {
 
   const setAttendanceControlsDisabled = (disabled) => {
     [btnCompleteEvent, walkInToggle, btnToggleCamera, btnSwitchCamera, btnManualSubmit,
-      manualStudentNo, btnExportCsv].forEach((control) => {
+      manualStudentNo, manualWalkInName, manualWalkInStudentNo, manualWalkInOrganization,
+      btnManualWalkInSubmit, btnExportCsv].forEach((control) => {
       if (control) control.disabled = disabled;
     });
   };
@@ -1020,7 +1030,8 @@ async function showEventDetails(eventId) {
   if (scanLayoutGrid) scanLayoutGrid.style.display = "";
   if (scanRosterSection) scanRosterSection.style.display = "";
   [btnCompleteEvent, walkInToggle, btnToggleCamera, btnSwitchCamera, btnManualSubmit,
-    manualStudentNo, btnExportCsv].forEach((control) => {
+    manualStudentNo, manualWalkInName, manualWalkInStudentNo, manualWalkInOrganization,
+    btnManualWalkInSubmit, btnExportCsv].forEach((control) => {
     if (control) control.disabled = false;
   });
   if (btnManualSubmit) btnManualSubmit.disabled = true;
@@ -1035,6 +1046,7 @@ async function showEventDetails(eventId) {
   if (isCompleted) {
     if (btnCompleteEvent) btnCompleteEvent.hidden = true;
     if (walkInToggle) walkInToggle.disabled = true;
+    if (btnManualWalkInSubmit) btnManualWalkInSubmit.disabled = true;
 
     if (scanLayoutGrid) scanLayoutGrid.style.display = "none";
     if (scanCompletedBanner) scanCompletedBanner.hidden = false;
@@ -1044,6 +1056,7 @@ async function showEventDetails(eventId) {
   } else {
     if (btnCompleteEvent) btnCompleteEvent.hidden = false;
     if (walkInToggle) walkInToggle.disabled = false;
+    if (btnManualWalkInSubmit) btnManualWalkInSubmit.disabled = false;
     if (scanLayoutGrid) scanLayoutGrid.style.display = "";
     if (scanCompletedBanner) scanCompletedBanner.hidden = true;
     if (rosterTabsRow) rosterTabsRow.hidden = true;
@@ -1134,8 +1147,8 @@ function subscribeAttendance(eventId, isCompleted) {
       scannedBy: row.scannedBy || "Event Organizer",
       walkIn: Boolean(row.walkIn),
       name: row.name || row.studentName || row.student?.name || "Student",
-      studentNo: row.studentNo || row.studentNumber || row.student?.studentNo || uid,
-      organization: row.organization || row.student?.organization || "PUP Biñan",
+      studentNo: row.studentNo || row.studentNumber || row.student?.studentNo || (row.walkIn ? "" : uid),
+      organization: row.organization || row.student?.organization || (row.walkIn ? "" : "PUP Biñan"),
     };
   };
   const normalizeAttendanceRows = (data) =>
@@ -1292,8 +1305,8 @@ function updateRosterDisplay() {
           <tr>
             <td><strong>${timeStr}</strong></td>
             <td>${escapeHtml(row.name)}</td>
-            <td><code>${escapeHtml(row.studentNo)}</code></td>
-            <td>${escapeHtml(row.organization)}</td>
+            <td><code>${escapeHtml(row.studentNo || "—")}</code></td>
+            <td>${escapeHtml(row.organization || "—")}</td>
             <td>${typeBadge}</td>
             <td><small>${escapeHtml(row.scannedBy)}</small></td>
           </tr>
@@ -1570,6 +1583,13 @@ if (btnConfirmCompleteModal) {
         } catch (e) {}
       });
 
+      try {
+        downloadAttendanceCsv(ev, { allowEmpty: true });
+      } catch (downloadError) {
+        console.error("Event completed, but the attendance CSV could not be downloaded:", downloadError);
+        alert(`Event completed, but the attendance CSV could not be downloaded: ${downloadError?.message || String(downloadError)}`);
+      }
+
       const completedEventId = currentEventId;
       await stopCameraScanner();
       if (completeConfirmModalOverlay) completeConfirmModalOverlay.hidden = true;
@@ -1594,26 +1614,7 @@ if (btnExportCsv) {
     const safeName = eventTitle.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 30);
 
     if (currentRosterTab === "checkedIn") {
-      if (!currentAttendanceRows || currentAttendanceRows.length === 0) {
-        alert("No attendance records to export yet.");
-        return;
-      }
-      const headers = ["Time", "Student Name", "Student Number", "Organization", "Type", "Scanned By"];
-      const csvLines = [headers.join(",")];
-      currentAttendanceRows.forEach((row) => {
-        const d = new Date(row.scannedAt);
-        const timeStr = !Number.isNaN(d.getTime()) ? d.toLocaleTimeString("en-US") : "";
-        const typeStr = row.walkIn ? "Walk-in" : "Registered";
-        csvLines.push([
-          `"${timeStr}"`,
-          `"${(row.name || "").replace(/"/g, '""')}"`,
-          `"${(row.studentNo || "").replace(/"/g, '""')}"`,
-          `"${(row.organization || "").replace(/"/g, '""')}"`,
-          `"${typeStr}"`,
-          `"${(row.scannedBy || "").replace(/"/g, '""')}"`,
-        ].join(","));
-      });
-      downloadCsv(csvLines.join("\r\n"), `attendance-${safeName}-${dateStamp}.csv`);
+      downloadAttendanceCsv(ev);
     } else {
       if (!currentAbsentRows || currentAbsentRows.length === 0) {
         alert("No absent records to export.");
@@ -1633,6 +1634,35 @@ if (btnExportCsv) {
       downloadCsv(csvLines.join("\r\n"), `absent-${safeName}-${dateStamp}.csv`);
     }
   });
+}
+
+function downloadAttendanceCsv(event, { allowEmpty = false } = {}) {
+  const rows = Array.isArray(currentAttendanceRows) ? currentAttendanceRows : [];
+  if (!allowEmpty && rows.length === 0) {
+    alert("No attendance records to export yet.");
+    return false;
+  }
+
+  const eventTitle = String(event?.name || event?.title || "Event");
+  const dateStamp = new Date().toISOString().slice(0, 10);
+  const safeName = eventTitle.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 30);
+  const headers = ["Time", "Student Name", "Student Number", "Organization", "Type", "Scanned By"];
+  const csvLines = [headers.join(",")];
+  rows.forEach((row) => {
+    const date = new Date(row.scannedAt);
+    const time = !Number.isNaN(date.getTime()) ? date.toLocaleTimeString("en-US") : "";
+    const type = row.walkIn ? "Walk-in" : "Registered";
+    csvLines.push([
+      `"${time}"`,
+      `"${(row.name || "").replace(/"/g, '""')}"`,
+      `"${(row.studentNo || "").replace(/"/g, '""')}"`,
+      `"${(row.organization || "").replace(/"/g, '""')}"`,
+      `"${type}"`,
+      `"${(row.scannedBy || "").replace(/"/g, '""')}"`,
+    ].join(","));
+  });
+  downloadCsv(csvLines.join("\r\n"), `attendance-${safeName}-${dateStamp}.csv`);
+  return true;
 }
 
 function downloadCsv(content, filename) {
@@ -1839,6 +1869,19 @@ function applyWalkInState(newState) {
       localStorage.setItem(`recovibe_walkin_${currentEventId}`, isWalkInAllowed ? "true" : "false");
     } catch {}
   }
+  if (manualWalkInEntry) manualWalkInEntry.hidden = !isWalkInAllowed;
+  if (manualHint) {
+    manualHint.textContent = isWalkInAllowed
+      ? "Search registered attendees above or use the walk-in form below."
+      : "Select one registered student to confirm attendance.";
+  }
+  if (!isWalkInAllowed) {
+    manualWalkInForm?.reset();
+    if (manualWalkInError) {
+      manualWalkInError.hidden = true;
+      manualWalkInError.textContent = "";
+    }
+  }
 }
 
 function openWalkInModal(targetState) {
@@ -1982,8 +2025,11 @@ async function handleLocalAttendanceProcessing(eventId, token, allowWalkIn, regi
     uid = String(registeredStudent.uid);
     studentData = {
       name: registeredStudent.name || "Student",
-      studentNo: formatStudentNo(registeredStudent.studentNo || normalizedStudentNo),
-      organization: registeredStudent.organization || registeredStudent.course || "PUP Biñan",
+      studentNo: formatStudentNo(
+        registeredStudent.studentNo || (registeredStudent.walkIn ? "" : normalizedStudentNo),
+      ),
+      organization: registeredStudent.organization || registeredStudent.course ||
+        (registeredStudent.walkIn ? "" : "PUP Biñan"),
     };
   } else if (qrPayload) {
     uid = String(qrPayload.uid);
@@ -2109,7 +2155,13 @@ async function handleLocalAttendanceProcessing(eventId, token, allowWalkIn, regi
   const cleanUid = stripStudentNo(uid);
   const cleanStudentNo = stripStudentNo(studentData.studentNo);
 
-  let isRegistered = Boolean(registeredStudent?.uid);
+  let isRegistered = Boolean(registeredStudent?.uid && !registeredStudent.walkIn);
+  if (registeredStudent?.walkIn && studentData.studentNo) {
+    const cleanWalkInStudentNo = stripStudentNo(studentData.studentNo);
+    isRegistered = currentAbsentRows.some((row) =>
+      stripStudentNo(row.studentNo) === cleanWalkInStudentNo,
+    );
+  }
 
   // 1. Check currentAbsentRows (loaded from registrations for this event)
   if (currentAbsentRows.some((r) => {
@@ -2121,7 +2173,7 @@ async function handleLocalAttendanceProcessing(eventId, token, allowWalkIn, regi
   }
 
   // 2. Check the event-keyed RTDB registrations, including the legacy path.
-  if (!isRegistered && rtdb) {
+  if (!isRegistered && rtdb && !registeredStudent?.walkIn) {
     try {
       const [legacyResult, eventResult] = await Promise.allSettled([
         get(ref(rtdb, `registrations/${eventId}`)),
@@ -2349,7 +2401,9 @@ function renderManualSearchResults(matches, term, eventId, preferredUid = "") {
   manualSelectedStudentUid = selectedStudent?.uid || "";
 
   if (matches.length === 0) {
-    showManualSearchMessage("No registered student found. Search by student number or name.");
+    showManualSearchMessage(isWalkInAllowed
+      ? "No registered student found. Enter their name below to check in as a walk-in."
+      : "No registered student found. Search by student number or name.");
   } else {
     matches.forEach((student) => {
       const row = document.createElement("button");
@@ -2776,6 +2830,92 @@ if (manualCheckInForm) {
       }
     } else {
       runManualSearch(true);
+    }
+  });
+}
+
+if (manualWalkInForm) {
+  manualWalkInForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    if (manualCheckInInProgress) return;
+
+    const eventId = currentEventId;
+    const currentEvent = currentEvents.find((item) => String(item.id) === String(eventId));
+    const attendee = normalizeManualWalkInEntry({
+      name: manualWalkInName?.value,
+      studentNo: manualWalkInStudentNo?.value,
+      organization: manualWalkInOrganization?.value,
+    });
+    if (!isWalkInAllowed) {
+      if (manualWalkInError) {
+        manualWalkInError.textContent = "Enable Allow walk-ins before checking in a walk-in attendee.";
+        manualWalkInError.hidden = false;
+      }
+      return;
+    }
+    if (!attendee) {
+      if (manualWalkInError) {
+        manualWalkInError.textContent = "Enter the attendee's name to continue.";
+        manualWalkInError.hidden = false;
+      }
+      manualWalkInName?.focus();
+      return;
+    }
+    if (!eventId || currentEvent?.status === "completed" || !rtdb || !auth?.currentUser) {
+      if (manualWalkInError) {
+        manualWalkInError.textContent = currentEvent?.status === "completed"
+          ? "This event is complete and no longer accepting check-ins."
+          : "Select an active event and sign in before recording attendance.";
+        manualWalkInError.hidden = false;
+      }
+      return;
+    }
+
+    manualCheckInInProgress = true;
+    if (btnManualWalkInSubmit) {
+      btnManualWalkInSubmit.disabled = true;
+      btnManualWalkInSubmit.textContent = "Checking in...";
+    }
+    if (manualWalkInError) {
+      manualWalkInError.hidden = true;
+      manualWalkInError.textContent = "";
+    }
+
+    const uid = `walkin-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+    try {
+      const walkInAttendee = { ...attendee, uid, walkIn: true };
+      const result = await handleLocalAttendanceProcessing(eventId, uid, true, walkInAttendee);
+      if (String(currentEventId) === String(eventId)) {
+        handleAttendanceResult(result, uid);
+        if (result.status === "ok") manualWalkInForm.reset();
+        if (result.status !== "ok" && manualWalkInError) {
+          manualWalkInError.textContent = result.status === "already"
+            ? "This attendee has already been checked in."
+            : "Could not record this walk-in. Please check the details and try again.";
+          manualWalkInError.hidden = false;
+        }
+      }
+    } catch (error) {
+      console.error("Manual walk-in check-in error:", error);
+      if (manualWalkInError) {
+        const code = error?.code ? ` (${error.code})` : "";
+        manualWalkInError.textContent =
+          `Could not record this walk-in${code}. ${error?.message || "Please retry."}`;
+        manualWalkInError.hidden = false;
+      }
+      showResultBanner({
+        type: "error",
+        title: "Walk-in check-in failed",
+        name: attendee.name,
+        meta: attendee.studentNo,
+        note: error.message || "Could not record this walk-in.",
+      });
+    } finally {
+      manualCheckInInProgress = false;
+      if (btnManualWalkInSubmit) {
+        btnManualWalkInSubmit.disabled = !isWalkInAllowed;
+        btnManualWalkInSubmit.textContent = "Check in walk-in";
+      }
     }
   });
 }

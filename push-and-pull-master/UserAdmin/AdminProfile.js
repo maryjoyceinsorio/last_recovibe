@@ -5,7 +5,13 @@ import {
   updatePassword,
   verifyBeforeUpdateEmail,
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
-import { doc, getDoc, serverTimestamp, writeBatch } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+import {
+  deleteField,
+  doc,
+  getDoc,
+  serverTimestamp,
+  writeBatch,
+} from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 import { push, ref, set } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-database.js";
 import { auth, authReady, db, isRtdbConfigured, rtdb } from "../UserStudent/firebaseConfig.js";
 import {
@@ -15,6 +21,10 @@ import {
   profileCollectionsForRole,
   syncVerifiedProfileEmail,
 } from "../portalProfileAccount.js";
+import {
+  pendingEmailNoticeMarkup,
+  updatePendingEmailNotice,
+} from "../profilePendingEmail.js";
 
 (async () => {
   "use strict";
@@ -209,6 +219,9 @@ import {
     .toUpperCase();
   document.querySelector(".admin-logout").onclick = async (event) => {
     event.preventDefault();
+    if (event.currentTarget.dataset.rvLogoutConfirmed === "true") {
+      dirty = false;
+    }
     try {
       await signOut(auth);
     } finally {
@@ -307,6 +320,14 @@ import {
   document.querySelector("[data-role]").textContent = position;
   document.querySelector("[data-role]").title = position;
   root.innerHTML = `<section class="content-container"><header class="hero-banner"><div class="hero-left"><div class="hero-avatar" id="heroAvatar" aria-hidden="true"></div><div class="hero-info"><h1 class="hero-name" id="heroUserName"></h1><div class="hero-badges"><span class="hero-badge" id="heroRoleBadge"></span></div></div></div><div class="hero-actions"><button type="button" class="btn-outlined-hero" id="changePassword">Change password</button></div></header><section class="profile-cards-grid"><article class="profile-card"><div class="card-header-flex"><h2 class="card-title">Name</h2><button type="button" class="btn-outlined-card" id="editProfile" data-edit-profile>Edit</button></div><div class="card-view-mode" id="profileSummary"><div class="fields-grid cols-3"><div class="field-item"><span class="field-label">First Name</span><span class="field-value" id="viewFirstName"></span></div><div class="field-item"><span class="field-label">Middle Name</span><span class="field-value" id="viewMiddleName"></span></div><div class="field-item"><span class="field-label">Last Name</span><span class="field-value" id="viewLastName"></span></div></div></div><form class="admin-profile-form card-edit-mode" id="profileForm" hidden novalidate><div class="admin-field"><label for="firstName">First Name</label><input id="firstName" autocomplete="given-name"></div><div class="admin-field"><label for="middleName">Middle Name</label><input id="middleName" autocomplete="additional-name"></div><label class="admin-checkbox"><input id="noMiddleName" type="checkbox"> I don't have a middle name</label><div class="admin-field"><label for="lastName">Last Name</label><input id="lastName" autocomplete="family-name"></div><p class="admin-error-text" id="profileError" role="alert"></p><div class="admin-profile-actions"><button class="admin-button green" type="submit">Save</button><button class="admin-button" id="cancelEdit" type="button">Cancel</button></div></form></article><article class="profile-card"><div class="card-header-flex"><h2 class="card-title">Contact</h2><button type="button" class="btn-outlined-card" data-edit-profile>Edit</button></div><div class="card-view-mode" id="contactSummary"><div class="fields-grid cols-2"><div class="field-item"><span class="field-label">Email Address</span><span class="field-value" id="viewEmail"></span></div><div class="field-item"><span class="field-label">Contact Number</span><span class="field-value" id="viewContact"></span></div></div></div></article><article class="profile-card full-width-card"><div class="card-header-flex card-title-locked-row"><h2 class="card-title">Admin details</h2><span class="badge-locked"><svg class="label-lock" viewBox="0 0 20 20" fill="currentColor" width="12" height="12" aria-hidden="true"><path fill-rule="evenodd" d="M5 9V7a5 5 0 0110 0v2a2 2 0 012 2v5a2 2 0 01-2 2H5a2 2 0 01-2-2v-5a2 2 0 012-2zm8-2v2H7V7a3 3 0 016 0z" clip-rule="evenodd" /></svg> Locked</span></div><div class="fields-grid cols-4-responsive"><div class="field-item"><span class="field-label"><svg class="label-lock" viewBox="0 0 20 20" fill="currentColor" width="11" height="11" aria-hidden="true"><path fill-rule="evenodd" d="M5 9V7a5 5 0 0110 0v2a2 2 0 012 2v5a2 2 0 01-2 2H5a2 2 0 01-2-2v-5a2 2 0 012-2zm8-2v2H7V7a3 3 0 016 0z" clip-rule="evenodd"/></svg> Admin ID</span><span class="field-value" id="viewAdminId"></span></div><div class="field-item"><span class="field-label"><svg class="label-lock" viewBox="0 0 20 20" fill="currentColor" width="11" height="11" aria-hidden="true"><path fill-rule="evenodd" d="M5 9V7a5 5 0 0110 0v2a2 2 0 012 2v5a2 2 0 01-2 2H5a2 2 0 01-2-2v-5a2 2 0 012-2zm8-2v2H7V7a3 3 0 016 0z" clip-rule="evenodd"/></svg> Position</span><span class="field-value" id="viewPosition"></span></div><div class="field-item"><span class="field-label"><svg class="label-lock" viewBox="0 0 20 20" fill="currentColor" width="11" height="11" aria-hidden="true"><path fill-rule="evenodd" d="M5 9V7a5 5 0 0110 0v2a2 2 0 012 2v5a2 2 0 01-2 2H5a2 2 0 01-2-2v-5a2 2 0 0 1 2 -2zm8-2v2H7V7a3 3 0 016 0z" clip-rule="evenodd"/></svg> Role</span><span class="field-value" id="viewRole"></span></div><div class="field-item"><span class="field-label"><svg class="label-lock" viewBox="0 0 20 20" fill="currentColor" width="11" height="11" aria-hidden="true"><path fill-rule="evenodd" d="M5 9V7a5 5 0 0110 0v2a2 2 0 012 2v5a2 2 0 01-2 2H5a2 2 0 01-2-2v-5a2 2 0 0 1 2 -2zm8-2v2H7V7a3 3 0 016 0z" clip-rule="evenodd"/></svg> Campus</span><span class="field-value" id="viewCampus"></span></div></div><div class="locked-note-box"><p class="locked-note-text">These details come from school records, so you cannot change them here. If something is wrong, ask OSAS to correct it.</p><button type="button" class="btn-outlined-card" id="btnRequestCorrection">Request a correction</button></div></article></section></section>${passwordLayerMarkup}`;
+  root.querySelector(".hero-banner")?.insertAdjacentHTML(
+    "afterend",
+    '<div class="profile-feedback-alert" id="profileFeedbackAlert" role="status" aria-live="polite" hidden><div class="alert-content"><span id="profileFeedbackText"></span></div><button type="button" class="alert-dismiss-btn" id="btnDismissProfileFeedback" aria-label="Dismiss">&times;</button></div>',
+  );
+  root.querySelector("#contactSummary")?.insertAdjacentHTML(
+    "afterbegin",
+    pendingEmailNoticeMarkup,
+  );
   root.querySelector("#heroAvatar").textContent = fullName.split(/\s+/).map((part) => part[0]).filter(Boolean).slice(0, 1).join("").toUpperCase();
   root.querySelector("#heroUserName").textContent = fullName;
   root.querySelector("#heroRoleBadge").textContent = role || "Not set";
@@ -423,6 +444,14 @@ import {
     clearTimeout(toastElement._timer);
     toastElement._timer = setTimeout(() => (toastElement.hidden = true), 3000);
   }
+  function showProfileFeedback(message, isError = false) {
+    const alert = root.querySelector("#profileFeedbackAlert");
+    const text = root.querySelector("#profileFeedbackText");
+    if (!alert || !text) return;
+    text.textContent = message;
+    alert.classList.toggle("error", isError);
+    alert.hidden = false;
+  }
   function display() {
     root.querySelector("#viewFirstName").textContent = profile.firstName || "Not set";
     root.querySelector("#viewMiddleName").textContent = profile.middleName || "Not set";
@@ -443,6 +472,7 @@ import {
       emailView.textContent = email;
     }
     root.querySelector("#viewContact").textContent = profile.contactNumber || "Not set";
+    updatePendingEmailNotice(profile, firebaseUser);
   }
   function esc(value) {
     return String(value ?? "").replace(
@@ -469,6 +499,33 @@ import {
   const contactNumber = root.querySelector("#contactNumber");
   const contactError = root.querySelector("#contactError");
   const contactSaveButton = contactForm.querySelector('[type="submit"]');
+  root.querySelector("#btnDismissProfileFeedback")?.addEventListener("click", () => {
+    root.querySelector("#profileFeedbackAlert").hidden = true;
+  });
+  root.querySelector("#btnCancelEmailChange")?.addEventListener("click", async (event) => {
+    const button = event.currentTarget;
+    if (!firebaseUser?.uid || firebaseUser.uid !== profile.uid || !db) {
+      showProfileFeedback("Sign in again before canceling the email change.", true);
+      return;
+    }
+
+    button.disabled = true;
+    try {
+      await saveAccountProfileFields(firebaseUser.uid, { pendingEmail: deleteField() });
+      const pendingKey = `recovibe_pending_email_${firebaseUser.uid}`;
+      localStorage.removeItem(pendingKey);
+      sessionStorage.removeItem(pendingKey);
+      delete profile.pendingEmail;
+      localStorage.setItem("recovibeAdminProfile", JSON.stringify(profile));
+      display();
+      showProfileFeedback("Email change cancelled.");
+    } catch (error) {
+      console.error("[AdminProfile] Could not cancel the email change:", error);
+      showProfileFeedback(error?.message || "Could not cancel the email change.", true);
+    } finally {
+      button.disabled = false;
+    }
+  });
   [nameFirst, nameMiddle, nameLast].forEach((input) => { input.maxLength = 100; });
   let nameInputFeedback = "";
   contactEmail.maxLength = 254;
@@ -1007,7 +1064,7 @@ import {
   });
   display();
   if (profile.pendingEmail) {
-    toast(`Email change pending verification at ${profile.pendingEmail}. Keep using your current email until confirmed.`);
+    showProfileFeedback(`Email change pending verification at ${profile.pendingEmail}. Keep using your current email until confirmed.`);
   }
   signalProfilePageReady();
 })();

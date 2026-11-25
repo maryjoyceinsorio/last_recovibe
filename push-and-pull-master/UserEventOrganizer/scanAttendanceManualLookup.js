@@ -12,6 +12,16 @@ function normalizeText(value) {
   return String(value || "").trim();
 }
 
+export function normalizeManualWalkInEntry({ name, studentNo, organization } = {}) {
+  const cleanName = normalizeText(name).slice(0, 120);
+  if (!cleanName) return null;
+  return {
+    name: cleanName,
+    studentNo: normalizeText(studentNo).replace(/\s+/g, " ").toUpperCase().slice(0, 60),
+    organization: normalizeText(organization).slice(0, 120),
+  };
+}
+
 function isActiveRegistration(registration) {
   if (registration === true) return true;
   if (!registration || typeof registration !== "object") return false;

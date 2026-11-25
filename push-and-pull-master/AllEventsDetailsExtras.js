@@ -12,13 +12,31 @@
     })[character],
   );
 
+  function hasContent(value) {
+    if (value == null) return false;
+    if (typeof value === "string") {
+      const normalized = value.trim();
+      return normalized !== "" && normalized.toLowerCase() !== "n/a";
+    }
+    if (typeof value === "number") return Number.isFinite(value);
+    if (typeof value === "boolean") return true;
+    if (Array.isArray(value)) return value.some(hasContent);
+    if (value instanceof Date) return !Number.isNaN(value.getTime());
+    if (typeof value === "object") return Object.values(value).some(hasContent);
+    return false;
+  }
+
   function values(value) {
-    if (value == null || value === "") return [];
-    return Array.isArray(value) ? value.filter((item) => item != null && item !== "") : [value];
+    if (Array.isArray(value)) return value.filter(hasContent);
+    return hasContent(value) ? [value] : [];
   }
 
   function text(value) {
-    if (typeof value === "string" || typeof value === "number") return String(value).trim();
+    if (typeof value === "string") {
+      const normalized = value.trim();
+      return normalized.toLowerCase() === "n/a" ? "" : normalized;
+    }
+    if (typeof value === "number") return Number.isFinite(value) ? String(value) : "";
     if (typeof value === "boolean") return value ? "Yes" : "No";
     if (Array.isArray(value)) return value.map(text).filter(Boolean).join(", ");
     if (!value || typeof value !== "object") return "";
@@ -27,7 +45,7 @@
       "partnerName", "facultyName", "title", "label", "role", "notes", "note",
       "accessNeeds", "department", "email", "phone", "id",
     ];
-    const fields = preferred.filter((field) => value[field] != null && value[field] !== "");
+    const fields = preferred.filter((field) => hasContent(value[field]));
     if (fields.length) return fields.map((field) => text(value[field])).filter(Boolean).join(" · ");
     return Object.values(value).map(text).filter(Boolean).join(" · ");
   }
@@ -35,9 +53,7 @@
   function firstValue(record, fields) {
     for (const field of fields) {
       const value = record?.[field];
-      if (value == null || value === "") continue;
-      if (Array.isArray(value) && value.length === 0) continue;
-      return value;
+      if (hasContent(value)) return value;
     }
     return "";
   }
@@ -45,7 +61,8 @@
   function listMarkup(items, fields) {
     const entries = values(items).map((item) => {
       if (typeof item !== "object" || item === null || Array.isArray(item)) {
-        return `<li>${escapeHTML(text(item))}</li>`;
+        const value = text(item);
+        return value ? `<li>${escapeHTML(value)}</li>` : "";
       }
       const details = fields.map(([label, aliases]) => {
         const value = text(firstValue(item, aliases));
@@ -55,9 +72,11 @@
         "name", "fullName", "displayName", "organizationName", "organization",
         "partnerName", "facultyName", "title", "label", "id",
       ]));
-      return `<li>${name ? `<strong>${escapeHTML(name)}</strong>` : ""}${details}</li>`;
+      return name || details
+        ? `<li>${name ? `<strong>${escapeHTML(name)}</strong>` : ""}${details}</li>`
+        : "";
     }).filter(Boolean);
-    return entries.length ? `<ul>${entries.join("")}</ul>` : "<p>N/A</p>";
+    return entries.length ? `<ul>${entries.join("")}</ul>` : "";
   }
 
   function detailMarkup(event) {
@@ -88,26 +107,52 @@
       [...values(partners).map((item) => firstValue(item, ["notes", "note"])),
         ...values(guests).map((item) => firstValue(item, ["accessNeeds", "notes", "note"]))]
         .filter(Boolean);
-    const sections = [
-      `<section class="all-events-detail-section"><h3>Partner Orgs</h3>${listMarkup(partners, [
+    const partnerMarkup = listMarkup(partners, [
         ["Department", ["department"]],
         ["Details", ["subtitle", "description"]],
         ["Role", ["role"]],
         ["Notes", ["notes", "note"]],
-      ])}</section>`,
-      `<section class="all-events-detail-section"><h3>Roles, and Notes</h3><p><strong>Roles:</strong> ${escapeHTML(text(roles) || "N/A")}</p><p><strong>Notes:</strong> ${escapeHTML(text(notes) || "N/A")}</p></section>`,
-      `<section class="all-events-detail-section"><h3>Mga guests</h3>${listMarkup(guests, [
+      ]);
+    const rolesText = text(roles);
+    const notesText = text(notes);
+    const guestMarkup = listMarkup(guests, [
         ["Organization", ["organization", "organizationName", "affiliation"]],
         ["Contact", ["email", "phone", "contact"]],
         ["Role", ["role", "topic"]],
         ["Notes", ["accessNeeds", "notes", "note"]],
-      ])}</section>`,
-      `<section class="all-events-detail-section"><h3>Participating Faculty Members</h3>${listMarkup(faculty, [
+      ]);
+    const facultyMarkup = listMarkup(faculty, [
         ["Department", ["department", "college"]],
         ["Email", ["email"]],
         ["Role", ["role", "title"]],
-      ])}</section>`,
-    ];
+      ]);
+    const sections = [];
+    if (partnerMarkup) {
+      sections.push(
+        `<section class="all-events-detail-section"><h3>Partner Orgs</h3>${partnerMarkup}</section>`,
+      );
+      if (rolesText || notesText) {
+        const roleMarkup = rolesText
+          ? `<p><strong>Roles:</strong> ${escapeHTML(rolesText)}</p>`
+          : "";
+        const notesMarkup = notesText
+          ? `<p><strong>Notes:</strong> ${escapeHTML(notesText)}</p>`
+          : "";
+        sections.push(
+          `<section class="all-events-detail-section"><h3>Roles, and Notes</h3>${roleMarkup}${notesMarkup}</section>`,
+        );
+      }
+    }
+    if (guestMarkup) {
+      sections.push(
+        `<section class="all-events-detail-section"><h3>Mga guests</h3>${guestMarkup}</section>`,
+      );
+    }
+    if (facultyMarkup) {
+      sections.push(
+        `<section class="all-events-detail-section"><h3>Participating Faculty Members</h3>${facultyMarkup}</section>`,
+      );
+    }
     return sections.join("");
   }
 

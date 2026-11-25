@@ -21,6 +21,7 @@ import {
   submitCorrectionRequest,
   subscribeMyCorrectionRequests,
 } from "../correctionRequests.js";
+import { updatePendingEmailNotice } from "../profilePendingEmail.js";
 
 (() => {
   const DEBUG = false;
@@ -160,6 +161,7 @@ import {
         viewContact.innerHTML = '<span class="empty-muted">Not set</span>';
       }
     }
+    updatePendingEmailNotice(profile, auth?.currentUser);
 
     // Teacher Details Card View
     const viewTeacherId = document.getElementById("viewTeacherId");
@@ -1186,6 +1188,32 @@ import {
       if (alert) alert.hidden = true;
     });
   }
+
+  document.getElementById("btnCancelEmailChange")?.addEventListener("click", async (event) => {
+    const button = event.currentTarget;
+    const authUser = auth?.currentUser;
+    if (!authUser?.uid || authUser.uid !== profile.uid || !db) {
+      showFeedback("Sign in again before canceling the email change.", true);
+      return;
+    }
+
+    button.disabled = true;
+    try {
+      await saveAccountProfileFields(authUser.uid, { pendingEmail: deleteField() });
+      const pendingKey = `recovibe_pending_email_${authUser.uid}`;
+      localStorage.removeItem(pendingKey);
+      sessionStorage.removeItem(pendingKey);
+      delete profile.pendingEmail;
+      localStorage.setItem(storageKey, JSON.stringify(profile));
+      updateDisplay();
+      showFeedback("Email change cancelled.");
+    } catch (error) {
+      console.error("[TeacherProfile] Could not cancel the email change:", error);
+      showFeedback(error?.message || "Could not cancel the email change.", true);
+    } finally {
+      button.disabled = false;
+    }
+  });
 
   const organizerLogout = document.getElementById("organizerLogout");
   if (organizerLogout) {

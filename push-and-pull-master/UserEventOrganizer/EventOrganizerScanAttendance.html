@@ -352,8 +352,31 @@
                 </div>
                 <div id="manualValidationError" class="manual-validation-error" hidden style="color:#b91c1c; font-size:12.5px; font-weight:600; margin-top:6px;"></div>
                 <div id="manualSearchResult" class="manual-search-result" role="group" aria-label="Registered student search results" aria-live="polite" hidden></div>
-                <p class="manual-hint">Select one registered student to confirm attendance.</p>
+                <p id="manualHint" class="manual-hint">Select one registered student to confirm attendance.</p>
               </form>
+
+              <div id="manualWalkInEntry" class="manual-walkin-entry" hidden>
+                <h4>Check in a walk-in</h4>
+                <p>Walk-in check-in is active. Name is required; student number and organization are optional.</p>
+                <form id="manualWalkInForm" class="manual-walkin-form" novalidate>
+                  <div class="manual-walkin-field">
+                    <label for="manualWalkInName">Name</label>
+                    <input id="manualWalkInName" type="text" maxlength="120" autocomplete="name" required />
+                  </div>
+                  <div class="manual-walkin-field">
+                    <label for="manualWalkInStudentNo">Student number <span>(optional)</span></label>
+                    <input id="manualWalkInStudentNo" type="text" maxlength="60" autocomplete="off" />
+                  </div>
+                  <div class="manual-walkin-field">
+                    <label for="manualWalkInOrganization">Organization <span>(optional)</span></label>
+                    <input id="manualWalkInOrganization" type="text" maxlength="120" autocomplete="organization" />
+                  </div>
+                  <p id="manualWalkInError" class="manual-validation-error" role="alert" hidden></p>
+                  <button type="submit" id="btnManualWalkInSubmit" class="btn-manual-walkin-submit">
+                    Check in walk-in
+                  </button>
+                </form>
+              </div>
             </div>
 
             <div class="scan-tips-card">

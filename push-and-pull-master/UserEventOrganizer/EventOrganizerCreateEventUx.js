@@ -8,6 +8,7 @@
   let baselineSnapshot = "";
   let userEditedSinceBaseline = false;
   let confirmedDiscard = false;
+  let confirmedNavigation = false;
   let venueUiForm = null;
   let venueUiState = null;
   let isUpdatingVenueControls = false;
@@ -658,14 +659,29 @@
   }, true);
 
   window.addEventListener("beforeunload", (event) => {
-    if (!hasChanges()) event.stopImmediatePropagation();
+    if (
+      confirmedNavigation ||
+      document.documentElement.dataset.allowCreateEventNavigation === "true" ||
+      !hasChanges()
+    ) {
+      event.stopImmediatePropagation();
+    }
   }, true);
 
   root.addEventListener("click", (event) => {
     if (!(event.target instanceof Element) ||
         !event.target.closest("#confirmModalPrimaryBtn")) return;
     const title = root.querySelector("#confirmModalTitle")?.textContent.trim();
-    if (title === "Discard Changes?") confirmedDiscard = true;
+    const action = event.target.closest("#confirmModalPrimaryBtn")?.textContent.trim().toLowerCase();
+    if (title === "Discard Changes?") {
+      confirmedDiscard = true;
+      confirmedNavigation = true;
+    } else if (
+      (title === "Cancel Event Creation?" && action === "yes, discard") ||
+      (title === "Unsaved Changes" && action === "discard")
+    ) {
+      confirmedNavigation = true;
+    }
   }, true);
 
   observer = new MutationObserver((records) => {

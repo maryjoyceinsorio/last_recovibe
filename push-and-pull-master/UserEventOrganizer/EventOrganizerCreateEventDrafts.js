@@ -1189,8 +1189,11 @@ async function applyDraftHydration() {
   try {
     const requestedDraftId = getDraftIdFromUrl();
     await draftReadPromise;
-    if (draftHydrationApplied || !draftForHydration || !getForm() ||
-        requestedDraftId !== getDraftIdFromUrl()) return;
+    if (draftHydrationApplied || !draftForHydration ||
+        requestedDraftId !== getDraftIdFromUrl()) {
+      draftHydrationScheduled = false;
+      return;
+    }
     if (!activateNewEventForm()) {
       draftHydrationScheduled = false;
       return;
@@ -1301,6 +1304,7 @@ async function saveDraftAndRedirect(confirmButton, requestedHref = "") {
     }
 
     document.getElementById("confirmModalCancelBtn")?.click();
+    document.documentElement.dataset.allowCreateEventNavigation = "true";
     window.location.assign(getRedirectUrl(draftId, requestedHref));
   } catch (error) {
     console.error("[CreateEventDrafts] Could not save event draft:", error);

@@ -583,6 +583,50 @@
       </section>
     </div>
 
+    <div
+      class="my-events-dialog-overlay"
+      id="deleteDraftConfirmOverlay"
+      hidden
+      aria-hidden="true"
+    >
+      <section
+        class="my-events-dialog"
+        role="alertdialog"
+        tabindex="-1"
+        aria-modal="true"
+        aria-labelledby="deleteDraftConfirmTitle"
+        aria-describedby="deleteDraftConfirmMessage"
+      >
+        <h2 id="deleteDraftConfirmTitle">Delete this draft?</h2>
+        <p id="deleteDraftConfirmMessage">
+          This draft will be permanently deleted and cannot be restored.
+        </p>
+        <p
+          id="deleteDraftFeedback"
+          class="my-events-dialog-feedback"
+          role="alert"
+          tabindex="-1"
+          hidden
+        ></p>
+        <div class="my-events-dialog-actions">
+          <button
+            type="button"
+            class="my-events-dialog-secondary"
+            id="cancelDeleteDraft"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            class="my-events-dialog-danger"
+            id="confirmDeleteDraft"
+          >
+            Delete draft
+          </button>
+        </div>
+      </section>
+    </div>
+
     <script src="EventOrganizerData.js"></script>
     <script src="OrganizerNotificationBadge.js"></script>
     <script src="../EventDetailsModal.js"></script>

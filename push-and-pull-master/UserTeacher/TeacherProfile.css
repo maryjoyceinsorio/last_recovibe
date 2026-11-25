@@ -412,6 +412,56 @@
   display: block;
 }
 
+.pending-verification-box {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  min-width: 0;
+  margin-bottom: 18px;
+  padding: 12px 14px;
+  border: 1px solid var(--gold-chip-border);
+  border-radius: 10px;
+  background: var(--gold-chip-bg);
+}
+
+.pending-verification-box[hidden] {
+  display: none !important;
+}
+
+.pending-notice-icon {
+  flex: 0 0 auto;
+  margin-top: 1px;
+  color: var(--gold-chip-text);
+}
+
+.pending-notice-body {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.pending-notice-text {
+  margin: 0 0 6px;
+  color: var(--text-dark);
+}
+
+.btn-link-action {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--maroon-primary);
+  font-size: 12.5px;
+  font-weight: 600;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+:root[data-theme="dark"] .btn-link-action {
+  color: #f1ca62;
+}
+
 .card-edit-footer {
   display: flex;
   align-items: center;

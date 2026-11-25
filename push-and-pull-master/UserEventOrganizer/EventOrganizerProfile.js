@@ -16,6 +16,7 @@ import {
   doc,
   getDoc,
   setDoc,
+  updateDoc,
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 import {
   formatPhilippineMobile,
@@ -27,6 +28,7 @@ import {
   submitCorrectionRequest,
   subscribeMyCorrectionRequests,
 } from "../correctionRequests.js";
+import { updatePendingEmailNotice } from "../profilePendingEmail.js";
 
 (() => {
   const profileStorageKey = "recovibeOrganizerProfile";
@@ -179,6 +181,7 @@ import {
         viewContact.innerHTML = '<span class="empty-muted">Not set</span>';
       }
     }
+    updatePendingEmailNotice(profile, auth?.currentUser);
 
     // Organizer Details Card View
     const viewOrganizerId = document.getElementById("viewOrganizerId");
@@ -1297,6 +1300,31 @@ import {
   });
 
   updateDisplay();
+  document.getElementById("btnCancelEmailChange")?.addEventListener("click", async (event) => {
+    const button = event.currentTarget;
+    const authUser = auth?.currentUser;
+    if (!authUser?.uid || authUser.uid !== profile.uid || !db || !isFirebaseConfigured) {
+      showFeedback("Sign in again before canceling the email change.", true);
+      return;
+    }
+
+    button.disabled = true;
+    try {
+      await updateDoc(doc(db, "users", authUser.uid), { pendingEmail: deleteField() });
+      const pendingKey = `recovibe_pending_email_${authUser.uid}`;
+      localStorage.removeItem(pendingKey);
+      sessionStorage.removeItem(pendingKey);
+      delete profile.pendingEmail;
+      localStorage.setItem(profileStorageKey, JSON.stringify(profile));
+      updateDisplay();
+      showFeedback("Email change cancelled.");
+    } catch (error) {
+      console.error("[EventOrganizerProfile] Could not cancel the email change:", error);
+      showFeedback(error?.message || "Could not cancel the email change.", true);
+    } finally {
+      button.disabled = false;
+    }
+  });
   if (profile.pendingEmail) {
     showFeedback(`Email change pending verification at ${profile.pendingEmail}. Keep using your current email until confirmed.`);
   }

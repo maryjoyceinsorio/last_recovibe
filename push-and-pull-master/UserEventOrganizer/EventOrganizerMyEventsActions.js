@@ -9,6 +9,7 @@ import {
 import {
   push,
   ref,
+  remove,
   set,
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-database.js";
 
@@ -18,6 +19,7 @@ const dateFilter = document.getElementById("eventDateFilter");
 const tracker = document.getElementById("trackerModalOverlay");
 const cancelOverlay = document.getElementById("cancelEventConfirmOverlay");
 const rescheduleOverlay = document.getElementById("rescheduleEventOverlay");
+const deleteDraftOverlay = document.getElementById("deleteDraftConfirmOverlay");
 const actionStatus = document.getElementById("myEventsActionStatus");
 const cancelFeedback = document.getElementById("cancelEventFeedback");
 const rescheduleFeedback = document.getElementById("rescheduleEventFeedback");
@@ -25,6 +27,9 @@ const rescheduleForm = document.getElementById("rescheduleEventForm");
 const rescheduleDate = document.getElementById("rescheduleEventDate");
 const rescheduleStartTime = document.getElementById("rescheduleEventStartTime");
 const rescheduleEndTime = document.getElementById("rescheduleEventEndTime");
+const deleteDraftFeedback = document.getElementById("deleteDraftFeedback");
+const cancelDeleteDraftButton = document.getElementById("cancelDeleteDraft");
+const confirmDeleteDraftButton = document.getElementById("confirmDeleteDraft");
 
 const publishedTrackerActionIds = [
   "btnTrackerEdit",
@@ -37,7 +42,10 @@ const publishedTrackerActionIds = [
 let selectedEventId = "";
 let lastFocusedElement = null;
 let isSaving = false;
+let isDeletingDraft = false;
 let cachedOrganizerEventsById = null;
+let pendingDraftDelete = null;
+const optimisticDeletedDraftIds = new Set();
 const requestedDraftId = new URLSearchParams(window.location.search).get("draft") || "";
 let requestedDraftRevealed = false;
 
@@ -175,6 +183,10 @@ function keepOnlyPublishedTableActions(row) {
 
 function syncPublishedActions() {
   for (const row of tableBody?.querySelectorAll("tr[data-event-id]") || []) {
+    if (optimisticDeletedDraftIds.has(row.dataset.eventId || "")) {
+      row.remove();
+      continue;
+    }
     if (rowIsCompleted(row)) {
       hideCompletedTableActions(row);
     } else {
@@ -185,6 +197,12 @@ function syncPublishedActions() {
   revealRequestedDraft();
 
   const selectedRow = getRow(selectedEventId);
+  if (selectedEventId && !selectedRow) {
+    selectedEventId = "";
+    if (tracker && !tracker.hidden) {
+      document.getElementById("btnTrackerClose")?.click();
+    }
+  }
   const isCompleted = Boolean(selectedEventId && rowIsCompleted(selectedRow));
   const isPublished = Boolean(selectedEventId && rowIsPublished(selectedRow));
   const cancelButton = document.getElementById("btnTrackerCancel");
@@ -285,6 +303,129 @@ function setFeedback(element, message, isError = true) {
   element.classList.toggle("is-error", isError);
   element.hidden = !message;
 }
+
+function openDraftDeleteConfirmation(eventId, row, trigger) {
+  if (!deleteDraftOverlay || !eventId || !row || isDeletingDraft) return;
+  pendingDraftDelete = {
+    eventId: String(eventId),
+    row,
+    nextSibling: row.nextElementSibling,
+    trigger,
+  };
+  setFeedback(deleteDraftFeedback, "");
+  deleteDraftOverlay.hidden = false;
+  deleteDraftOverlay.setAttribute("aria-hidden", "false");
+  document.body.classList.add("my-events-dialog-open");
+  window.requestAnimationFrame(() => cancelDeleteDraftButton?.focus());
+}
+
+function closeDraftDeleteConfirmation(restoreFocus = true) {
+  const trigger = pendingDraftDelete?.trigger;
+  setHidden(deleteDraftOverlay, true);
+  deleteDraftOverlay?.setAttribute("aria-hidden", "true");
+  document.body.classList.remove("my-events-dialog-open");
+  pendingDraftDelete = null;
+  if (restoreFocus && trigger?.isConnected) trigger.focus();
+}
+
+async function confirmDraftDelete() {
+  if (!pendingDraftDelete || isDeletingDraft) return;
+  isDeletingDraft = true;
+  const pending = pendingDraftDelete;
+  const { eventId, row, nextSibling } = pending;
+  if (confirmDeleteDraftButton) confirmDeleteDraftButton.disabled = true;
+  if (cancelDeleteDraftButton) cancelDeleteDraftButton.disabled = true;
+  deleteDraftOverlay?.querySelector('[role="alertdialog"]')?.focus();
+  deleteDraftOverlay?.setAttribute("aria-busy", "true");
+  setFeedback(deleteDraftFeedback, "");
+
+  optimisticDeletedDraftIds.add(eventId);
+  row.remove();
+  try {
+    await authReady;
+    const uid = auth.currentUser?.uid;
+    if (!uid || !rtdb) {
+      throw new Error("Your session is unavailable. Sign in again and retry.");
+    }
+    await remove(ref(rtdb, `drafts/${uid}/${eventId}`));
+    closeDraftDeleteConfirmation(false);
+    showActionStatus("Draft deleted.");
+  } catch (error) {
+    console.error("Could not delete event draft:", error);
+    optimisticDeletedDraftIds.delete(eventId);
+    if (!getRow(eventId) && tableBody) {
+      const restoreBefore = nextSibling?.parentElement === tableBody ? nextSibling : null;
+      tableBody.insertBefore(row, restoreBefore);
+    }
+    setFeedback(deleteDraftFeedback, errorDescription(error, "Deleting the draft"));
+  } finally {
+    isDeletingDraft = false;
+    deleteDraftOverlay?.removeAttribute("aria-busy");
+    if (confirmDeleteDraftButton) confirmDeleteDraftButton.disabled = false;
+    if (cancelDeleteDraftButton) cancelDeleteDraftButton.disabled = false;
+  }
+}
+
+document.addEventListener("click", (event) => {
+  const target = event.target instanceof Element ? event.target : null;
+  if (!target || pendingDraftDelete) return;
+
+  const tableDeleteButton = target.closest('[data-action="delete-draft"]');
+  const trackerDeleteButton = target.closest("#btnTrackerDelete");
+  let row = null;
+  let trigger = null;
+  if (tableDeleteButton && tableBody?.contains(tableDeleteButton)) {
+    row = tableDeleteButton.closest("tr[data-event-id]");
+    trigger = tableDeleteButton;
+  } else if (trackerDeleteButton && tracker?.contains(trackerDeleteButton)) {
+    row = getRow(selectedEventId);
+    trigger = trackerDeleteButton;
+  }
+  if (!rowIsDraft(row)) return;
+
+  event.preventDefault();
+  event.stopPropagation();
+  event.stopImmediatePropagation();
+  openDraftDeleteConfirmation(row.dataset.eventId, row, trigger);
+}, true);
+
+cancelDeleteDraftButton?.addEventListener("click", () => {
+  if (!isDeletingDraft) closeDraftDeleteConfirmation();
+});
+confirmDeleteDraftButton?.addEventListener("click", () => {
+  void confirmDraftDelete();
+});
+deleteDraftOverlay?.addEventListener("click", (event) => {
+  if (event.target === deleteDraftOverlay && !isDeletingDraft) {
+    closeDraftDeleteConfirmation();
+  }
+});
+document.addEventListener("keydown", (event) => {
+  if (!deleteDraftOverlay || deleteDraftOverlay.hidden) return;
+  if (event.key === "Escape") {
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    if (!isDeletingDraft) closeDraftDeleteConfirmation();
+    return;
+  }
+  if (event.key !== "Tab") return;
+  const focusable = [cancelDeleteDraftButton, confirmDeleteDraftButton]
+    .filter((button) => button && !button.disabled);
+  if (!focusable.length) {
+    event.preventDefault();
+    deleteDraftOverlay.querySelector('[role="alertdialog"]')?.focus();
+    return;
+  }
+  const first = focusable[0];
+  const last = focusable[focusable.length - 1];
+  if (event.shiftKey && document.activeElement === first) {
+    event.preventDefault();
+    last.focus();
+  } else if (!event.shiftKey && document.activeElement === last) {
+    event.preventDefault();
+    first.focus();
+  }
+}, true);
 
 function showDialog(overlay, focusTarget) {
   if (!overlay) return;

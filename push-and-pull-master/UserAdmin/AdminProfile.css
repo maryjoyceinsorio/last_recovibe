@@ -359,6 +359,31 @@ body {
 .profile-cards-grid { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 24px; margin-top: 24px; align-items: start; }
 .profile-cards-grid .full-width-card { grid-column: 1 / -1; }
 .profile-card { background: #fff; border: 1px solid #eadfd5; border-radius: 14px; padding: 28px; box-shadow: 0 2px 8px rgba(43,26,29,.02); }
+.profile-feedback-alert {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 20px;
+  padding: 14px 18px;
+  border: 1px solid #ceead6;
+  border-radius: 14px;
+  background: #e6f4ea;
+  color: #137333;
+}
+.profile-feedback-alert[hidden] { display: none !important; }
+.profile-feedback-alert.error { border-color: #f1d4d7; background: #fdf0f1; color: #7a1f2e; }
+.profile-feedback-alert .alert-content { min-width: 0; font-size: 14px; line-height: 1.4; overflow-wrap: anywhere; }
+.profile-feedback-alert .alert-dismiss-btn {
+  flex: 0 0 auto;
+  padding: 0 4px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font-size: 22px;
+  line-height: 1;
+  cursor: pointer;
+}
 .card-title { font: 600 20px/1.25 Fraunces, Georgia, serif; color: #2b1a1d; margin: 0; }
 .card-header-flex { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 22px; }
 .btn-outlined-card { background: transparent; border: 1.5px solid #eadfd5; color: #7a1f2e; font: 600 14px Inter, sans-serif; min-height: 38px; padding: 0 18px; border-radius: 8px; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; }
@@ -369,10 +394,35 @@ body {
 .field-item { display: flex; flex-direction: column; }
 .field-label { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .08em; color: #6b5459; margin-bottom: 6px; display: flex; align-items: center; gap: 4px; }
 .field-value { font-size: 16px; font-weight: 500; color: #2b1a1d; word-break: break-word; }
-#contactSummary #viewEmail { word-break: normal; overflow-wrap: normal; }
-#contactSummary #viewEmail .contact-email-local { white-space: nowrap; word-break: normal; }
-#contactSummary #viewEmail .contact-email-domain { white-space: nowrap; word-break: normal; }
+#contactSummary #viewEmail { word-break: break-word; overflow-wrap: anywhere; }
+#contactSummary #viewEmail .contact-email-local,
+#contactSummary #viewEmail .contact-email-domain { white-space: normal; overflow-wrap: anywhere; }
 .empty-muted { color: #6b5459; font-style: italic; font-weight: 400; }
+.pending-verification-box {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  min-width: 0;
+  margin-bottom: 18px;
+  padding: 12px 14px;
+  border: 1px solid #f0e0b0;
+  border-radius: 10px;
+  background: #fcf8ee;
+}
+.pending-verification-box[hidden] { display: none !important; }
+.pending-notice-icon { flex: 0 0 auto; margin-top: 1px; color: #8c660b; }
+.pending-notice-body { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; font-size: 13px; line-height: 1.45; }
+.pending-notice-text { margin: 0 0 6px; color: #2b1a1d; }
+.btn-link-action {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: #7a1f2e;
+  font-size: 12.5px;
+  font-weight: 600;
+  text-decoration: underline;
+  cursor: pointer;
+}
 .card-title-locked-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 .badge-locked { display: inline-flex; align-items: center; gap: 5px; background-color: rgba(107, 84, 89, 0.1); color: #6b5459; border: 1px solid #eadfd5; font-size: 12px; font-weight: 600; padding: 3px 10px; border-radius: 999px; letter-spacing: 0.02em; }
 .label-lock { display: inline-block; vertical-align: -1px; margin-right: 4px; color: #6b5459; opacity: 0.8; flex-shrink: 0; width: 13px; height: 13px; }
@@ -419,6 +469,7 @@ body {
   .admin-profile-form {
     grid-template-columns: 1fr;
   }
+  .profile-card { padding: 22px 18px; }
   .admin-profile-actions {
     flex-direction: column;
   }

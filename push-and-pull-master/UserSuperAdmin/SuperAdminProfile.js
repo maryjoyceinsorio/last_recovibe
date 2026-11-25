@@ -1,6 +1,11 @@
 import { auth, authReady, db } from "../UserStudent/firebaseConfig.js";
 import { verifyBeforeUpdateEmail } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
 import {
+  deleteField,
+  doc,
+  updateDoc,
+} from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+import {
   formatPhilippineMobile,
   isValidPhilippineMobile,
   mobileDigits,
@@ -9,6 +14,10 @@ import {
   saveProfileFields,
   syncVerifiedProfileEmail,
 } from "../portalProfileAccount.js";
+import {
+  pendingEmailNoticeMarkup,
+  updatePendingEmailNotice,
+} from "../profilePendingEmail.js";
 
 (async () => {
   await authReady;
@@ -30,6 +39,10 @@ import {
   };
 
   let profile = { ...fallback };
+  document.getElementById("contactCardView")?.insertAdjacentHTML(
+    "afterbegin",
+    pendingEmailNoticeMarkup,
+  );
   try {
     const stored = JSON.parse(localStorage.getItem(storageKey) || "null");
     if (stored && typeof stored === "object") profile = { ...profile, ...stored };
@@ -80,6 +93,7 @@ import {
     const designationEl = document.getElementById("viewDesignation");
     if (designationEl) designationEl.innerHTML = profile.designation || profile.role || '<span class="empty-muted">Not set</span>';
     text("viewCampus", profile.campus);
+    updatePendingEmailNotice(profile, auth?.currentUser);
   }
 
   const detailsView = document.getElementById("detailsCardView");
@@ -312,6 +326,43 @@ import {
     } catch (error) {
       console.error("[SuperAdminProfile] Could not update contact details:", error);
       showFeedback(error?.message || "Could not update contact details.", true);
+    }
+  });
+
+  document.getElementById("btnCancelEmailChange")?.addEventListener("click", async (event) => {
+    const button = event.currentTarget;
+    const authUser = auth?.currentUser;
+    const uid = authUser?.uid || profile.uid;
+    if (!uid || !db) {
+      showFeedback("Sign in again before canceling the email change.", true);
+      return;
+    }
+
+    button.disabled = true;
+    try {
+      const results = await Promise.allSettled(
+        profileCollectionsForRole("superadmin").map((collectionName) =>
+          updateDoc(doc(db, collectionName, uid), { pendingEmail: deleteField() }),
+        ),
+      );
+      const failure = results.find(
+        (result) => result.status === "rejected" && result.reason?.code !== "not-found",
+      );
+      if (failure) throw failure.reason;
+
+      const pendingKey = `recovibe_pending_email_${uid}`;
+      localStorage.removeItem(pendingKey);
+      sessionStorage.removeItem(pendingKey);
+      delete profile.pendingEmail;
+      profile.uid = uid;
+      saveProfile();
+      updateDisplay();
+      showFeedback("Email change cancelled.");
+    } catch (error) {
+      console.error("[SuperAdminProfile] Could not cancel the email change:", error);
+      showFeedback(error?.message || "Could not cancel the email change.", true);
+    } finally {
+      button.disabled = false;
     }
   });
 

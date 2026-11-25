@@ -1,1 +1,35 @@
 @import url("../UserStudent/StudentLogin.css");
+
+#adminLoginPage .password-toggle-control > input {
+  padding-right: 52px;
+}
+
+#adminLoginPage .password-toggle-control > .password-toggle-button {
+  right: 2px;
+  width: 44px;
+  height: 44px;
+}
+
+#adminLoginPage .remember-row .remember {
+  min-height: 44px;
+}
+
+#adminLoginPage .remember-row .remember input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+  min-width: 18px;
+  min-height: 18px;
+}
+
+#adminLoginPage .remember-row > .link-btn {
+  display: inline-flex;
+  min-height: 44px;
+  align-items: center;
+}
+
+@media (max-width: 600px) {
+  #adminLoginPage .remember-row {
+    flex-wrap: wrap;
+    gap: 4px 8px;
+  }
+}

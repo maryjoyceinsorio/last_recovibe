@@ -804,7 +804,8 @@
     let pending = false;
     let dashboardRegistrationConfirmation = false;
     let previousFocus = null;
-    let bodyOverflow = "";
+    let savedScrollY = 0;
+    let savedBodyStyles = null;
 
     const readObject = (key) => {
       try {
@@ -1406,7 +1407,15 @@
       }
       detailOverlay.classList.remove("is-open");
       detailOverlay.setAttribute("aria-hidden", "true");
-      document.body.style.overflow = bodyOverflow;
+      if (savedBodyStyles) {
+        document.body.classList.remove("event-details-page-locked");
+        document.body.style.position = savedBodyStyles.position;
+        document.body.style.top = savedBodyStyles.top;
+        document.body.style.width = savedBodyStyles.width;
+        document.body.style.overflow = savedBodyStyles.overflow;
+        window.scrollTo(0, savedScrollY);
+        savedBodyStyles = null;
+      }
       if (previousFocus && typeof previousFocus.focus === "function")
         previousFocus.focus();
       selectedEvent = null;
@@ -1649,11 +1658,24 @@
         selectedEvent = event;
         dashboardRegistrationConfirmation =
           options.dashboardRegistrationConfirmation === true;
-        previousFocus = document.activeElement;
-        bodyOverflow = document.body.style.overflow;
+        if (!detailOverlay.classList.contains("is-open")) {
+          previousFocus = document.activeElement;
+          savedScrollY = window.scrollY;
+          const pageWidth = document.documentElement.clientWidth;
+          savedBodyStyles = {
+            position: document.body.style.position,
+            top: document.body.style.top,
+            width: document.body.style.width,
+            overflow: document.body.style.overflow,
+          };
+          document.body.classList.add("event-details-page-locked");
+          document.body.style.position = "fixed";
+          document.body.style.top = `-${savedScrollY}px`;
+          document.body.style.width = `${pageWidth}px`;
+          document.body.style.overflow = "hidden";
+        }
         renderEvent(event);
         updateAction();
-        document.body.style.overflow = "hidden";
         detailOverlay.setAttribute("aria-hidden", "false");
         detailOverlay.classList.add("is-open");
         detailDialog.focus();

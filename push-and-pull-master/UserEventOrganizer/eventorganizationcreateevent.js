@@ -3214,6 +3214,25 @@ loadCachedOrganizations();
     render();
   }
 
+  async function loadDraftForEditing(uid) {
+    const draftId = new URLSearchParams(location.search).get("draft");
+    if (!draftId) return;
+    try {
+      const snapshot = await get(ref(rtdb, `drafts/${uid}/${draftId}`));
+      const draft = snapshot.val();
+      if (!draft || draft.status !== "draft") {
+        showToast("We couldn't find that draft in your list.");
+        return;
+      }
+      state.draftId = draftId;
+      prefillFormFromEvent(draft, true);
+      state.dirty = false;
+    } catch (error) {
+      console.error("Could not load event draft:", error);
+      showToast("Couldn't load this draft. Please try again.");
+    }
+  }
+
   // 14. Prefill Form from Copied/Existing Event
   function prefillFormFromEvent(ev, preserveDates = false, isReuse = false) {
     state.isCopied = true;
@@ -3412,25 +3431,6 @@ loadCachedOrganizations();
           form.keyDetails.value = ev.keyDetails;
         } else {
           form.keyDetails.value = isReuse ? "" : "• ";
-        }
-      }
-
-      async function loadDraftForEditing(uid) {
-        const draftId = new URLSearchParams(location.search).get("draft");
-        if (!draftId) return;
-        try {
-          const snapshot = await get(ref(rtdb, `drafts/${uid}/${draftId}`));
-          const draft = snapshot.val();
-          if (!draft || draft.status !== "draft") {
-            showToast("We couldn't find that draft in your list.");
-            return;
-          }
-          state.draftId = draftId;
-          prefillFormFromEvent(draft, true);
-          state.dirty = false;
-        } catch (error) {
-          console.error("Could not load event draft:", error);
-          showToast("Couldn't load this draft. Please try again.");
         }
       }
 

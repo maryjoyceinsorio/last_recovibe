@@ -1,1 +1,35 @@
 @import url("../UserStudent/StudentLogin.css");
+
+#superAdminLoginPage .password-toggle-control > input {
+  padding-right: 52px;
+}
+
+#superAdminLoginPage .password-toggle-control > .password-toggle-button {
+  right: 2px;
+  width: 44px;
+  height: 44px;
+}
+
+#superAdminLoginPage .remember-row .remember {
+  min-height: 44px;
+}
+
+#superAdminLoginPage .remember-row .remember input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+  min-width: 18px;
+  min-height: 18px;
+}
+
+#superAdminLoginPage .remember-row > .link-btn {
+  display: inline-flex;
+  min-height: 44px;
+  align-items: center;
+}
+
+@media (max-width: 600px) {
+  #superAdminLoginPage .remember-row {
+    flex-wrap: wrap;
+    gap: 4px 8px;
+  }
+}
