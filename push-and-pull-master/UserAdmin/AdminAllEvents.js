@@ -29,6 +29,12 @@ import { auth, authReady, db, isFirebaseConfigured } from "../UserStudent/fireba
   const params = new URLSearchParams(location.search),
     now = new Date(),
     today = manilaDate(now);
+  if (params.has("availability")) {
+    params.delete("availability");
+    const cleanUrl = new URL(location.href);
+    cleanUrl.searchParams.delete("availability");
+    history.replaceState(history.state, "", cleanUrl);
+  }
   let renderedHappeningMarkup = null;
   let shown = 10,
     searchTimer;
@@ -83,7 +89,6 @@ import { auth, authReady, db, isFirebaseConfigured } from "../UserStudent/fireba
     month: params.get("month") || "",
     year: Number(params.get("year")) || Number(today.slice(0, 4)),
     status: params.get("status") || "",
-    availability: params.get("availability") || "",
   };
   if (
     /\bcsc\b/i.test(state.source) ||
@@ -412,7 +417,6 @@ import { auth, authReady, db, isFirebaseConfigured } from "../UserStudent/fireba
       date.startsWith(
         `${state.year}-${String(Number(state.month) + 1).padStart(2, "0")}`,
       );
-    const full = openSlots(event) === 0;
     const sources = sourceGroups(
       event.source,
       event.eventSource,
@@ -429,8 +433,7 @@ import { auth, authReady, db, isFirebaseConfigured } from "../UserStudent/fireba
           .toLowerCase()
           .includes(state.category.toLowerCase())) &&
       monthMatch &&
-      (!state.status || st === state.status) &&
-      (!state.availability || (state.availability === "Full" ? full : !full))
+      (!state.status || st === state.status)
     );
   }
   function dateStart(event) {
@@ -542,8 +545,7 @@ import { auth, authReady, db, isFirebaseConfigured } from "../UserStudent/fireba
       state.source ||
       state.category ||
       state.month ||
-      state.status ||
-      state.availability,
+      state.status,
     );
   }
   function isPublishedEvent(event) {

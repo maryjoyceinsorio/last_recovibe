@@ -1486,7 +1486,7 @@ export function subscribeAdminNotifications(onChange, { includeAcademicCalendar 
           return isRelevantForMe(normalized, context)
             ? deriveEventNotifications(event, context, now, events)
             : [];
-        });
+        }).map((item) => ({ ...item, proposalSource: "firestore" }));
         cachedEvents = ["recovibeTeacherEvents", "recovibeOrganizerEvents"]
           .flatMap((key) => getLocalState(key))
           .map((event) => ({ ...event, id: String(event.eventId || event.id || "") }))

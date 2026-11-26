@@ -239,8 +239,9 @@ body {
   display: flex;
   align-items: center;
   justify-content: flex-end;
-  max-width: 1400px;
-  margin: 0 auto 16px;
+  width: 100%;
+  max-width: none;
+  margin: 0 0 16px;
 }
 .dashboard-notifications {
   position: relative;
@@ -335,8 +336,9 @@ body {
   font-size: 12px;
 }
 .admin-content {
-  max-width: 1400px;
-  margin: auto;
+  width: 100%;
+  max-width: none;
+  margin: 0;
 }
 .admin-loading,
 .admin-empty,

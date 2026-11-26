@@ -214,8 +214,9 @@ body {
   padding: 30px 38px 54px;
 }
 .admin-content {
-  max-width: 1400px;
-  margin: auto;
+  width: 100%;
+  max-width: none;
+  margin: 0;
 }
 .admin-loading,
 .admin-empty,

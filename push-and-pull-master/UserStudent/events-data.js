@@ -143,14 +143,6 @@ window.enhanceDropdownSelects =
           button.focus({ preventScroll: true });
         }
       });
-      const handleOptionPointerDown = (event) => {
-        const item = event.target.closest(".filter-option");
-        if (!item || item.disabled) return;
-        event.preventDefault();
-        event.stopPropagation();
-        selectOption(item);
-      };
-      menu.addEventListener("pointerdown", handleOptionPointerDown);
       menu.addEventListener("click", (event) => {
         const item = event.target.closest(".filter-option");
         if (!item || item.disabled) return;

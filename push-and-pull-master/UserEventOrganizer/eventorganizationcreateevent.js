@@ -589,6 +589,27 @@ loadCachedOrganizations();
     return organizationCode;
   }
 
+  function getTeacherOrganizationCode(teacherUid) {
+    if (String(teacherProfile.uid || "").trim() !== String(teacherUid || "").trim()) {
+      throw new Error("Sign in again before submitting an event.");
+    }
+    const organizationCode = getCanonicalOrganizationCode(
+      teacherProfile.organizationCode ||
+      teacherProfile.orgCode ||
+      teacherProfile.organizationId ||
+      teacherProfile.orgId ||
+      teacherProfile.org ||
+      teacherProfile.organization ||
+      teacherProfile.organizationName ||
+      teacherProfile.orgName ||
+      "",
+    );
+    if (!organizationCode) {
+      throw new Error("Your teacher profile must have an organization assigned before submitting an event.");
+    }
+    return organizationCode;
+  }
+
   const storageKeyEvents = isOrganizerPage ? "recovibeOrganizerEvents" : "recovibeTeacherEvents";
   const redirectListUrl = isOrganizerPage ? "EventOrganizerMyEvents.html" : "TeacherMyEvent.html";
 
@@ -3271,6 +3292,14 @@ loadCachedOrganizations();
         return;
       }
       state.draftId = draftId;
+      if (draft.eventId) {
+        if (draft.isResubmission === true) {
+          state.submissionEventId = String(draft.eventId);
+          state.editingEventId = null;
+        } else {
+          state.editingEventId = String(draft.eventId);
+        }
+      }
       prefillFormFromEvent(draft, true);
       state.dirty = false;
     } catch (error) {
@@ -3699,6 +3728,11 @@ loadCachedOrganizations();
                 const organizerOrganizationCode = isOrganizerPage
                   ? await getOrganizerOrganizationCode(organizerUid)
                   : "";
+                const teacherOrganizationCode = isOrganizerPage
+                  ? ""
+                  : getTeacherOrganizationCode(organizerUid);
+                const eventOrganizationCode =
+                  organizerOrganizationCode || teacherOrganizationCode;
                 if (isOrganizerPage) {
                   applyApprovalStagesForOrganization(organizerOrganizationCode);
                   if (!validateForm()) {
@@ -3718,23 +3752,23 @@ loadCachedOrganizations();
                   createdBy: organizerUid,
                   createdByRole: currentRole === "Event Organizer" ? "event_organizer" : "teacher",
                   creatorRole: currentRole,
-                  ...(organizerOrganizationCode
+                  ...(eventOrganizationCode
                     ? {
-                              organizationCode: organizerOrganizationCode,
-                              organizerOrganization: organizerOrganizationCode,
-                        orgCode: organizerOrganizationCode,
-                        orgId: organizerOrganizationCode,
-                        organization: organizerOrganizationCode,
-                        organizationName: organizerOrganizationCode,
-                        organizerOrg: organizerOrganizationCode,
+                        organizationCode: eventOrganizationCode,
+                        organizerOrganization: eventOrganizationCode,
+                        orgCode: eventOrganizationCode,
+                        orgId: eventOrganizationCode,
+                        organization: eventOrganizationCode,
+                        organizationName: eventOrganizationCode,
+                        organizerOrg: eventOrganizationCode,
                         approvalStatus: "pending",
                       }
                     : {}),
                   startAt: `${formPayload.date || ""} ${formPayload.timeStart || ""}`.trim(),
                   endAt: `${formPayload.dateEnd || formPayload.date || ""} ${formPayload.timeEnd || ""}`.trim(),
                   approvers: [...formPayload.approvers],
-                  ...(isOrganizerPage && urlParams.get("resubmit")
-                    ? { resubmissionOf: urlParams.get("resubmit") }
+                  ...(isOrganizerPage && (state.submissionEventId || urlParams.get("resubmit"))
+                    ? { resubmissionOf: state.submissionEventId || urlParams.get("resubmit") }
                     : {}),
                 });
                 eventPayload.createdAt = serverTimestamp();
@@ -3745,8 +3779,9 @@ loadCachedOrganizations();
                 submissionStage = "writing event to Firestore";
                 let eventId = formPayload.id;
                 try {
-                  if (state.editingEventId) {
-                    eventId = state.editingEventId;
+                  const existingEventId = state.editingEventId || state.submissionEventId;
+                  if (existingEventId) {
+                    eventId = existingEventId;
                     delete firestorePayload.createdAt;
                     await updateDoc(doc(db, "events", eventId), firestorePayload);
                   } else {
@@ -7193,10 +7228,22 @@ loadCachedOrganizations();
     const conflicting = allEvents.find((ev) => {
       if (!ev) return false;
       const evId = String(ev.id || ev.eventId || "");
-      if (state.editingEventId && evId === String(state.editingEventId)) return false;
+      const currentEventId =
+        state.editingEventId || state.submissionEventId || urlParams.get("resubmit") || "";
+      if (currentEventId && evId === String(currentEventId)) return false;
 
-      const st = String(ev.status || "").toLowerCase();
-      if (!["approved", "published", "pending", "pending approval", "pending_approval"].includes(st)) {
+      const eventStatuses = [ev.approvalStatus, ev.status]
+        .map((value) => String(value || "").trim().toLowerCase().replace(/[\s_-]+/g, " "))
+        .filter(Boolean)
+        .map((status) =>
+          ["pending approval", "pendingapproval", "approval pending"].includes(status)
+            ? "pending"
+            : status,
+        );
+      if (
+        eventStatuses.some((status) => ["rejected", "cancelled", "canceled", "draft"].includes(status)) ||
+        !eventStatuses.some((status) => ["pending", "approved", "ongoing"].includes(status))
+      ) {
         return false;
       }
 
@@ -8025,7 +8072,8 @@ loadCachedOrganizations();
           approvalHistory: [],
           stagesSource: systemApprovalStagesSource,
         };
-    const id = state.editingEventId || `${isOrganizerPage ? "org" : "tch"}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+    const id = state.editingEventId || state.submissionEventId ||
+      `${isOrganizerPage ? "org" : "tch"}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
     const nowISO = new Date().toISOString();
 
     const title = form?.eventName?.value.trim() || "Untitled Event";
@@ -8289,6 +8337,7 @@ loadCachedOrganizations();
 
   if (resubmitEvent) {
     state.editingEventId = null;
+    state.submissionEventId = String(resubmitEvent.eventId || resubmitEvent.id || resubmitEventId);
     prefillFormFromEvent(resubmitEvent, true);
   }
 

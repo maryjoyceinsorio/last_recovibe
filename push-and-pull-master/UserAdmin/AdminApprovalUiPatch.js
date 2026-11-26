@@ -70,7 +70,6 @@
       tracker.querySelector(".admin-notes-wrap")?.remove();
       tracker.querySelectorAll(".admin-tracker-step").forEach((step) => {
         step.querySelector(".admin-step-num")?.remove();
-        step.querySelector(".admin-step-label")?.remove();
         step.querySelector(".admin-step-status")?.remove();
       });
     }
@@ -95,28 +94,38 @@
         controls = document.createElement("div");
         controls.className = "reviewed-by-you-controls";
         controls.innerHTML = `
-          <input class="reviewed-by-you-search" type="search" aria-label="Search reviewed proposals" placeholder="Search reviewed proposals" />
-          <button class="reviewed-by-you-more" type="button">Load More</button>`;
+          <input class="reviewed-by-you-search" type="search" aria-label="Search reviewed proposals" placeholder="Search reviewed proposals" />`;
         group.insertBefore(controls, cardsGrid);
       }
 
       const search = controls.querySelector(".reviewed-by-you-search");
-      const more = controls.querySelector(".reviewed-by-you-more");
+      let more = group.querySelector(".reviewed-by-you-more");
+      if (!more) {
+        more = document.createElement("button");
+        more.className = "reviewed-by-you-more";
+        more.type = "button";
+        more.textContent = "Load More";
+      }
+      if (more.parentElement !== group || more.previousElementSibling !== cardsGrid) {
+        cardsGrid.after(more);
+      }
       if (search && search.value !== reviewedQuery) search.value = reviewedQuery;
       const query = reviewedQuery.trim().toLocaleLowerCase();
-      const visibleCards = [];
-      reviewedCards().forEach((card) => {
-        const matches = !query || card.textContent.toLocaleLowerCase().includes(query);
-        if (matches) visibleCards.push(card);
-      });
-
+      const allCards = reviewedCards();
+      const visibleCards = allCards.filter((card) =>
+        !query || card.textContent.toLocaleLowerCase().includes(query),
+      );
       const visibleLimit = query ? visibleCards.length : visibleReviewedCount;
-      visibleCards.forEach((card, index) => {
-        card.hidden = index >= visibleLimit;
+      const displayedCards = new Set(visibleCards.slice(0, visibleLimit));
+      allCards.forEach((card) => {
+        card.hidden = !displayedCards.has(card);
       });
+      const countBadge = group.querySelector(".approval-pipeline-count");
+      const countText = String(query ? visibleCards.length : allCards.length);
+      if (countBadge && countBadge.textContent !== countText) countBadge.textContent = countText;
 
       let empty = group.querySelector(".reviewed-by-you-empty");
-      if (visibleCards.length === 0 && reviewedCards().length) {
+      if (visibleCards.length === 0 && allCards.length) {
         if (!empty) {
           empty = document.createElement("div");
           empty.className = "reviewed-by-you-empty";

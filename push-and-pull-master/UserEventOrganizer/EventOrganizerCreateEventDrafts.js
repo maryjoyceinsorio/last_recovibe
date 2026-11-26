@@ -1,4 +1,5 @@
-import { auth, authReady, rtdb } from "../UserStudent/firebaseConfig.js";
+import { doc, serverTimestamp, updateDoc } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+import { auth, authReady, db, rtdb } from "../UserStudent/firebaseConfig.js";
 import { get, push, ref, set } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-database.js";
 
 const draftIdPattern = /^[A-Za-z0-9_-]+$/;
@@ -455,6 +456,12 @@ function collectDraftPayload(status = "draft") {
   const form = getForm();
   if (!form) throw new Error("The event form is not ready. Reload the page and try again.");
 
+  const params = new URLSearchParams(location.search);
+  const existingEventId =
+    params.get("eventId") || params.get("resubmit") || draftForHydration?.eventId || "";
+  const isResubmission = Boolean(
+    params.get("resubmit") || draftForHydration?.isResubmission === true,
+  );
   const fields = collectFormFields(form);
   const eventName = getFieldValue("eventName") || "Untitled Event";
   const categories = getCheckedValues(".ce-cat-checkbox");
@@ -502,6 +509,7 @@ function collectDraftPayload(status = "draft") {
 
   return {
     ...fields,
+    ...(existingEventId ? { eventId: String(existingEventId), isResubmission } : {}),
     title: eventName,
     name: eventName.slice(0, 120),
     eventName,
@@ -1290,6 +1298,22 @@ async function saveDraftAndRedirect(confirmButton, requestedHref = "") {
     };
 
     await set(draftRef, payload);
+    if (formSnapshot.eventId) {
+      if (!db) throw new Error("Firestore is not configured for this application.");
+      const firestorePayload = {
+        ...formSnapshot,
+        status: "draft",
+        approvalStatus: "draft",
+        updatedAt: serverTimestamp(),
+      };
+      delete firestorePayload.isResubmission;
+      if (formSnapshot.eventSource) {
+        firestorePayload.source = formSnapshot.eventSource;
+      } else {
+        delete firestorePayload.source;
+      }
+      await updateDoc(doc(db, "events", String(formSnapshot.eventId)), firestorePayload);
+    }
     if (rescheduleOriginalDate) {
       try {
         sessionStorage.setItem(rescheduleStorageKey(draftId), rescheduleOriginalDate);

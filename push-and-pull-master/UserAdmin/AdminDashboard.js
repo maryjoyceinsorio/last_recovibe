@@ -187,6 +187,50 @@ import { getCurrentStageKey, getStages } from "../eventWorkflow.js";
     const resolveStage = (values) => stageOrder.find((key) =>
       values.some((value) => aliases[key].includes(normalize(value))),
     );
+    const normalizeOrg = (value) => {
+      const normalized = String(value ?? "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+      if (
+        normalized === "piie" ||
+        normalized === "piee" ||
+        normalized.includes("philippineinstituteofindustrialengineers")
+      ) return "piie";
+      return normalized;
+    };
+    const profileOrgIds = new Set([
+      profile.organizationCode,
+      profile.organizationId,
+      profile.orgCode,
+      profile.orgId,
+      profile.organization,
+      profile.organizationName,
+      profile.orgName,
+      ...(Array.isArray(profile.organizations) ? profile.organizations : []),
+      ...(Array.isArray(profile.orgIds) ? profile.orgIds : []),
+      ...(Array.isArray(profile.assignedOrgs) ? profile.assignedOrgs : []),
+      ...(Array.isArray(profile.adviserOf) ? profile.adviserOf : []),
+      ...(Array.isArray(profile.courseOrganizations) ? profile.courseOrganizations : []),
+      profile.courseOrganization,
+    ].map(normalizeOrg).filter(Boolean));
+    const ownerOrganizationValues = [
+      event.orgId,
+      event.organizationId,
+      event.organizationCode,
+      event.organizerOrg,
+      event.org,
+      event.organizerOrganization,
+      event.organization,
+      event.organizationName,
+      event.orgName,
+      ...(Array.isArray(event.orgIds) ? event.orgIds : []),
+      ...(Array.isArray(event.organizationCodes) ? event.organizationCodes : []),
+    ];
+    const eventOrgIds = new Set(ownerOrganizationValues.map(normalizeOrg).filter(Boolean));
+    const hasOwnerOrganizationMetadata = ownerOrganizationValues.some(
+      (value) => value != null && String(value).trim() !== "",
+    );
+    const matchesOwnerOrganization = [...eventOrgIds].some((organizationId) =>
+      profileOrgIds.has(organizationId),
+    );
     if (
       ["organization", "default"].includes(event.stagesSource) &&
       Array.isArray(event.approvalStages)
@@ -204,13 +248,6 @@ import { getCurrentStageKey, getStages } from "../eventWorkflow.js";
         stage.reviewerEmail || stage.assignedReviewerEmail || stage.approverEmail ||
         assignments.reviewerEmail || assignments.approverEmail || assignments.email || "",
       ).trim().toLowerCase();
-      if (assignedEmail || assignedUid) {
-        return Boolean(
-          (assignedEmail && assignedEmail === String(auth.currentUser.email || "").trim().toLowerCase()) ||
-          (assignedUid && assignedUid === auth.currentUser.uid),
-        );
-      }
-
       const snapshotStageRole = resolveStage([
         currentStageKey,
         stage.key,
@@ -221,47 +258,20 @@ import { getCurrentStageKey, getStages } from "../eventWorkflow.js";
         stage.reviewerName,
         ...(Array.isArray(stage.aliases) ? stage.aliases : []),
       ]);
+      if (assignedEmail || assignedUid) {
+        const assignedToCurrentUser = Boolean(
+          (assignedEmail && assignedEmail === String(auth.currentUser.email || "").trim().toLowerCase()) ||
+          (assignedUid && assignedUid === auth.currentUser.uid),
+        );
+        return assignedToCurrentUser &&
+          (snapshotStageRole !== "org_adv" ||
+            !hasOwnerOrganizationMetadata ||
+            matchesOwnerOrganization);
+      }
+
       if (!snapshotStageRole || snapshotStageRole !== getCurrentAdminStage(profile)) return false;
       if (snapshotStageRole !== "org_adv") return true;
-      const normalizeOrg = (value) => {
-        const normalized = String(value ?? "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
-        if (
-          normalized === "piie" ||
-          normalized === "piee" ||
-          normalized.includes("philippineinstituteofindustrialengineers")
-        ) return "piie";
-        return normalized;
-      };
-      const profileOrgIds = new Set([
-        profile.organizationCode,
-        profile.organizationId,
-        profile.orgCode,
-        profile.orgId,
-        profile.organization,
-        profile.organizationName,
-        profile.orgName,
-        ...(Array.isArray(profile.organizations) ? profile.organizations : []),
-        ...(Array.isArray(profile.orgIds) ? profile.orgIds : []),
-        ...(Array.isArray(profile.assignedOrgs) ? profile.assignedOrgs : []),
-        ...(Array.isArray(profile.adviserOf) ? profile.adviserOf : []),
-        ...(Array.isArray(profile.courseOrganizations) ? profile.courseOrganizations : []),
-        profile.courseOrganization,
-      ].map(normalizeOrg).filter(Boolean));
-      const eventOrgIds = new Set([
-        event.orgId,
-        event.organizationId,
-        event.organizationCode,
-        event.organizerOrg,
-        event.organizerOrganization,
-        event.organization,
-        event.organizationName,
-        event.orgName,
-        ...(Array.isArray(event.orgIds) ? event.orgIds : []),
-        ...(Array.isArray(event.organizationCodes) ? event.organizationCodes : []),
-        ...(Array.isArray(event.targetOrganizations) ? event.targetOrganizations : []),
-        ...(Array.isArray(event.partnerOrganizations) ? event.partnerOrganizations : []),
-      ].map(normalizeOrg).filter(Boolean));
-      return [...eventOrgIds].some((organizationId) => profileOrgIds.has(organizationId));
+      return matchesOwnerOrganization;
     }
     const rawStages = event.approvalStages;
     const entries = Array.isArray(rawStages)
@@ -323,52 +333,21 @@ import { getCurrentStageKey, getStages } from "../eventWorkflow.js";
       })[currentStage.key] || "",
     ).trim().toLowerCase();
     if (assignedEmail || assignedUid) {
-      return Boolean(
+      const assignedToCurrentUser = Boolean(
         (assignedEmail && assignedEmail === String(auth.currentUser.email || "").trim().toLowerCase()) ||
         (assignedUid && assignedUid === auth.currentUser.uid),
       );
+      return assignedToCurrentUser &&
+        (currentStage.key !== "org_adv" ||
+          !hasOwnerOrganizationMetadata ||
+          matchesOwnerOrganization);
     }
     if (
       currentAdminUid !== auth.currentUser.uid ||
       getCurrentAdminStage(profile) !== currentStage.key
     ) return false;
     if (currentStage.key !== "org_adv") return true;
-    const normalizeOrg = (value) => {
-      const normalized = String(value ?? "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
-      if (["piie", "piee"].includes(normalized) ||
-          normalized.includes("philippineinstituteofindustrialengineers")) return "piie";
-      return normalized;
-    };
-    const profileOrgIds = new Set([
-      profile.organizationCode,
-      profile.organizationId,
-      profile.orgCode,
-      profile.orgId,
-      profile.organization,
-      profile.organizationName,
-      profile.orgName,
-      ...(Array.isArray(profile.organizations) ? profile.organizations : []),
-      ...(Array.isArray(profile.orgIds) ? profile.orgIds : []),
-      ...(Array.isArray(profile.assignedOrgs) ? profile.assignedOrgs : []),
-      ...(Array.isArray(profile.adviserOf) ? profile.adviserOf : []),
-      ...(Array.isArray(profile.courseOrganizations) ? profile.courseOrganizations : []),
-      profile.courseOrganization,
-    ].map(normalizeOrg).filter(Boolean));
-    const eventOrgIds = new Set([
-      event.orgId,
-      event.organizationId,
-      event.organizationCode,
-      event.organizerOrg,
-      event.organizerOrganization,
-      event.organization,
-      event.organizationName,
-      event.orgName,
-      ...(Array.isArray(event.orgIds) ? event.orgIds : []),
-      ...(Array.isArray(event.organizationCodes) ? event.organizationCodes : []),
-      ...(Array.isArray(event.targetOrganizations) ? event.targetOrganizations : []),
-      ...(Array.isArray(event.partnerOrganizations) ? event.partnerOrganizations : []),
-    ].map(normalizeOrg).filter(Boolean));
-    return [...eventOrgIds].some((organizationId) => profileOrgIds.has(organizationId));
+    return matchesOwnerOrganization;
   }
   function normalizeEvent(eventDocument) {
     const data = eventDocument.data();
@@ -382,7 +361,7 @@ import { getCurrentStageKey, getStages } from "../eventWorkflow.js";
       dateISO: eventDate,
       venue: data.venue || data.location || data.venueOther || "",
       location: data.venue || data.location || data.venueOther || "",
-      organization: data.organization || data.organizerName || "",
+      organization: data.organization || "",
       createdAt: data.createdAt?.toDate
         ? data.createdAt.toDate().toISOString()
         : data.createdAt || "",
@@ -524,7 +503,7 @@ import { getCurrentStageKey, getStages } from "../eventWorkflow.js";
       const organizationFilter = root.querySelector("#dashboardOrganizationFilter");
       const organizations = new Map();
       events.forEach((event) => {
-        const organization = eventOrganizerName(event).replace(/\s+/g, " ").trim();
+        const organization = dashboardOrganizationValue(event);
         if (organization) {
           const key = organization.toLocaleLowerCase();
           if (!organizations.has(key)) organizations.set(key, organization);
@@ -614,7 +593,7 @@ import { getCurrentStageKey, getStages } from "../eventWorkflow.js";
       (!queryText || String(event.eventName || event.title || "").toLowerCase().includes(queryText)) &&
       (!dashboardTableState.status || statusOf(event) === dashboardTableState.status) &&
       (!dashboardTableState.organization ||
-        eventOrganizerName(event).replace(/\s+/g, " ").trim().toLocaleLowerCase() ===
+        dashboardOrganizationValue(event).toLocaleLowerCase() ===
           dashboardTableState.organization),
     ).sort((a, b) => {
       return (dashboardScheduleValue(a) - dashboardScheduleValue(b)) *
@@ -640,6 +619,23 @@ import { getCurrentStageKey, getStages } from "../eventWorkflow.js";
       event.organization ||
       "",
     ).replace(/\s+/g, " ").trim();
+  }
+  function dashboardOrganizationValue(event) {
+    const roleLabels = /^(?:event head|event organizer|teacher|admin|super admin)(?:\s*[:\-].*)?$/i;
+    const candidates = [
+      event.organizationName,
+      event.orgName,
+      event.organization,
+      event.organizerOrganization,
+      event.organizerOrg,
+      event.organizationCode,
+      event.orgCode,
+      event.organizationId,
+      event.orgId,
+    ];
+    return candidates
+      .map((value) => String(value || "").replace(/\s+/g, " ").trim())
+      .find((value) => value && !roleLabels.test(value)) || "";
   }
   function eventRow(event) {
     const categories = event.categories || event.category || "General";
@@ -670,7 +666,7 @@ import { getCurrentStageKey, getStages } from "../eventWorkflow.js";
     const [startTime, endTime] = dashboardTimes(event);
     const status = statusOf(event);
     const statusClass = status.replace(/[^a-z0-9]+/g, "-");
-    return `<tr><td data-label="Event"><span class="admin-item-title" title="${esc(event.eventName || event.title || "Untitled event")}">${esc(event.eventName || event.title || "Untitled event")}</span></td><td data-label="Source"><span title="${esc(source)}">${esc(source)}</span></td><td data-label="Category"><div class="dashboard-category-list">${categoryDisplay}</div></td><td data-label="Event Organizer (EO)"><span class="admin-item-title" title="${esc(organizer)}">${esc(organizer)}</span>${organizerRole ? `<small class="admin-organizer-role">EO role: ${esc(organizerRole)}</small>` : ""}</td><td data-label="Schedule">${esc(scheduleDate)}<small>${esc(startTime)} - ${esc(endTime)}</small></td><td data-label="Venue"><span title="${esc(event.venue || "—")}">${esc(event.venue || "—")}</span></td><td data-label="Status"><span class="event-status status-${esc(statusClass)}">${esc(statusLabel(status))}</span></td><td data-label="Actions">${pending ? `<a class="admin-row-action" href="AdminApproval.html?review=${encodeURIComponent(eventId)}">Review</a>` : "—"}</td></tr>`;
+    return `<tr><td data-label="Event"><span class="admin-item-title" title="${esc(event.eventName || event.title || "Untitled event")}">${esc(event.eventName || event.title || "Untitled event")}</span></td><td data-label="Source"><span title="${esc(source)}">${esc(source)}</span></td><td data-label="Category"><div class="dashboard-category-list">${categoryDisplay}</div></td><td data-label="Event Organizer (EO)"><span class="admin-item-title" title="${esc(organizer)}">${esc(organizer)}</span>${organizerRole ? `<small class="admin-organizer-role">EO role: ${esc(organizerRole)}</small>` : ""}</td><td data-label="Schedule">${esc(scheduleDate)}<small>${esc(startTime)} - ${esc(endTime)}</small></td><td data-label="Venue"><span title="${esc(event.venue || "—")}">${esc(event.venue || "—")}</span></td><td data-label="Status"><span class="event-status status-${esc(statusClass)}">${esc(statusLabel(status))}</span></td><td data-label="Actions">${pending ? `<a class="admin-row-action" href="AdminApproval.html?focus=${encodeURIComponent(eventId)}">Review</a>` : "—"}</td></tr>`;
   }
   function formatDashboardDate(value) {
     const dateValue = value?.toDate ? value.toDate() : value;
@@ -871,7 +867,7 @@ import { getCurrentStageKey, getStages } from "../eventWorkflow.js";
             .slice(0, 8)
             .map(
               (item) =>
-                `<button type="button" class="dashboard-notification ${!item.read ? "is-unread" : ""}" data-notification-id="${esc(item.id)}" data-event-id="${esc(item.eventId || "")}" data-source="${esc(item.source || "rtdb")}"><strong>${esc(item.title || "Notification")}</strong><span>${esc(item.message || "")}</span></button>`,
+                `<button type="button" class="dashboard-notification ${!item.read ? "is-unread" : ""}" data-notification-id="${esc(item.id)}" data-event-id="${esc(item.eventId || "")}" data-source="${esc(item.source || "rtdb")}" data-proposal-source="${esc(item.proposalSource || "")}"><strong>${esc(item.title || "Notification")}</strong><span>${esc(item.message || "")}</span></button>`,
             )
             .join("")
         : '<p class="dashboard-notification-empty">No notifications yet.</p>'
@@ -1088,7 +1084,12 @@ import { getCurrentStageKey, getStages } from "../eventWorkflow.js";
       document.querySelector("[data-notification-menu]").hidden = true;
       notificationToggle.setAttribute("aria-expanded", "false");
       if (eventId) {
-        location.href = `AdminApproval.html?review=${encodeURIComponent(eventId)}`;
+        const reviewUrl = new URL("AdminApproval.html", location.href);
+        reviewUrl.searchParams.set("review", eventId);
+        if (item.dataset.proposalSource === "firestore" || item.dataset.source === "firestore") {
+          reviewUrl.searchParams.set("source", "firestore");
+        }
+        location.href = reviewUrl.href;
       }
       return;
     }

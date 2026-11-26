@@ -77,8 +77,6 @@ import {
     "orgName",
     "orgIds",
     "organizationCodes",
-    "targetOrganizations",
-    "partnerOrganizations",
   ];
   const normalizeOrganizationId = (value) =>
     {
@@ -296,6 +294,7 @@ import {
   let diagnosticGlobalConfigOrganizations = [];
   let verifiedAdminProfileUid = null;
   let currentAdminKey = null; // e.g. "org_adv"
+  let requestedQueueFocusEventId = "";
   let approverDirectory = { ...APPROVER_DIRECTORY_DEFAULTS };
 
   let queueItems = [];
@@ -506,6 +505,9 @@ import {
       profile.userType,
       profile.user_type,
     ]).map(normalizeOrganizationId).filter(Boolean);
+    const adviserSuffixOrganizationIds = adviserIdentityValues
+      .map(organizationIdFromRoleSuffix)
+      .filter(Boolean);
     const suffixMatchedOrganizations = organizationDirectory
       .filter((organization) => {
         const code = normalizeOrganizationId(
@@ -520,10 +522,10 @@ import {
         );
         const hasAdviserMarker = adviserIdentityValues.some((value) =>
           ["orgadviser", "orgadvisor", "organizationadviser", "organizationadvisor"]
-            .some((marker) => value.includes(marker)),
+            .some((marker) => value.startsWith(marker)),
         );
         return code.length >= 3 && hasAdviserMarker &&
-          adviserIdentityValues.some((value) => value.includes(code));
+          adviserSuffixOrganizationIds.includes(code);
       })
       .map((organization) =>
         organization.organizationCode ||
@@ -586,9 +588,11 @@ import {
 
   function isCurrentAdminOrganization(event) {
     if (!isOrgAdviserReviewer(getAccountStage())) return true;
+    const eventOrganizationValues = getRawOrganizationValues(event, EVENT_ORGANIZATION_FIELDS);
     const organizationMatch = getOrganizationValues(event, EVENT_ORGANIZATION_FIELDS)
       .some((organizationId) => currentAdminOrganizationIds.has(organizationId));
     if (organizationMatch) return true;
+    if (eventOrganizationValues.length) return false;
 
     const stageKey = getFirestoreCurrentStageKey(event);
     const stage = getConfiguredFirestoreStages(event)
@@ -883,7 +887,6 @@ import {
       currentAdminProfile,
       auth?.currentUser?.displayName || email.split("@")[0] || "",
     ));
-    const ownStageKey = getAccountStage()?.key || "";
     const isEmail = (value) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
 
     return getReviewHistoryEntries(event).filter((entry) => {
@@ -901,22 +904,12 @@ import {
         "decidedByName", "approvedByName", "reviewedByName", "byName",
         "by", "reviewedBy", "reviewer", "actor", "user",
       ]).filter((value) => !resolveApprovalStage(value));
-      const hasPersonIdentity = uidValues.length > 0 || emailValues.length > 0 || nameValues.length > 0;
       const matchesPerson = Boolean(
         (uid && uidValues.includes(uid)) ||
         (email && emailValues.includes(email)) ||
         (name && nameValues.some((value) => normalizeApprovalKey(value) === name)),
       );
-      if (matchesPerson) return true;
-      if (hasPersonIdentity || !ownStageKey) return false;
-
-      const roleValues = getReviewHistoryEntryValues(entry, [
-        "role", "roleName", "reviewerRole", "actorRole", "approvalRole",
-        "stage", "stageKey", "stageId", "approvalStage", "stageLabel",
-        "label", "reviewer", "reviewerName", "decidedByName", "approvedByName",
-        "by", "reviewedBy", "actor", "user",
-      ]);
-      return roleValues.some((value) => resolveApprovalStage(value)?.key === ownStageKey);
+      return matchesPerson;
     });
   }
 
@@ -1343,6 +1336,7 @@ import {
     // Check URL parameters for direct review link: ?review={eventId}
     const urlParams = new URLSearchParams(window.location.search);
     const reviewId = urlParams.get("review") || urlParams.get("event") || urlParams.get("id");
+    requestedQueueFocusEventId = urlParams.get("focus") || "";
     const reviewSource = urlParams.get("source");
 
     subscribeFirestorePendingEvents();
@@ -1425,11 +1419,11 @@ import {
                 .trim().toLowerCase().replace(/[\s_-]+/g, " ");
               return ["pending", "pending approval", "pendingapproval", "approval pending"].includes(status);
             });
-            console.warn("[ReviewQueue Diagnostic]", {
-              ...adviserProfileSnapshot,
-              totalEventsFetched: snapshot.docs.length,
-              pendingEventCount: pendingEvents.length,
-              events: snapshot.docs.map((eventSnapshot) => {
+            if (DEBUG) console.warn("[ReviewQueue Diagnostic]", {
+                ...adviserProfileSnapshot,
+                totalEventsFetched: snapshot.docs.length,
+                pendingEventCount: pendingEvents.length,
+                events: snapshot.docs.map((eventSnapshot) => {
                 const event = eventSnapshot.data() || {};
                 const resolvedStage = getFirestoreCurrentStageKey(event);
                 const stage = getConfiguredFirestoreStages(event)
@@ -1487,7 +1481,7 @@ import {
                     .map((candidate) => candidate.name || candidate.label),
                   stageAssignment,
                 };
-              }),
+                }),
             });
             snapshot.docs.forEach((eventSnapshot) => {
               try {
@@ -2098,6 +2092,7 @@ import {
       if (eventId) historyCandidatesById.set(eventId, event);
     });
     historyCandidatesById.forEach((event, eventId) => {
+      if (!isCurrentAdminOrganization(event)) return;
       if (reviewedEventsById.has(eventId)) return;
       const matchingHistory = getCurrentAdminReviewHistoryEntries(event);
       if (!matchingHistory.length) return;
@@ -2322,6 +2317,16 @@ import {
       ${firestoreProposalsHtml}
       ${recentHtml}
     `;
+
+    if (requestedQueueFocusEventId) {
+      const focusedCard = [...root.querySelectorAll("[data-firestore-event-id]")]
+        .find((card) => card.dataset.firestoreEventId === requestedQueueFocusEventId);
+      if (focusedCard) {
+        requestedQueueFocusEventId = "";
+        focusedCard.focus({ preventScroll: true });
+        focusedCard.scrollIntoView({ behavior: "smooth", block: "center" });
+      }
+    }
 
     // Hook up review buttons
     root.querySelectorAll('[data-action="review"]').forEach((btn) => {

@@ -205,7 +205,6 @@
 }
 
 .admin-tracker-step .admin-step-num,
-.admin-tracker-step .admin-step-label,
 .admin-tracker-step .admin-step-status,
 .admin-notes-wrap {
   display: none !important;
@@ -226,6 +225,11 @@
   align-items: center;
   justify-content: space-between;
   gap: 16px;
+}
+
+.approval-pipeline-group--reviewed > summary > .approval-pipeline-count {
+  flex: 0 0 auto;
+  margin-left: auto;
 }
 
 .approval-pipeline-group--reviewed > summary::after {
@@ -253,6 +257,10 @@
   margin: 0 0 16px;
 }
 
+.approval-pipeline-group--reviewed .queue-card[hidden] {
+  display: none !important;
+}
+
 .reviewed-by-you-search {
   flex: 1 1 240px;
   min-width: 0;
@@ -271,7 +279,9 @@
 }
 
 .reviewed-by-you-more {
+  display: block;
   min-height: 42px;
+  margin: 16px auto 0;
   padding: 9px 16px;
   border: 1px solid #7a1f2e;
   border-radius: 8px;
