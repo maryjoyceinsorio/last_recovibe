@@ -2550,16 +2550,15 @@ function wireEvents() {
     const regBtn = e.target.closest(".btn-register");
     if (regBtn) {
       e.preventDefault();
+      e.stopPropagation();
       const eventId = regBtn.getAttribute("data-event-id");
       const event = eventId && rawEventsMap.get(eventId);
       if (event && window.RecovibeStudentEventDetails) {
-        window.RecovibeStudentEventDetails.open(
-          getDashboardEventDetails(eventId, event),
-          {
-          dashboard: true,
-          dashboardRegistrationConfirmation: true,
-          },
-        );
+        const opened =
+          window.RecovibeStudentEventDetails.openRegistrationConfirmation(
+            getDashboardEventDetails(eventId, event),
+          );
+        if (!opened) showToast("This event is no longer available for registration.");
       } else {
         showToast("Event details are unavailable. Please try again.");
       }

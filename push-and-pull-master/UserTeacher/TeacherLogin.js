@@ -65,6 +65,22 @@ import {
     }
   }
 
+  function hasTeacherRole(profile) {
+    const roles = [
+      profile?.role,
+      profile?.userRole,
+      ...(Array.isArray(profile?.roles) ? profile.roles : []),
+    ].flatMap((value) =>
+      String(value || "")
+        .split(/[,&/|]+/)
+        .map((role) => role.trim().toLowerCase().replace(/[^a-z0-9]/g, ""))
+        .filter(Boolean),
+    );
+    return roles.some((role) =>
+      ["teacher", "teacheradviser", "faculty", "adviser"].includes(role),
+    );
+  }
+
   try {
     const rememberedEmail = localStorage.getItem(rememberedEmailKey);
     if (rememberedEmail) {
@@ -151,11 +167,7 @@ import {
       }
 
       const profile = profileSnapshot.data();
-      const profileRole = String(profile.role || profile.userRole || "")
-        .trim()
-        .toLowerCase()
-        .replace(/[^a-z0-9]/g, "");
-      if (!["teacher", "teacheradviser", "faculty", "adviser"].includes(profileRole)) {
+      if (!hasTeacherRole(profile)) {
         throw Object.assign(new Error("Account is not a teacher account."), {
           code: "profile/role-mismatch",
         });

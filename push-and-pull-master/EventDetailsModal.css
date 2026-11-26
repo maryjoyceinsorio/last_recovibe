@@ -671,6 +671,14 @@ a.event-details-document:hover {
   z-index: 11010;
   background: rgba(24, 15, 19, 0.54);
 }
+.student-event-confirm-overlay.is-over-details {
+  background: transparent;
+  backdrop-filter: none;
+}
+.student-event-confirm,
+.student-event-confirm * {
+  box-sizing: border-box;
+}
 .student-event-confirm {
   width: min(430px, 100%);
   padding: 28px 26px 24px;
@@ -692,6 +700,7 @@ a.event-details-document:hover {
   color: #4a3d38;
   font-size: 13px;
   line-height: 1.65;
+  overflow-wrap: anywhere;
 }
 .student-event-confirm .student-event-error {
   min-height: 0;

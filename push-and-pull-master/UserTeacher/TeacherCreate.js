@@ -603,6 +603,21 @@ loadCachedOrganizations();
     "faculty adviser", "Faculty Adviser",
   ];
 
+  function hasTeacherRole(data) {
+    const roles = [
+      data.role,
+      data.userRole,
+      ...(Array.isArray(data.roles) ? data.roles : []),
+    ].map((role) => String(role || "").toLowerCase());
+    return roles.some((role) =>
+      role.includes("teach") ||
+      role.includes("facult") ||
+      role.includes("prof") ||
+      role.includes("instructor") ||
+      role.includes("adviser"),
+    );
+  }
+
   function loadFacultyPool() {
     if (!isFacultyDbInitialized) {
       initFacultyDatabaseListener();
@@ -639,8 +654,7 @@ loadCachedOrganizations();
           const loaded = [];
           snapshot.docs.forEach((docSnap) => {
             const data = docSnap.data() || {};
-            const role = String(data.role || data.userRole || "").toLowerCase();
-            if (role.includes("teach") || role.includes("facult") || role.includes("prof") || role.includes("instructor") || role.includes("adviser")) {
+            if (hasTeacherRole(data)) {
               const familyFirstName = [data.lastName, data.firstName].filter(Boolean).join(" ");
               const name = data.fullName || familyFirstName || data.name || data.displayName;
               if (name && typeof name === "string" && name.trim()) {
@@ -743,8 +757,7 @@ loadCachedOrganizations();
       ));
       usersSnap.forEach((docSnap) => {
         const data = docSnap.data() || {};
-        const role = String(data.role || data.userRole || "").toLowerCase();
-        if (role.includes("teach") || role.includes("facult") || role.includes("prof") || role.includes("instructor")) {
+        if (hasTeacherRole(data)) {
           const familyFirstName = [data.lastName, data.firstName].filter(Boolean).join(" ");
           const name = data.fullName || familyFirstName || data.name || data.displayName;
           if (name && typeof name === "string" && name.trim()) {

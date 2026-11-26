@@ -39,6 +39,19 @@ export function normalizePortalRole(value) {
   return String(value || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
 }
 
+function profileRoleKeys(data) {
+  return [
+    data.role,
+    data.userRole,
+    ...(Array.isArray(data.roles) ? data.roles : []),
+  ].flatMap((value) =>
+    String(value || "")
+      .split(/[,&/|]+/)
+      .map(normalizePortalRole)
+      .filter(Boolean),
+  );
+}
+
 export function profileCollectionsForRole(role) {
   return PROFILE_COLLECTIONS[normalizePortalRole(role)] || [];
 }
@@ -59,12 +72,14 @@ export function isValidPhilippineMobile(value) {
 }
 
 function roleMatches(data, role, collectionName) {
-  const normalizedRole = normalizePortalRole(data.role || data.userRole);
+  const profileRoles = profileRoleKeys(data);
   if (role === "all") {
-    return Object.values(ROLE_ALIASES).flat().includes(normalizedRole);
+    return profileRoles.some((profileRole) =>
+      Object.values(ROLE_ALIASES).flat().includes(profileRole),
+    );
   }
-  if (role === "student" && collectionName === "students" && !normalizedRole) return true;
-  if (role === "student" && collectionName === "users" && !normalizedRole) {
+  if (role === "student" && collectionName === "students" && !profileRoles.length) return true;
+  if (role === "student" && collectionName === "users" && !profileRoles.length) {
     return [
       data.studentNumber,
       data.student_number,
@@ -73,7 +88,9 @@ function roleMatches(data, role, collectionName) {
       data.studentId,
     ].some((value) => String(value || "").trim());
   }
-  if (ROLE_ALIASES[role]?.includes(normalizedRole)) return true;
+  if (profileRoles.some((profileRole) => ROLE_ALIASES[role]?.includes(profileRole))) {
+    return true;
+  }
   return role === "eventorganizer" &&
     collectionName === "eventOrganizations" &&
     Boolean(String(data.organizationCode || "").trim());
@@ -113,7 +130,7 @@ async function findProfileRecords(db, uid, role, collections = profileCollection
 
   const untypedUserRecords = records.filter((record) =>
     record.collectionName === "users" &&
-    !String(record.data.role || record.data.userRole || "").trim(),
+    !profileRoleKeys(record.data).length,
   );
   return [...selectedRecords, ...untypedUserRecords];
 }

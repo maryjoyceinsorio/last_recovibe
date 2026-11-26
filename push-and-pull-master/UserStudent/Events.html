@@ -6093,8 +6093,23 @@
           const regBtn = target.closest("button[data-action='register']");
           if (regBtn) {
             e.preventDefault();
+            e.stopPropagation();
             const id = regBtn.dataset.eventId;
-            if (id) handleRegister(id);
+            const ev = id && rawEventsMap.get(id);
+            if (ev && window.RecovibeStudentEventDetails) {
+              const confirmationEvent = {
+                ...(ev.raw || {}),
+                ...ev,
+                capacityMode: ev.capacity == null ? "N/A" : ev.capacityMode,
+              };
+              const opened =
+                window.RecovibeStudentEventDetails.openRegistrationConfirmation(
+                  confirmationEvent,
+                );
+              if (!opened) showToast("This event is no longer available for registration.");
+            } else {
+              showToast("Event details are unavailable. Please try again.");
+            }
             return;
           }
 

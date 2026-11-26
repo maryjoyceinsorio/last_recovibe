@@ -19,7 +19,8 @@ import {
   setDoc,
   updateDoc,
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
-import { auth, db, isFirebaseConfigured } from "../UserStudent/firebaseConfig.js";
+import { ref, set } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-database.js";
+import { auth, db, isFirebaseConfigured, rtdb } from "../UserStudent/firebaseConfig.js";
 import { logoutSuperAdmin } from "./superAdminLogout.js";
 import { DEFAULTS, getSystemSettings } from "../systemSettingsDefaults.js";
 
@@ -27,7 +28,8 @@ import { DEFAULTS, getSystemSettings } from "../systemSettingsDefaults.js";
   "use strict";
 
   const PAGE_SIZE = 10;
-  const ALLOWED_ROLES = ["Student", "Event Organizer", "Admin", "Teacher", "Super Admin"];
+  const ADMIN_TEACHER_ROLE = "Admin & Teacher";
+  const ALLOWED_ROLES = ["Student", "Event Organizer", "Admin", "Teacher", ADMIN_TEACHER_ROLE, "Super Admin"];
   const MAIN = document.getElementById("main-content");
   const BODY = document.getElementById("user-table-tbody");
   const TOAST = document.getElementById("user-management-status");
@@ -57,11 +59,9 @@ import { DEFAULTS, getSystemSettings } from "../systemSettingsDefaults.js";
   const EDIT_PROGRAM_INPUT = document.getElementById("edit-user-program");
   const CREATE_ROLE_INPUT = document.getElementById("new-user-role-value");
   const CREATE_ROLE_SELECT = document.getElementById("new-user-role");
-  const CREATE_FIRST_NAME_INPUT = document.getElementById("new-user-first-name");
-  const CREATE_MIDDLE_NAME_INPUT = document.getElementById("new-user-middle-name");
-  const CREATE_LAST_NAME_INPUT = document.getElementById("new-user-last-name");
-  const CREATE_NO_MIDDLE_NAME_INPUT = document.getElementById("new-user-no-middle-name");
+  const CREATE_NAME_INPUT = document.getElementById("new-user-name");
   const CREATE_EMAIL_INPUT = document.getElementById("new-user-email");
+  const EXISTING_ACCOUNT_NOTICE = document.getElementById("existing-account-notice");
   const CREATE_ACCOUNT_INPUT = document.getElementById("new-user-account");
   const CREATE_PASSWORD_INPUT = document.getElementById("new-user-password");
   const CREATE_PASSWORD_CONFIRMATION_INPUT = document.getElementById("new-user-password-confirmation");
@@ -153,10 +153,66 @@ import { DEFAULTS, getSystemSettings } from "../systemSettingsDefaults.js";
       eventorganizer: "Event Organizer",
       admin: "Admin",
       teacher: "Teacher",
+      "admin & teacher": ADMIN_TEACHER_ROLE,
       "super admin": "Super Admin",
       superadmin: "Super Admin",
     };
     return roles[role] || "Unknown";
+  }
+
+  function roleLabelsFromProfile(data) {
+    return [...new Set([
+      data.role,
+      data.userRole,
+      ...(Array.isArray(data.roles) ? data.roles : []),
+    ].flatMap((value) =>
+      String(value || "")
+        .split(/[,&/|]+/)
+        .map((part) => normalizedRole(part))
+        .filter((role) => role !== "Unknown"),
+    ))];
+  }
+
+  function roleFieldsForSelection(selection) {
+    if (selection === ADMIN_TEACHER_ROLE) {
+      return {
+        role: "Admin",
+        userRole: "Teacher",
+        roles: ["admin", "teacher"],
+      };
+    }
+    const role = normalizedRole(selection);
+    if (role === "Unknown") throw new Error("Choose a valid account role.");
+    return {
+      role,
+      userRole: role,
+      roles: [normalizedText(role).replace(/[^a-z0-9]/g, "")],
+    };
+  }
+
+  function realtimeRoleForSelection(selection) {
+    if (selection === ADMIN_TEACHER_ROLE) return ["admin", "teacher"];
+    if (selection === "Admin" || selection === "Super Admin") return "admin";
+    if (selection === "Teacher") return "teacher";
+    if (selection === "Event Organizer") return "event_organizer";
+    return null;
+  }
+
+  async function syncRealtimeRole(uid, selection) {
+    const role = realtimeRoleForSelection(selection);
+    if (!role) return;
+    if (!rtdb) throw new Error("Realtime Database is not configured for staff role assignment.");
+    await set(ref(rtdb, `roles/${uid}`), role);
+  }
+
+  function displayRoleForProfile(data, collectionName) {
+    const roles = roleLabelsFromProfile(data);
+    if (roles.includes("Admin") && roles.includes("Teacher")) {
+      return ADMIN_TEACHER_ROLE;
+    }
+    return normalizedRole(
+      data.role || data.userRole || (collectionName === "users" ? "Student" : ""),
+    );
   }
 
   function statusFor(data) {
@@ -183,7 +239,8 @@ import { DEFAULTS, getSystemSettings } from "../systemSettingsDefaults.js";
       fullName,
       email: String(data.email || ""),
       accountNumber: String(data.accountNumber || data.studentNumber || data.accountNo || data.studentNo || ""),
-      role: normalizedRole(data.role || data.userRole || (collectionName === "users" ? "Student" : "")),
+      role: displayRoleForProfile(data, collectionName),
+      roles: roleLabelsFromProfile(data),
       status: statusFor(data),
     };
   }
@@ -267,7 +324,9 @@ import { DEFAULTS, getSystemSettings } from "../systemSettingsDefaults.js";
       "summary-total": allUsers.length,
       "summary-students": count("Student"),
       "summary-organizers": count("Event Organizer"),
-      "summary-staff": allUsers.filter((user) => ["Admin", "Teacher", "Super Admin"].includes(user.role)).length,
+      "summary-staff": allUsers.filter((user) =>
+        ["Admin", "Teacher", ADMIN_TEACHER_ROLE, "Super Admin"].includes(user.role),
+      ).length,
       "summary-suspended": allUsers.filter(isSuspended).length,
     };
     Object.entries(summary).forEach(([id, value]) => {
@@ -280,7 +339,8 @@ import { DEFAULTS, getSystemSettings } from "../systemSettingsDefaults.js";
     const searchTerm = normalizedText(SEARCH_INPUT?.value);
     const matchesSearch = !searchTerm || [user.fullName, user.email, user.accountNumber]
       .some((value) => normalizedText(value).includes(searchTerm));
-    const matchesRole = roleFilter === "All" || user.role === roleFilter;
+    const matchesRole = roleFilter === "All" ||
+      user.role === roleFilter || user.roles.includes(roleFilter);
     const matchesStatus = !suspendedOnly || isSuspended(user);
     return matchesSearch && matchesRole && matchesStatus;
   }
@@ -581,7 +641,7 @@ import { DEFAULTS, getSystemSettings } from "../systemSettingsDefaults.js";
     if (EDIT_ORGANIZATION_FIELD) EDIT_ORGANIZATION_FIELD.hidden = role === "Student";
     if (EDIT_PROGRAM_FIELD) EDIT_PROGRAM_FIELD.hidden = role !== "Student";
     if (EDIT_ROLE_SUFFIX_FIELD) {
-      EDIT_ROLE_SUFFIX_FIELD.hidden = !["Admin", "Teacher", "Super Admin"].includes(role);
+      EDIT_ROLE_SUFFIX_FIELD.hidden = !["Admin", "Teacher", ADMIN_TEACHER_ROLE, "Super Admin"].includes(role);
     }
   }
 
@@ -715,6 +775,7 @@ import { DEFAULTS, getSystemSettings } from "../systemSettingsDefaults.js";
 
   function buildEditProfileUpdates(user) {
     const role = EDIT_ROLE_SELECT.value;
+    const roleFields = roleFieldsForSelection(role);
     if (!canChangeToRole(user, role)) {
       throw new Error("Changing this role would require moving the profile to a different collection.");
     }
@@ -744,9 +805,8 @@ import { DEFAULTS, getSystemSettings } from "../systemSettingsDefaults.js";
       fullName,
       email,
       accountNumber,
-      role,
+      ...roleFields,
     };
-    if (user.data.userRole !== undefined) profileUpdates.userRole = role;
     if (user.data.accountNo !== undefined) profileUpdates.accountNo = accountNumber;
     if (user.collectionName === "users" || user.data.studentNumber !== undefined) {
       profileUpdates.studentNumber = accountNumber;
@@ -764,7 +824,7 @@ import { DEFAULTS, getSystemSettings } from "../systemSettingsDefaults.js";
       else removeFields.push("contactNo");
     }
 
-    const roleSuffix = ["Admin", "Teacher", "Super Admin"].includes(role)
+    const roleSuffix = ["Admin", "Teacher", ADMIN_TEACHER_ROLE, "Super Admin"].includes(role)
       ? EDIT_SUFFIX_INPUT.value.trim().toUpperCase()
       : "";
     if (roleSuffix) profileUpdates.roleSuffix = roleSuffix;
@@ -819,7 +879,7 @@ import { DEFAULTS, getSystemSettings } from "../systemSettingsDefaults.js";
       }
     }
 
-    const isOrgAdviser = role === "Admin" && isOrgAdviserSuffix(roleSuffix);
+    const isOrgAdviser = roleFields.role === "Admin" && isOrgAdviserSuffix(roleSuffix);
     if (isOrgAdviser && nextOrganizationCode) {
       const oldAdviserEmails = Array.isArray(user.data.adviserEmails)
         ? user.data.adviserEmails
@@ -853,6 +913,16 @@ import { DEFAULTS, getSystemSettings } from "../systemSettingsDefaults.js";
       firestoreUpdates[field] = deleteField();
     });
     await updateDoc(doc(db, user.collectionName, user.id), firestoreUpdates);
+    try {
+      await syncRealtimeRole(user.id, role);
+    } catch (error) {
+      const roleSyncError = new Error(
+        "The profile was saved, but the Realtime Database role could not be updated. Retry the profile save.",
+      );
+      roleSyncError.code = error?.code || "role-sync-failed";
+      roleSyncError.cause = error;
+      throw roleSyncError;
+    }
 
     const updatedData = { ...user.data, ...profileUpdates };
     removeFields.forEach((field) => delete updatedData[field]);
@@ -862,7 +932,8 @@ import { DEFAULTS, getSystemSettings } from "../systemSettingsDefaults.js";
       fullName: profileUpdates.fullName,
       email: profileUpdates.email,
       accountNumber: profileUpdates.accountNumber,
-      role: profileUpdates.role,
+      role,
+      roles: roleFields.roles.map((value) => normalizedRole(value)),
     };
     if (user.collectionName === "users") {
       users = users.map((entry) => userKey(entry) === userKey(user) ? updatedUser : entry);
@@ -924,6 +995,81 @@ import { DEFAULTS, getSystemSettings } from "../systemSettingsDefaults.js";
     );
   }
 
+  function getTeacherRoleMergeState(email, role = CREATE_ROLE_INPUT?.value) {
+    if (!["Teacher", ADMIN_TEACHER_ROLE].includes(role)) {
+      return { target: null, ambiguous: false };
+    }
+    const normalizedEmail = normalizedText(email);
+    if (!normalizedEmail) return { target: null, ambiguous: false };
+
+    const matchingProfiles = getAllUsers().filter(
+      (user) => normalizedText(user.email) === normalizedEmail,
+    );
+    if (!matchingProfiles.length) return { target: null, ambiguous: false };
+
+    const adminProfiles = matchingProfiles.filter(
+      (user) => user.collectionName === "adminUser" && user.roles.includes("Admin"),
+    );
+    if (matchingProfiles.length === 1 && adminProfiles.length === 1) {
+      return { target: adminProfiles[0], ambiguous: false };
+    }
+    return {
+      target: null,
+      ambiguous: adminProfiles.length > 0,
+    };
+  }
+
+  function duplicateTeacherId(teacherId, excludeKey = "") {
+    const normalizedId = normalizedText(teacherId);
+    return Boolean(normalizedId) && getAllUsers().some((user) =>
+      userKey(user) !== excludeKey &&
+      user.roles.includes("Teacher") &&
+      normalizedText(user.data.teacherId || user.data.employeeId) === normalizedId,
+    );
+  }
+
+  function updateExistingAccountNotice() {
+    const role = CREATE_ROLE_INPUT?.value;
+    const email = CREATE_EMAIL_INPUT?.value;
+    const mergeState = getTeacherRoleMergeState(email, role);
+    if (EXISTING_ACCOUNT_NOTICE) {
+      if (mergeState.target) {
+        EXISTING_ACCOUNT_NOTICE.textContent =
+          "An Admin account already uses this email. This will add Teacher access to that account; no new Auth account or password reset will be created.";
+        EXISTING_ACCOUNT_NOTICE.hidden = false;
+      } else if (mergeState.ambiguous) {
+        EXISTING_ACCOUNT_NOTICE.textContent =
+          "This email matches multiple profiles, including an Admin account. Resolve the duplicate profiles before adding Teacher access.";
+        EXISTING_ACCOUNT_NOTICE.hidden = false;
+      } else {
+        EXISTING_ACCOUNT_NOTICE.textContent = "";
+        EXISTING_ACCOUNT_NOTICE.hidden = true;
+      }
+    }
+
+    const merging = Boolean(mergeState.target);
+    if (CREATE_AUTH_FIELDS) CREATE_AUTH_FIELDS.hidden = merging;
+    if (CREATE_PASSWORD_INPUT) CREATE_PASSWORD_INPUT.required = !merging;
+    if (CREATE_PASSWORD_CONFIRMATION_INPUT) {
+      CREATE_PASSWORD_CONFIRMATION_INPUT.required = !merging;
+    }
+    if (CREATE_ACCOUNT_INPUT) {
+      const existingTeacherId = mergeState.target &&
+        (mergeState.target.data.teacherId || mergeState.target.data.employeeId);
+      CREATE_ACCOUNT_INPUT.required = !merging || !existingTeacherId;
+      if (!accountNumberManuallyEdited) {
+        if (merging && existingTeacherId) CREATE_ACCOUNT_INPUT.value = existingTeacherId;
+        else updateAccountSuggestion(true);
+      }
+    }
+    if (CREATE_ACCOUNT_LABEL) {
+      CREATE_ACCOUNT_LABEL.textContent = merging
+        ? "Teacher ID"
+        : role === "Student" ? "Student number" : "Account Number";
+    }
+    return mergeState;
+  }
+
   function duplicateAccountNumber(accountNumber, excludeKey = "") {
     const normalizedAccount = normalizedText(accountNumber);
     return normalizedAccount && getAllUsers().some((user) =>
@@ -932,34 +1078,58 @@ import { DEFAULTS, getSystemSettings } from "../systemSettingsDefaults.js";
   }
 
   function validateCreateUser() {
-    if (!CREATE_FORM?.reportValidity()) return false;
     const role = CREATE_ROLE_INPUT?.value;
     const email = CREATE_EMAIL_INPUT?.value.trim();
     const accountNumber = CREATE_ACCOUNT_INPUT?.value.trim();
     const password = CREATE_PASSWORD_INPUT?.value || "";
+    CREATE_NAME_INPUT?.setCustomValidity("");
+    CREATE_EMAIL_INPUT?.setCustomValidity("");
+    if (!CREATE_NAME_INPUT?.value.trim()) {
+      CREATE_NAME_INPUT?.setCustomValidity("Enter the user's name.");
+      CREATE_NAME_INPUT?.reportValidity();
+      return false;
+    }
     if (!ALLOWED_ROLES.includes(role)) {
       showToast("Choose a valid account role.", "error");
       return false;
     }
-    if (password.length < 8) {
+    const mergeState = updateExistingAccountNotice();
+    if (mergeState.ambiguous) {
+      CREATE_EMAIL_INPUT?.setCustomValidity(
+        "This email matches multiple profiles and cannot be merged safely.",
+      );
+      CREATE_EMAIL_INPUT?.reportValidity();
+      return false;
+    }
+    if (!CREATE_FORM?.reportValidity()) return false;
+    if (!mergeState.target && password.length < 8) {
       CREATE_PASSWORD_INPUT?.setCustomValidity("Use at least 8 characters.");
       CREATE_PASSWORD_INPUT?.reportValidity();
       return false;
     }
     CREATE_PASSWORD_INPUT?.setCustomValidity("");
-    if (password !== CREATE_PASSWORD_CONFIRMATION_INPUT?.value) {
+    if (!mergeState.target && password !== CREATE_PASSWORD_CONFIRMATION_INPUT?.value) {
       CREATE_PASSWORD_CONFIRMATION_INPUT?.setCustomValidity("Passwords do not match.");
       CREATE_PASSWORD_CONFIRMATION_INPUT?.reportValidity();
       return false;
     }
     CREATE_PASSWORD_CONFIRMATION_INPUT?.setCustomValidity("");
-    if (duplicateProfileEmail(email)) {
-      CREATE_EMAIL_INPUT?.setCustomValidity("An account with this email is already in the loaded profiles.");
+    if (duplicateProfileEmail(email) && !mergeState.target) {
+      CREATE_EMAIL_INPUT?.setCustomValidity(
+        "An account already uses this email. Add Teacher access to an existing Admin account or edit the existing profile.",
+      );
       CREATE_EMAIL_INPUT?.reportValidity();
       return false;
     }
     CREATE_EMAIL_INPUT?.setCustomValidity("");
-    if (duplicateAccountNumber(accountNumber)) {
+    const existingTeacherId = mergeState.target &&
+      (mergeState.target.data.teacherId || mergeState.target.data.employeeId);
+    if (mergeState.target && !existingTeacherId && duplicateTeacherId(accountNumber, userKey(mergeState.target))) {
+      CREATE_ACCOUNT_INPUT?.setCustomValidity("This Teacher ID is already in use.");
+      CREATE_ACCOUNT_INPUT?.reportValidity();
+      return false;
+    }
+    if (!mergeState.target && duplicateAccountNumber(accountNumber)) {
       CREATE_ACCOUNT_INPUT?.setCustomValidity("This account number is already in use.");
       CREATE_ACCOUNT_INPUT?.reportValidity();
       return false;
@@ -997,7 +1167,8 @@ import { DEFAULTS, getSystemSettings } from "../systemSettingsDefaults.js";
     organizationCode,
     roleSuffix,
   }) {
-    const orgAdviser = role === "Admin" &&
+    const roleFields = roleFieldsForSelection(role);
+    const orgAdviser = roleFields.roles.includes("admin") &&
       String(roleSuffix || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "") === "orgadviser";
     const normalizedOrganizationCode = normalizeOrganizationCode(organizationCode);
     const profile = {
@@ -1006,7 +1177,7 @@ import { DEFAULTS, getSystemSettings } from "../systemSettingsDefaults.js";
       lastName,
       email,
       accountNumber,
-      role,
+      ...roleFields,
       status: "Active",
       isActive: true,
       createdAt: serverTimestamp(),
@@ -1059,6 +1230,17 @@ import { DEFAULTS, getSystemSettings } from "../systemSettingsDefaults.js";
         wrappedError.cause = profileError;
         throw wrappedError;
       }
+      try {
+        await syncRealtimeRole(uid, data.role);
+      } catch (roleError) {
+        const wrappedError = new Error(
+          "The Auth account and profile were created, but the Realtime Database role could not be assigned.",
+        );
+        wrappedError.code = roleError?.code || "role-sync-failed";
+        wrappedError.createdUid = uid;
+        wrappedError.cause = roleError;
+        throw wrappedError;
+      }
       return { uid, collectionName, profile };
     } finally {
       if (secondaryAuth) {
@@ -1076,6 +1258,63 @@ import { DEFAULTS, getSystemSettings } from "../systemSettingsDefaults.js";
         }
       }
     }
+  }
+
+  async function mergeTeacherRoleIntoAdmin(data, user) {
+    const alreadyHasTeacher = user.roles.includes("Teacher");
+    const existingRoleKeys = [
+      user.data.role,
+      user.data.userRole,
+      ...(Array.isArray(user.data.roles) ? user.data.roles : []),
+    ].flatMap((value) =>
+      String(value || "")
+        .split(/[,&/|]+/)
+        .map((role) => normalizedText(role).replace(/[^a-z0-9]/g, ""))
+        .filter(Boolean),
+    );
+    const profileUpdates = {
+      role: user.data.role || "Admin",
+      userRole: "Teacher",
+      roles: [...new Set([...existingRoleKeys, "admin", "teacher"])],
+      updatedAt: serverTimestamp(),
+      updatedBy: currentAdmin.uid,
+    };
+    if (
+      !String(user.data.teacherId || user.data.employeeId || "").trim() &&
+      data.accountNumber
+    ) {
+      profileUpdates.teacherId = data.accountNumber;
+    }
+
+    await updateDoc(doc(db, user.collectionName, user.id), profileUpdates);
+    try {
+      await syncRealtimeRole(user.uid, ADMIN_TEACHER_ROLE);
+    } catch (error) {
+      const roleSyncError = new Error(
+        "Teacher access was added to the Admin profile, but its Realtime Database role could not be updated. Retry adding Teacher access.",
+      );
+      roleSyncError.code = error?.code || "role-sync-failed";
+      roleSyncError.cause = error;
+      throw roleSyncError;
+    }
+
+    const mergedData = { ...user.data, ...profileUpdates };
+    const mergedUser = {
+      ...user,
+      data: mergedData,
+      role: ADMIN_TEACHER_ROLE,
+      roles: ["Admin", "Teacher"],
+    };
+    adminUsers = adminUsers.map((entry) =>
+      userKey(entry) === userKey(user) ? mergedUser : entry,
+    );
+    return {
+      uid: user.uid,
+      collectionName: user.collectionName,
+      fullName: user.fullName,
+      merged: true,
+      alreadyHasTeacher,
+    };
   }
 
   async function syncOrganizationAdviserMapping(data) {
@@ -1154,10 +1393,22 @@ import { DEFAULTS, getSystemSettings } from "../systemSettingsDefaults.js";
   }
 
   async function createUserAndNotify(action) {
-    const account = await createAuthAndProfile(action.data);
+    const mergeState = getTeacherRoleMergeState(action.data.email, action.data.role);
+    if (mergeState.ambiguous) {
+      throw new Error("This email matches multiple profiles and cannot be merged safely.");
+    }
+    if (!mergeState.target && duplicateProfileEmail(action.data.email)) {
+      throw new Error(
+        "This email already belongs to a profile and cannot be registered as a second account. Update the existing profile's role instead.",
+      );
+    }
+    const account = mergeState.target
+      ? await mergeTeacherRoleIntoAdmin(action.data, mergeState.target)
+      : await createAuthAndProfile(action.data);
     let adviserMappingError = null;
     if (
-      action.data.role === "Admin" &&
+      !account.merged &&
+      ["Admin", ADMIN_TEACHER_ROLE].includes(action.data.role) &&
       isOrgAdviserSuffix(action.data.roleSuffix) &&
       action.data.organizationCode
     ) {
@@ -1171,19 +1422,37 @@ import { DEFAULTS, getSystemSettings } from "../systemSettingsDefaults.js";
     const target = {
       uid: account.uid,
       id: account.uid,
-      fullName: action.data.fullName,
+      fullName: account.fullName || action.data.fullName,
     };
     await writeAuditEntry({
-      action: "user_created",
+      action: account.merged ? "user_role_added" : "user_created",
       target,
-      summary: `Created ${action.data.role} account for ${action.data.fullName}.`,
-      changes: [
-        { field: "role", from: "", to: action.data.role },
-        { field: "email", from: "", to: action.data.email },
-        { field: "accountNumber", from: "", to: action.data.accountNumber },
-        { field: "status", from: "", to: "Active" },
-      ],
+      summary: account.merged
+        ? `Added Teacher access to the existing Admin account for ${target.fullName}.`
+        : `Created ${action.data.role} account for ${action.data.fullName}.`,
+      changes: account.merged
+        ? [
+            { field: "roles", from: account.alreadyHasTeacher ? "admin, teacher" : "admin", to: "admin, teacher" },
+            { field: "email", from: action.data.email, to: action.data.email },
+          ]
+        : [
+            { field: "role", from: "", to: action.data.role },
+            { field: "email", from: "", to: action.data.email },
+            { field: "accountNumber", from: "", to: action.data.accountNumber },
+            { field: "status", from: "", to: "Active" },
+          ],
     });
+    if (account.merged) {
+      showToast(
+        account.alreadyHasTeacher
+          ? `${target.fullName} already has Admin and Teacher access.`
+          : `Teacher access was added to ${target.fullName}'s existing Admin account.`,
+      );
+      CREATE_FORM?.reset();
+      accountNumberManuallyEdited = false;
+      CREATE_DIALOG?.close();
+      return;
+    }
     const mappingNotice = adviserMappingError
       ? " Organization adviser mapping could not be synced; the user profile was saved."
       : "";
@@ -1235,13 +1504,17 @@ import { DEFAULTS, getSystemSettings } from "../systemSettingsDefaults.js";
   }
 
   function suggestAccountNumber(role, organization, suffix) {
-    const allNumbers = getAllUsers().map((user) => user.accountNumber).filter(Boolean);
+    const accountType = role === ADMIN_TEACHER_ROLE ? "Admin" : role;
+    const allNumbers = getAllUsers().flatMap((user) => [
+      user.accountNumber,
+      ...(accountType === "Teacher" ? [user.data.teacherId, user.data.employeeId] : []),
+    ]).filter(Boolean);
     const rolePrefix = {
       "Event Organizer": "EO",
       Admin: "Admin",
       Teacher: "Teacher",
       "Super Admin": "SA",
-    }[role];
+    }[accountType];
     if (!rolePrefix) return "";
     let sequence = 0;
     const matcher = new RegExp(`^${rolePrefix.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}[-_ ]?(\\d+)`, "i");
@@ -1251,16 +1524,20 @@ import { DEFAULTS, getSystemSettings } from "../systemSettingsDefaults.js";
     });
     const number = String(sequence + 1).padStart(3, "0");
     if (role === "Event Organizer") return `EO-${number}${organization ? `-${organization.toUpperCase()}` : ""}`;
-    if (role === "Admin") return `Admin-${number}${suffix ? `-${suffix.toUpperCase()}` : ""}`;
-    if (role === "Teacher") return `Teacher-${number}${suffix ? `-${suffix.toUpperCase()}` : ""}`;
+    if (accountType === "Admin") return `Admin-${number}${suffix ? `-${suffix.toUpperCase()}` : ""}`;
+    if (accountType === "Teacher") return `Teacher-${number}${suffix ? `-${suffix.toUpperCase()}` : ""}`;
     return `SA-${number}${suffix ? `-${suffix.toUpperCase()}` : ""}`;
   }
 
   function updateAccountSuggestion(force) {
     if (!CREATE_ACCOUNT_INPUT || !CREATE_ROLE_INPUT) return;
     if (!force && accountNumberManuallyEdited) return;
-    const suggestion = suggestAccountNumber(
+    const mergeTarget = getTeacherRoleMergeState(
+      CREATE_EMAIL_INPUT?.value,
       CREATE_ROLE_INPUT.value,
+    ).target;
+    const suggestion = suggestAccountNumber(
+      mergeTarget ? "Teacher" : CREATE_ROLE_INPUT.value,
       CREATE_ORGANIZATION_SELECT?.value || CREATE_ORGANIZATION_INPUT?.value.trim(),
       CREATE_SUFFIX_INPUT?.value.trim(),
     );
@@ -1273,7 +1550,8 @@ import { DEFAULTS, getSystemSettings } from "../systemSettingsDefaults.js";
 
   function updateCreateOrganizationField() {
     const role = CREATE_ROLE_INPUT?.value;
-    const showOrganizationSelect = role === "Event Organizer" || role === "Admin";
+    const isAdminRole = role === "Admin" || role === ADMIN_TEACHER_ROLE;
+    const showOrganizationSelect = role === "Event Organizer" || isAdminRole;
     if (CREATE_ORGANIZATION_SELECT_FIELD) {
       CREATE_ORGANIZATION_SELECT_FIELD.hidden = !showOrganizationSelect;
     }
@@ -1282,7 +1560,7 @@ import { DEFAULTS, getSystemSettings } from "../systemSettingsDefaults.js";
     }
     if (CREATE_ORGANIZATION_INPUT) CREATE_ORGANIZATION_INPUT.required = false;
     const label = CREATE_ORGANIZATION_SELECT_FIELD?.querySelector("span");
-    if (label) label.textContent = role === "Admin" ? "Organization (optional)" : "Organization";
+    if (label) label.textContent = isAdminRole ? "Organization (optional)" : "Organization";
   }
 
   async function loadOrganizationOptions(select = CREATE_ORGANIZATION_SELECT) {
@@ -1331,7 +1609,7 @@ import { DEFAULTS, getSystemSettings } from "../systemSettingsDefaults.js";
     if (CREATE_AUTH_FIELDS) CREATE_AUTH_FIELDS.hidden = false;
     if (CREATE_PASSWORD_INPUT) CREATE_PASSWORD_INPUT.required = true;
     if (CREATE_PASSWORD_CONFIRMATION_INPUT) CREATE_PASSWORD_CONFIRMATION_INPUT.required = true;
-    const needsSuffix = ["Admin", "Teacher", "Super Admin"].includes(role);
+    const needsSuffix = ["Admin", "Teacher", ADMIN_TEACHER_ROLE, "Super Admin"].includes(role);
     if (CREATE_SUFFIX_FIELD) CREATE_SUFFIX_FIELD.hidden = !needsSuffix;
     if (CREATE_ACCOUNT_LABEL) {
       CREATE_ACCOUNT_LABEL.textContent = role === "Student" ? "Student number" : "Account number";
@@ -1339,9 +1617,10 @@ import { DEFAULTS, getSystemSettings } from "../systemSettingsDefaults.js";
     updateCreateOrganizationField();
     accountNumberManuallyEdited = false;
     updateAccountSuggestion(true);
+    updateExistingAccountNotice();
     ACCOUNT_TYPE_DIALOG?.close();
     if (!CREATE_DIALOG?.open) CREATE_DIALOG?.showModal();
-    CREATE_FIRST_NAME_INPUT?.focus();
+    CREATE_NAME_INPUT?.focus();
   }
 
   function startCreateFlow() {
@@ -1514,7 +1793,6 @@ import { DEFAULTS, getSystemSettings } from "../systemSettingsDefaults.js";
       CREATE_FORM?.reset();
       if (CREATE_AUTH_FIELDS) CREATE_AUTH_FIELDS.hidden = true;
       if (CREATE_SUFFIX_FIELD) CREATE_SUFFIX_FIELD.hidden = true;
-      if (CREATE_MIDDLE_NAME_INPUT) CREATE_MIDDLE_NAME_INPUT.disabled = false;
       if (CREATE_PASSWORD_INPUT) CREATE_PASSWORD_INPUT.required = false;
       if (CREATE_PASSWORD_CONFIRMATION_INPUT) CREATE_PASSWORD_CONFIRMATION_INPUT.required = false;
       if (CREATE_ORGANIZATION_INPUT) CREATE_ORGANIZATION_INPUT.required = false;
@@ -1526,7 +1804,10 @@ import { DEFAULTS, getSystemSettings } from "../systemSettingsDefaults.js";
       accountNumberManuallyEdited = true;
       CREATE_ACCOUNT_INPUT.setCustomValidity("");
     });
-    CREATE_EMAIL_INPUT?.addEventListener("input", () => CREATE_EMAIL_INPUT.setCustomValidity(""));
+    CREATE_EMAIL_INPUT?.addEventListener("input", () => {
+      CREATE_EMAIL_INPUT.setCustomValidity("");
+      updateExistingAccountNotice();
+    });
     CREATE_PASSWORD_INPUT?.addEventListener("input", () => CREATE_PASSWORD_INPUT.setCustomValidity(""));
     CREATE_PASSWORD_CONFIRMATION_INPUT?.addEventListener("input", () => CREATE_PASSWORD_CONFIRMATION_INPUT.setCustomValidity(""));
     CREATE_ORGANIZATION_INPUT?.addEventListener("input", () => updateAccountSuggestion(false));
@@ -1536,38 +1817,39 @@ import { DEFAULTS, getSystemSettings } from "../systemSettingsDefaults.js";
       updateAccountSuggestion(false);
     });
 
-    CREATE_NO_MIDDLE_NAME_INPUT?.addEventListener("change", () => {
-      if (!CREATE_MIDDLE_NAME_INPUT) return;
-      CREATE_MIDDLE_NAME_INPUT.disabled = CREATE_NO_MIDDLE_NAME_INPUT.checked;
-      if (CREATE_MIDDLE_NAME_INPUT.disabled) CREATE_MIDDLE_NAME_INPUT.value = "";
-    });
     CREATE_FORM?.addEventListener("submit", (event) => {
       event.preventDefault();
       if (!validateCreateUser()) return;
-      const fullName = [
-        CREATE_FIRST_NAME_INPUT?.value.trim(),
-        CREATE_NO_MIDDLE_NAME_INPUT?.checked ? "" : CREATE_MIDDLE_NAME_INPUT?.value.trim(),
-        CREATE_LAST_NAME_INPUT?.value.trim(),
-      ].filter(Boolean).join(" ");
+      const fullName = CREATE_NAME_INPUT.value.trim().replace(/\s+/g, " ");
+      const nameParts = fullName.split(" ");
+      const firstName = nameParts[0] || "";
+      const lastName = nameParts.length > 1 ? nameParts[nameParts.length - 1] : "";
+      const middleName = nameParts.length > 2 ? nameParts.slice(1, -1).join(" ") : "";
       const data = {
         role: CREATE_ROLE_INPUT.value,
         fullName,
-        firstName: CREATE_FIRST_NAME_INPUT?.value.trim() || "",
-        middleName: CREATE_NO_MIDDLE_NAME_INPUT?.checked ? "" : CREATE_MIDDLE_NAME_INPUT?.value.trim() || "",
-        lastName: CREATE_LAST_NAME_INPUT?.value.trim() || "",
-        email: CREATE_EMAIL_INPUT.value.trim(),
+        firstName,
+        middleName,
+        lastName,
+        email: CREATE_EMAIL_INPUT.value.trim().toLowerCase(),
         accountNumber: CREATE_ACCOUNT_INPUT.value.trim(),
-        password: CREATE_PASSWORD_INPUT.value,
+        password: getTeacherRoleMergeState(
+          CREATE_EMAIL_INPUT.value,
+          CREATE_ROLE_INPUT.value,
+        ).target ? "" : CREATE_PASSWORD_INPUT.value,
         contactNumber: document.getElementById("new-user-contact")?.value.trim() || "",
         organization: CREATE_ORGANIZATION_INPUT?.value.trim() || "",
         organizationCode: normalizeOrganizationCode(CREATE_ORGANIZATION_SELECT?.value),
         roleSuffix: CREATE_SUFFIX_INPUT?.value.trim() || "",
       };
+      const mergeState = getTeacherRoleMergeState(data.email, data.role);
       showConfirm(
         { type: "create", data },
-        "Create account",
-        `Create an active ${data.role} account for ${data.fullName} (${data.email})? A password reset email will be sent.`,
-        "Create account",
+        mergeState.target ? "Add Teacher access" : "Create account",
+        mergeState.target
+          ? `Add Teacher access to the existing Admin account for ${mergeState.target.fullName} (${data.email})? This keeps the current Auth account and password.`
+          : `Create an active ${data.role} account for ${data.fullName} (${data.email})? A password reset email will be sent.`,
+        mergeState.target ? "Add Teacher access" : "Create account",
       );
     });
 

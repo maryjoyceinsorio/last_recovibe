@@ -1094,7 +1094,16 @@ import { auth, rtdb, functions } from "../UserStudent/firebaseConfig.js";
     }
     try {
       const roleSnapshot = await get(ref(rtdb, `roles/${user.uid}`));
-      if (roleSnapshot.val() !== "teacher") {
+      const roles = (Array.isArray(roleSnapshot.val())
+        ? roleSnapshot.val()
+        : [roleSnapshot.val()]
+      ).flatMap((value) =>
+        String(value || "")
+          .split(/[,&|]+/)
+          .map((role) => role.trim().toLowerCase().replace(/[^a-z0-9]/g, ""))
+          .filter(Boolean),
+      );
+      if (!roles.includes("teacher")) {
         location.replace("TeacherLogin.html");
         return;
       }

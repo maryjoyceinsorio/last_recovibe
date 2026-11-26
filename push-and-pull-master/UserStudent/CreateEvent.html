@@ -188,8 +188,14 @@
         formMessage.className = kind;
       }
 
+      function safeUserFacingErrorMessage(value) {
+        return String(value || "")
+          .replace(/Firebase(?:\s*Storage|\s*Error)?/gi, "service")
+          .replace(/Firestore/gi, "event service");
+      }
+
       if (!isFirebaseConfigured || !auth || !db) {
-        accountStatus.textContent = "Firebase is not configured for this page.";
+        accountStatus.textContent = "Event creation is currently unavailable.";
         window.dispatchEvent(new Event("page-data-ready"));
       } else {
         onAuthStateChanged(auth, async (user) => {
@@ -281,8 +287,8 @@
           });
           showMessage(
             error.code === "permission-denied"
-              ? "Firestore denied this write. Check your published rules and your users/{uid} role."
-              : error.message || "Could not save the event. Please try again.",
+              ? "Your event could not be saved. Check your account access and try again."
+              : safeUserFacingErrorMessage(error.message) || "Could not save the event. Please try again.",
             "error",
           );
         } finally {

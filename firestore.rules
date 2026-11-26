@@ -14,30 +14,100 @@ service cloud.firestore {
       return value is string ? value.lower().replace(" ", "").replace("_", "").replace("-", "").replace(".", "") : "";
     }
 
+    function profileHasRole(profile, acceptedRoles) {
+      let role = normalizeAccessKey(profile.get("role", ""));
+      let userRole = normalizeAccessKey(profile.get("userRole", ""));
+      let roles = profile.get("roles", []);
+      return role in acceptedRoles
+        || userRole in acceptedRoles
+        || (roles is list && roles.hasAny(acceptedRoles));
+    }
+
     function normalizeOrganizationCode(value) {
       return value is string ? value.lower() : "";
     }
 
+    function eventHasOrganizationCode(eventData) {
+      return eventData.get("organizationCode", "") != ""
+        || eventData.get("organizerOrganization", "") != ""
+        || eventData.get("orgCode", "") != ""
+        || eventData.get("orgId", "") != ""
+        || eventData.get("organization", "") != ""
+        || eventData.get("organizerOrg", "") != "";
+    }
+
+    function eventOrganizationCodesMatch(eventData, organization) {
+      let normalizedOrganization = normalizeOrganizationCode(organization);
+      let organizationCode = normalizeOrganizationCode(eventData.get("organizationCode", ""));
+      let organizerOrganization = normalizeOrganizationCode(eventData.get("organizerOrganization", ""));
+      let orgCode = normalizeOrganizationCode(eventData.get("orgCode", ""));
+      let orgId = normalizeOrganizationCode(eventData.get("orgId", ""));
+      let organizationValue = normalizeOrganizationCode(eventData.get("organization", ""));
+      let organizerOrg = normalizeOrganizationCode(eventData.get("organizerOrg", ""));
+      let organizationCodesMatch =
+        (eventData.get("organizationCode", "") == "" || organizationCode == normalizedOrganization)
+        && (eventData.get("organizerOrganization", "") == "" || organizerOrganization == normalizedOrganization)
+        && (eventData.get("orgCode", "") == "" || orgCode == normalizedOrganization)
+        && (eventData.get("orgId", "") == "" || orgId == normalizedOrganization)
+        && (eventData.get("organization", "") == "" || organizationValue == normalizedOrganization)
+        && (eventData.get("organizerOrg", "") == "" || organizerOrg == normalizedOrganization);
+      return normalizedOrganization != ""
+        && eventHasOrganizationCode(eventData)
+        && organizationCodesMatch
+        && (
+          organizationCode == normalizedOrganization
+          || organizerOrganization == normalizedOrganization
+          || orgCode == normalizedOrganization
+          || orgId == normalizedOrganization
+          || organizationValue == normalizedOrganization
+          || organizerOrg == normalizedOrganization
+        );
+    }
+
+    function eventOrganizationNamesMatch(eventData, organization) {
+      let normalizedOrganization = normalizeOrganizationCode(organization);
+      let organizationName = normalizeOrganizationCode(eventData.get("organizationName", ""));
+      let orgName = normalizeOrganizationCode(eventData.get("orgName", ""));
+      return normalizedOrganization != ""
+        && (eventData.get("organizationName", "") == "" || organizationName == normalizedOrganization)
+        && (eventData.get("orgName", "") == "" || orgName == normalizedOrganization)
+        && (organizationName == normalizedOrganization || orgName == normalizedOrganization);
+    }
+
+    function eventOrganizationMatches(eventData, organization) {
+      return eventOrganizationCodesMatch(eventData, organization)
+        || (!eventHasOrganizationCode(eventData)
+          && eventOrganizationNamesMatch(eventData, organization));
+    }
+
+    function eventHasOrganization(eventData) {
+      return eventData.get("organizationCode", "") != ""
+        || eventData.get("organizerOrganization", "") != ""
+        || eventData.get("organization", "") != ""
+        || eventData.get("organizationName", "") != ""
+        || eventData.get("orgName", "") != ""
+        || eventData.get("orgCode", "") != ""
+        || eventData.get("orgId", "") != ""
+        || eventData.get("organizerOrg", "") != "";
+    }
+
     function isAdminAccount() {
       let profile = currentAdminProfile();
-      let role = normalizeAccessKey(profile.get("role", profile.get("userRole", "")));
       let status = normalizeAccessKey(profile.get("status", "Active"));
-      return role in ["admin", "superadmin"]
+      return profileHasRole(profile, ["admin", "superadmin", "Admin", "Super Admin"])
         && !(status in ["disabled", "inactive", "suspended"]);
     }
 
     function isSuperAdminAccount() {
+      let profile = currentAdminProfile();
       return (isAdminAccount()
-        && normalizeAccessKey(currentAdminProfile().get(
-          "role", currentAdminProfile().get("userRole", "")
-        )) == "superadmin")
+        && profileHasRole(profile, ["superadmin", "Super Admin"]))
         || (signedIn() && request.auth.token.get("email", "") == "marv@gmail.com");
     }
 
     function isOsasAccount() {
       let profile = currentAdminProfile();
-      let role = normalizeAccessKey(profile.get("role", profile.get("userRole", "")));
-      let osasMarker = normalizeAccessKey(profile.get("userRole", "")) == "osas"
+      let osasMarker = profileHasRole(profile, ["osas", "OSAS"])
         || normalizeAccessKey(profile.get("roleSuffix", "")).matches(".*osas.*")
         || normalizeAccessKey(profile.get("approverRole", "")).matches(".*osas.*")
         || normalizeAccessKey(profile.get("approver_role", "")).matches(".*osas.*")
@@ -66,7 +136,8 @@ service cloud.firestore {
         || normalizeAccessKey(profile.get("roleName", "")).matches(".*osas.*")
         || normalizeAccessKey(profile.get("stageKey", "")).matches(".*osas.*");
       let status = normalizeAccessKey(profile.get("status", "Active"));
-      return (role == "osas" || (role in ["admin", "superadmin"] && osasMarker))
+      return (profileHasRole(profile, ["osas", "OSAS"])
+          || (profileHasRole(profile, ["admin", "superadmin", "Admin", "Super Admin"]) && osasMarker))
         && !(status in ["disabled", "inactive", "suspended"]);
     }
 
@@ -104,19 +175,18 @@ service cloud.firestore {
       return organization != ""
         && normalizeOrganizationCode(verifiedCreatorOrganization) == normalizeOrganizationCode(organization)
         && (
-          normalizeOrganizationCode(eventData.get("organizationCode", "")) == normalizeOrganizationCode(organization)
-          || normalizeOrganizationCode(eventData.get("organizerOrganization", "")) == normalizeOrganizationCode(organization)
-          || normalizeOrganizationCode(eventData.get("organization", "")) == normalizeOrganizationCode(organization)
-          || normalizeOrganizationCode(eventData.get("organizationName", "")) == normalizeOrganizationCode(organization)
-          || normalizeOrganizationCode(eventData.get("orgName", "")) == normalizeOrganizationCode(organization)
+          eventOrganizationMatches(eventData, organization)
+          || (!eventHasOrganization(eventData)
+            && creatorUid == request.auth.uid
+            && eventOwner(eventData))
         );
     }
 
     function isEventOrganizerAccount() {
       let profile = currentAdminProfile();
-      let role = normalizeAccessKey(profile.get("role", profile.get("userRole", "")));
       let organizationPath = /databases/$(database)/documents/eventOrganizations/$(request.auth.uid);
-      return exists(organizationPath) || role in ["eventorganizer", "organizer", "eo"];
+      return exists(organizationPath)
+        || profileHasRole(profile, ["eventorganizer", "organizer", "eo", "Event Organizer"]);
     }
 
     function organizerOrganizationMatches(eventData) {
@@ -131,11 +201,7 @@ service cloud.firestore {
           ? get(organizationPath).data.get("organizationCode", "")
           : "");
       return organization != ""
-        && (
-          normalizeOrganizationCode(eventData.get("organizationCode", "")) == normalizeOrganizationCode(organization)
-          || normalizeOrganizationCode(eventData.get("organizerOrganization", "")) == normalizeOrganizationCode(organization)
-          || normalizeOrganizationCode(eventData.get("organization", "")) == normalizeOrganizationCode(organization)
-        );
+        && eventOrganizationMatches(eventData, organization);
     }
 
     function eventOwnerOrganizationMatches(eventData) {
@@ -149,12 +215,12 @@ service cloud.firestore {
         : (exists(organizationPath)
           ? get(organizationPath).data.get("organizationCode", "")
           : "");
-      let eventOrganization = eventData.get(
-        "organizationCode", eventData.get("organizerOrganization", eventData.get("organization", ""))
-      );
       return !isEventOrganizerAccount()
         || (organization != "" && organization != "*"
-          && normalizeOrganizationCode(eventOrganization) == normalizeOrganizationCode(organization));
+          && (
+            eventOrganizationMatches(eventData, organization)
+            || (!eventHasOrganization(eventData) && eventOwner(eventData))
+          ));
     }
 
     function eventOwner(eventData) {
@@ -196,15 +262,15 @@ service cloud.firestore {
 
     function isStaffAccount() {
       let profile = currentAdminProfile();
-      let role = normalizeAccessKey(profile.get("role", profile.get("userRole", "")));
       return signedIn()
         && (
           isAdminAccount()
           || isEventOrganizerAccount()
-          || role in [
+          || profileHasRole(profile, [
             "teacher", "faculty", "adviser", "advisor", "orgadv", "hap", "osas",
-            "labhead", "qaccoordinator", "propertycustodian", "administrativeofficer"
-          ]
+            "labhead", "qaccoordinator", "propertycustodian", "administrativeofficer",
+            "Teacher", "Faculty", "Adviser", "Advisor"
+          ])
         );
     }
 
@@ -320,9 +386,7 @@ service cloud.firestore {
         && (
           isAdminAccount()
           || isEventOrganizerAccount()
-          || normalizeAccessKey(
-            currentAdminProfile().get("role", currentAdminProfile().get("userRole", ""))
-          ) in ["teacher", "faculty"]
+          || profileHasRole(currentAdminProfile(), ["teacher", "faculty", "Teacher", "Faculty"])
         );
       allow create, update, delete: if signedIn() && isSuperAdminAccount();
     }

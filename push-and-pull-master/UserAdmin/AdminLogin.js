@@ -113,6 +113,19 @@ import {
       .replace(/\s+/g, "");
   }
 
+  function profileRoles(profile) {
+    return [
+      profile?.role,
+      profile?.userRole,
+      ...(Array.isArray(profile?.roles) ? profile.roles : []),
+    ].flatMap((value) =>
+      String(value || "")
+        .split(/[,&/|]+/)
+        .map(normalizeRole)
+        .filter(Boolean),
+    );
+  }
+
   function isDisabledProfile(profile) {
     const status = String(profile?.status || "").trim().toLowerCase();
     return profile?.isActive === false || ["inactive", "disabled"].includes(status);
@@ -124,13 +137,16 @@ import {
       { role: "Admin", normalized: "admin" },
       { role: "Admin", normalized: "osas" },
       { role: "Event Organizer", normalized: "eventorganizer" },
+      { role: "Teacher", normalized: "teacher" },
+      { role: "Teacher", normalized: "teacheradviser" },
+      { role: "Teacher", normalized: "faculty" },
+      { role: "Teacher", normalized: "adviser" },
       { role: "Student", normalized: "student" },
     ];
     for (const priority of priorities) {
       const profileRecord = profiles.find(
         (candidate) =>
-          normalizeRole(candidate.data.role || candidate.data.userRole) ===
-          priority.normalized,
+          profileRoles(candidate.data).includes(priority.normalized),
       );
       if (profileRecord) return { ...profileRecord, resolvedRole: priority.role };
     }
@@ -138,7 +154,10 @@ import {
       ? {
           ...profiles[0],
           resolvedRole: String(
-            profiles[0].data.role || profiles[0].data.userRole || "",
+            profiles[0].data.role ||
+              profiles[0].data.userRole ||
+              profiles[0].data.roles?.[0] ||
+              "",
           ).trim(),
         }
       : null;

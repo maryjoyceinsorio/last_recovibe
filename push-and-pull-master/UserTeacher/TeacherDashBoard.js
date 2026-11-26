@@ -882,11 +882,17 @@ async function loadProfile(user) {
       uid: uidAtRead,
     });
   } finally {
-    const profileRole = String(state.profile.role || state.profile.userRole || "")
-      .trim()
-      .toLowerCase();
+    const profileRoles = [
+      state.profile.role,
+      state.profile.userRole,
+      ...(Array.isArray(state.profile.roles) ? state.profile.roles : []),
+    ].map((role) => String(role || "").trim().toLowerCase());
     mountHelpBot({
-      role: profileRole === "teacher" ? "teacher" : "default",
+      role: profileRoles.some((role) =>
+        ["teacher", "teacheradviser", "faculty", "adviser"].includes(
+          role.replace(/[^a-z0-9]/g, ""),
+        ),
+      ) ? "teacher" : "default",
       ai: { firebaseConfig: app.options },
     });
     profileReady = true;

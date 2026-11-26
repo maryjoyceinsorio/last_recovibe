@@ -199,24 +199,9 @@
           <h2 id="create-user-title">Create New User</h2>
           <button class="dialog-dismiss" type="button" data-close-dialog aria-label="Close create user form">×</button>
         </div>
-        <label class="form-field" for="new-user-first-name">
-          <span>First Name</span>
-          <input id="new-user-first-name" name="firstName" type="text" autocomplete="given-name" required />
-        </label>
-        <label class="form-field" for="new-user-middle-name">
-          <span>Middle Name</span>
-          <input id="new-user-middle-name" name="middleName" type="text" autocomplete="additional-name" />
-        </label>
-        <div class="form-field form-field-middle-toggle">
-          <span>Middle name</span>
-          <label class="checkbox-inline" for="new-user-no-middle-name">
-            <input type="checkbox" id="new-user-no-middle-name" name="noMiddleName" />
-            <span>I don't have a middle name</span>
-          </label>
-        </div>
-        <label class="form-field" for="new-user-last-name">
-          <span>Last Name</span>
-          <input id="new-user-last-name" name="lastName" type="text" autocomplete="family-name" required />
+        <label class="form-field" for="new-user-name">
+          <span>Name</span>
+          <input id="new-user-name" name="fullName" type="text" autocomplete="name" maxlength="160" required />
         </label>
         <label class="form-field" for="new-user-account">
           <span id="new-user-account-label">Account Number</span>
@@ -230,6 +215,7 @@
             <option>Event Organizer</option>
             <option>Teacher</option>
             <option>Admin</option>
+            <option value="Admin &amp; Teacher">Admin + Teacher</option>
             <option>Super Admin</option>
           </select>
           <input id="new-user-role-value" name="role" type="hidden" />
@@ -238,6 +224,7 @@
           <span>Email</span>
           <input id="new-user-email" name="email" type="email" placeholder="Enter your email address" autocomplete="email" inputmode="email" autocapitalize="none" spellcheck="false" maxlength="254" required />
         </label>
+        <p id="existing-account-notice" class="role-change-hint existing-account-notice" role="status" aria-live="polite" hidden></p>
         <label class="form-field" for="new-user-contact">
           <span>Contact Number</span>
           <input id="new-user-contact" name="contactNumber" type="tel" value="09" maxlength="11" autocomplete="tel" />
@@ -364,6 +351,7 @@
             <option value="Student">Student</option>
             <option value="Event Organizer">Event Organizer</option>
             <option value="Admin">Admin</option>
+            <option value="Admin &amp; Teacher">Admin + Teacher</option>
             <option value="Teacher">Teacher</option>
             <option value="Super Admin">Super Admin</option>
           </select>

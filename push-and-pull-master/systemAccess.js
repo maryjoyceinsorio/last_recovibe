@@ -152,11 +152,17 @@ export function clearPortalProfileCaches() {
   }
 }
 
-function normalizeRole(profile) {
-  return String(profile?.role || profile?.userRole || "")
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9]/g, "");
+function profileRoles(profile) {
+  return [
+    profile?.role,
+    profile?.userRole,
+    ...(Array.isArray(profile?.roles) ? profile.roles : []),
+  ].flatMap((value) =>
+    String(value || "")
+      .split(/[,&/|]+/)
+      .map((role) => role.trim().toLowerCase().replace(/[^a-z0-9]/g, ""))
+      .filter(Boolean),
+  );
 }
 
 function profileIsInactive(profile) {
@@ -165,7 +171,8 @@ function profileIsInactive(profile) {
     ["disabled", "inactive", "suspended"].includes(status);
 }
 
-async function getAccountRole(db, uid) {
+async function getAccountRoleInfo(db, uid) {
+  if (!db || !uid) return { role: "", roles: [] };
   const reads = await Promise.allSettled([
     getDocCached(getDoc, doc(db, "adminUser", uid), uid),
     getDocCached(getDoc, doc(db, "users", uid), uid),
@@ -184,15 +191,18 @@ async function getAccountRole(db, uid) {
       if (profileIsInactive(profile)) return false;
       if (
         disabledAdminProfile &&
-        ["admin", "osas", "superadmin"].includes(normalizeRole(profile))
+        profileRoles(profile).some((role) =>
+          ["admin", "osas", "superadmin"].includes(role),
+        )
       ) {
         return false;
       }
       return true;
     });
-  const roles = profiles.map(normalizeRole).filter(Boolean);
-  if (roles.some((role) => ["superadmin", "superadministrator"].includes(role))) {
-    return "superadmin";
+  const roles = new Set(profiles.flatMap(profileRoles));
+  if ([...roles].some((role) => ["superadmin", "superadministrator"].includes(role))) {
+    roles.add("superadmin");
+    return { role: "superadmin", roles: [...roles] };
   }
   const rolePriorities = [
     { role: "admin", aliases: ["admin", "osas"] },
@@ -201,7 +211,10 @@ async function getAccountRole(db, uid) {
     { role: "student", aliases: ["student"] },
   ];
   for (const priority of rolePriorities) {
-    if (roles.some((role) => priority.aliases.includes(role))) return priority.role;
+    if ([...roles].some((role) => priority.aliases.includes(role))) {
+      roles.add(priority.role);
+      return { role: priority.role, roles: [...roles] };
+    }
   }
   const userProfile = snapshots[1]?.exists() ? snapshots[1].data() : {};
   const userHasStudentNumber = [
@@ -212,20 +225,27 @@ async function getAccountRole(db, uid) {
     userProfile.studentId,
   ].some((value) => String(value || "").trim());
   if (
-    (snapshots[2]?.exists() && !normalizeRole(snapshots[2].data())) ||
-    (userHasStudentNumber && !normalizeRole(userProfile))
+    (snapshots[2]?.exists() && !profileRoles(snapshots[2].data()).length) ||
+    (userHasStudentNumber && !profileRoles(userProfile).length)
   ) {
-    return "student";
+    roles.add("student");
+    return { role: "student", roles: [...roles] };
   }
   if (
     snapshots[3]?.exists() &&
     String(snapshots[3].data()?.organizationCode || "").trim()
   ) {
-    return "eventorganizer";
+    roles.add("eventorganizer");
+    return { role: "eventorganizer", roles: [...roles] };
   }
   const readError = reads.find((result) => result.status === "rejected");
   if (readError) throw readError.reason;
-  return "";
+  return { role: "", roles: [...roles] };
+}
+
+async function getAccountRole(db, uid) {
+  const account = await getAccountRoleInfo(db, uid);
+  return account.role;
 }
 
 export function resolvePortalRole(db, uid) {
@@ -418,9 +438,10 @@ export function startPortalRoleGuard(auth, db) {
     }
 
     try {
-      const actualRole = await getAccountRole(db, user.uid);
+      const account = await getAccountRoleInfo(db, user.uid);
+      const actualRole = account.role;
       if (!active || auth.currentUser?.uid !== user.uid) return;
-      if (actualRole !== context.role) {
+      if (!account.roles.includes(context.role)) {
         if (actualRole) {
           const destinationContext = PORTAL_CONTEXTS.find(
             (item) => item.role === actualRole,

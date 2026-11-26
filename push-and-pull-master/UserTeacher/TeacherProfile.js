@@ -117,6 +117,28 @@ import { updatePendingEmailNotice } from "../profilePendingEmail.js";
     const lastName = String(profile.lastName || "").trim();
     const fullName = [firstName, middleName, lastName].filter(Boolean).join(" ") || profile.name || "";
     profile.name = fullName;
+    const roleKeys = [
+      profile.role,
+      profile.userRole,
+      ...(Array.isArray(profile.roles) ? profile.roles : []),
+    ].flatMap((role) =>
+      String(role || "")
+        .split(/[,&/|]+/)
+        .map((value) => value.trim().toLowerCase().replace(/[^a-z0-9]/g, ""))
+        .filter(Boolean),
+    );
+    const hasTeacherRole = roleKeys.some((role) =>
+      ["teacher", "teacheradviser", "faculty", "adviser"].includes(role),
+    );
+    const hasAdminRole = roleKeys.some((role) =>
+      ["admin", "superadmin"].includes(role),
+    );
+    let roleLabel = profile.role || "";
+    if (hasTeacherRole && hasAdminRole) {
+      roleLabel = "Admin & Teacher";
+    } else if (hasTeacherRole) {
+      roleLabel = /faculty/i.test(roleLabel) ? roleLabel : "Teacher";
+    }
 
     const initials = Array.from(firstName || fullName)[0]?.toUpperCase() || "";
 
@@ -126,7 +148,7 @@ import { updatePendingEmailNotice } from "../profilePendingEmail.js";
     const heroUserName = document.getElementById("heroUserName");
     if (heroUserName) heroUserName.textContent = fullName;
     const heroRoleBadge = document.getElementById("heroRoleBadge");
-    if (heroRoleBadge) heroRoleBadge.textContent = profile.role ? (profile.role.includes("Faculty") ? "Faculty" : profile.role) : "";
+    if (heroRoleBadge) heroRoleBadge.textContent = roleLabel;
 
     // Sidebar
     const organizerAvatar = document.getElementById("organizerAvatar");
@@ -169,7 +191,7 @@ import { updatePendingEmailNotice } from "../profilePendingEmail.js";
     const viewDepartment = document.getElementById("viewDepartment");
     if (viewDepartment) viewDepartment.textContent = profile.department || "";
     const viewRole = document.getElementById("viewRole");
-    if (viewRole) viewRole.textContent = profile.role || "";
+    if (viewRole) viewRole.textContent = roleLabel;
     const viewCampus = document.getElementById("viewCampus");
     if (viewCampus) {
       viewCampus.textContent = profile.campus || "";

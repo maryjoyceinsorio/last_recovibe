@@ -1478,6 +1478,12 @@
   text-align: left;
 }
 
+.existing-account-notice {
+  grid-column: 1 / -1;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
 .user-dialog-actions {
   flex-wrap: wrap;
 }

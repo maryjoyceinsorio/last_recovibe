@@ -81,7 +81,7 @@ async function uploadEventAttachments(payload, uid) {
 
     let downloadUrl = existingUrl || "";
     if (fileBlob) {
-      if (!storage) throw new Error("Firebase Storage is not configured.");
+      if (!storage) throw new Error("File uploads are currently unavailable.");
       if (fileBlob.size > 10 * 1024 * 1024) {
         throw new Error(`"${file.name || "Attachment"}" exceeds the 10 MB upload limit.`);
       }
@@ -107,7 +107,7 @@ async function uploadEventAttachments(payload, uid) {
             message: error?.message || String(error),
             fileName: file.name || "",
           });
-          throw new Error(`Could not upload "${file.name || "attachment"}": ${error.message || "Storage upload failed."}`, { cause: error });
+          throw new Error(`Could not upload "${file.name || "attachment"}". Please try again.`, { cause: error });
         }
       }
     } else if (!downloadUrl && (file.fileRef || dataUrl)) {
@@ -538,7 +538,7 @@ loadCachedOrganizations();
     if (!organizerAccountProfilePromise) {
       organizerAccountProfilePromise = Promise.resolve()
         .then(() => {
-          if (!db) throw new Error("Firestore is not configured.");
+          if (!db) throw new Error("Event services are currently unavailable.");
           return getDoc(doc(db, "adminUser", organizerUid));
         })
         .then((profileSnapshot) => {
@@ -1166,16 +1166,22 @@ loadCachedOrganizations();
     const code = String(error?.code || "")
       .replace(/^functions\//i, "")
       .toLowerCase();
-    const message = String(error?.message || "")
+    const message = safeUserFacingErrorMessage(String(error?.message || "")
       .replace(/^FirebaseError:\s*/i, "")
       .replace(/^functions\/[a-z-]+:\s*/i, "")
-      .trim();
+      .trim());
     const genericError = /^(internal|unknown|unauthenticated|permission-denied|invalid-argument)$/i;
     if (!["internal", "unknown", "unauthenticated", "permission-denied", "invalid-argument"].includes(code) &&
       message && !genericError.test(message)) {
       return message;
     }
     return fallback;
+  }
+
+  function safeUserFacingErrorMessage(value) {
+    return String(value || "")
+      .replace(/Firebase(?:\s*Storage|\s*Error)?/gi, "service")
+      .replace(/Firestore/gi, "event service");
   }
 
   // 7. Load Past Events for Current User
@@ -1230,6 +1236,21 @@ loadCachedOrganizations();
       !["inactive", "disabled", "suspended"].includes(status);
   }
 
+  function hasTeacherRole(data) {
+    const roles = [
+      data.role,
+      data.userRole,
+      ...(Array.isArray(data.roles) ? data.roles : []),
+    ].map((role) => String(role || "").toLowerCase());
+    return roles.some((role) =>
+      role.includes("teach") ||
+      role.includes("facult") ||
+      role.includes("prof") ||
+      role.includes("instructor") ||
+      role.includes("adviser"),
+    );
+  }
+
   function notifyFacultyPoolUpdated() {
     updateAllReadinessChecks();
     const input = document.getElementById("facultyInChargeSearchInput");
@@ -1256,8 +1277,7 @@ loadCachedOrganizations();
           const loaded = [];
           snapshot.docs.forEach((docSnap) => {
             const data = docSnap.data() || {};
-            const role = String(data.role || data.userRole || "").toLowerCase();
-            if (isEligibleFaculty(data) && (role.includes("teach") || role.includes("facult") || role.includes("prof") || role.includes("instructor") || role.includes("adviser"))) {
+            if (isEligibleFaculty(data) && hasTeacherRole(data)) {
               const fullName = [data.firstName, data.middleName, data.lastName].filter(Boolean).join(" ");
               const name = data.fullName || fullName || data.name || data.displayName;
               if (name && typeof name === "string" && name.trim()) {
@@ -1365,8 +1385,7 @@ loadCachedOrganizations();
       const usersSnap = await getDocs(collection(db, "users"));
       usersSnap.forEach((docSnap) => {
         const data = docSnap.data() || {};
-        const role = String(data.role || data.userRole || "").toLowerCase();
-        if (isEligibleFaculty(data) && (role.includes("teach") || role.includes("facult") || role.includes("prof") || role.includes("instructor") || role.includes("adviser"))) {
+        if (isEligibleFaculty(data) && hasTeacherRole(data)) {
           const fullName = [data.firstName, data.middleName, data.lastName].filter(Boolean).join(" ");
           const name = data.fullName || fullName || data.name || data.displayName;
           if (name && typeof name === "string" && name.trim()) {
@@ -3624,8 +3643,8 @@ loadCachedOrganizations();
           }
 
           showConfirmModal({
-            title: "Save Event to Firestore?",
-            text: "This saves the event directly to Firestore with pending status. It bypasses the server approval chain and does not notify reviewers.",
+            title: "Submit Event?",
+            text: "Your event will be saved as pending. Administrators will receive a proposal notification; reviewers won't be notified by this action.",
             confirmText: "Save Pending Event",
             cancelText: "No",
             checkboxText: "I confirm the details are accurate and ready to save.",
@@ -3668,7 +3687,7 @@ loadCachedOrganizations();
                 }
                 submissionStage = "checking Firestore configuration";
                 if (!db || !isFirebaseConfigured) {
-                  throw new Error("Event submission is unavailable because Firestore is not configured.");
+                  throw new Error("Event submission is currently unavailable. Please try again later.");
                 }
 
                 submissionStage = "checking signed-in user";
@@ -3768,7 +3787,7 @@ loadCachedOrganizations();
                   console.error(`Could not save event ${eventId} to localStorage key ${storageKeyEvents}.`);
                 }
                 state.dirty = false;
-                const successNotice = "Event saved to Firestore as pending. The reviewer approval chain was not created. Admins will receive a proposal notification.";
+                const successNotice = "Your event was saved with pending status. The reviewer approval chain was not created; administrators will receive a proposal notification.";
                 submissionStage = "redirecting after successful Firestore write";
                 closeModal();
                 try {
@@ -3797,9 +3816,9 @@ loadCachedOrganizations();
                 const message = error?.code === "permission-denied"
                   ? submissionStage === "verifying organizer organization"
                     ? "Your organizer profile could not be verified. Contact an administrator."
-                    : "Firebase denied the upload or event write. Check your published Storage/Firestore rules and account role."
+                    : "Your event could not be submitted. Check your account access and try again."
                   : submissionStage === "verifying organizer organization"
-                    ? error?.message || "Could not verify your organizer profile."
+                    ? safeUserFacingErrorMessage(error?.message) || "Could not verify your organizer profile."
                   : getFriendlyFunctionError(
                     error,
                     hasFieldErrors
@@ -3823,7 +3842,7 @@ loadCachedOrganizations();
           });
         } catch (error) {
           console.error("Could not start event submission:", error);
-          alert(error?.message || String(error));
+          alert(safeUserFacingErrorMessage(error?.message || String(error)) || "Could not submit the event.");
         }
       });
     } else {
@@ -8200,7 +8219,7 @@ loadCachedOrganizations();
       sessionStorage.removeItem("recovibeProposalResubmit");
     } catch (error) {
       console.error("Could not restore proposal details for resubmission:", error);
-      showToast(error.message || "Could not load this proposal for resubmission.");
+      showToast(safeUserFacingErrorMessage(error.message) || "Could not load this proposal for resubmission.");
     }
   }
 

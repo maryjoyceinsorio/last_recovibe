@@ -51,7 +51,7 @@ async function verifyOrganizerRole(authData) {
   }
   const roleSnap = await admin.database().ref(`roles/${authData.uid}`).once("value");
   const role = roleSnap.val();
-  if (role !== "event_organizer" && role !== "admin") {
+  if (!hasAnyRole(role, ["eventorganizer", "admin"])) {
     throw new functions.https.HttpsError("permission-denied", "Only event organizers and admins can perform this action.");
   }
   return role;
@@ -405,6 +405,18 @@ function normalizeApprovalKey(value) {
   return String(value || "").toLowerCase().replace(/[^a-z0-9]/g, "");
 }
 
+function roleValues(value) {
+  return (Array.isArray(value) ? value : [value])
+    .flatMap((role) => String(role || "").split(/[,&|]+/))
+    .map(normalizeApprovalKey)
+    .filter(Boolean);
+}
+
+function hasAnyRole(value, acceptedRoles) {
+  const roles = roleValues(value);
+  return acceptedRoles.some((role) => roles.includes(normalizeApprovalKey(role)));
+}
+
 function isOrganizationAdviserStage(value) {
   const stageValues = value && typeof value === "object"
     ? [value.roleKey, value.key, value.id, value.name, value.label, value.reviewer]
@@ -496,10 +508,17 @@ async function getProposalOrganizationCode(event) {
     ...(firestoreUserSnap.exists ? firestoreUserSnap.data() : {}),
     ...(adminProfileSnap.exists ? adminProfileSnap.data() : {}),
   };
-  const creatorRole = normalizeApprovalKey(
-    roleSnap.val() || creatorProfile.role || creatorProfile.userRole || event?.createdByRole || event?.creatorRole,
-  );
-  const isOrganizer = ["eventorganizer", "organizer", "eo"].includes(creatorRole);
+  const creatorRoles = [
+    ...roleValues(roleSnap.val()),
+    ...roleValues([
+      creatorProfile.role,
+      creatorProfile.userRole,
+      ...(Array.isArray(creatorProfile.roles) ? creatorProfile.roles : []),
+      event?.createdByRole,
+      event?.creatorRole,
+    ]),
+  ];
+  const isOrganizer = hasAnyRole(creatorRoles, ["eventorganizer", "organizer", "eo"]);
   const creatorCode = isOrganizer ? getOrganizationCode(creatorProfile) : "";
   if (!isOrganizer || !creatorCode) return "";
   if (creatorCode && eventCode && creatorCode !== eventCode) return "";
@@ -731,7 +750,7 @@ exports.syncApproverOrganization = functions.region("asia-southeast1").https.onC
 
 exports.syncOrganizerOrganization = functions.region("asia-southeast1").https.onCall(async (_data, context) => {
   const role = await verifyEventCreator(context.auth);
-  if (role !== "event_organizer") {
+  if (!hasAnyRole(role, ["eventorganizer"])) {
     throw new functions.https.HttpsError("permission-denied", "Only Event Organizers have an assigned organization.");
   }
   const identity = await getEventCreatorIdentity(context.auth.uid, role, context.auth);
@@ -1438,7 +1457,8 @@ async function verifyOrganizerEventOwnership(authData, eventId) {
   }
   const roleSnap = await admin.database().ref(`roles/${authData.uid}`).once("value");
   const role = roleSnap.val();
-  if (role !== "event_organizer" && role !== "teacher" && role !== "admin") {
+  const isAdmin = hasAnyRole(role, ["admin"]);
+  if (!hasAnyRole(role, ["eventorganizer", "teacher", "admin"])) {
     throw new functions.https.HttpsError("permission-denied", "You do not have permission to manage this event.");
   }
   const eventSnap = await admin.database().ref(`events/${eventId}`).once("value");
@@ -1446,10 +1466,10 @@ async function verifyOrganizerEventOwnership(authData, eventId) {
   if (!eventData) {
     throw new functions.https.HttpsError("not-found", "The specified event does not exist.");
   }
-  if (role !== "admin" && (eventData.organizerUid || eventData.organizerId) !== authData.uid) {
+  if (!isAdmin && (eventData.organizerUid || eventData.organizerId) !== authData.uid) {
     throw new functions.https.HttpsError("permission-denied", "You can only view or manage your own events.");
   }
-  if (role === "admin") {
+  if (isAdmin) {
     const identity = await getAdminApprovalIdentity(authData);
     assertOrganizationScopedApproval(
       identity,
@@ -1577,9 +1597,13 @@ async function createAdminProposalNotifications(eventId, eventData, type, messag
   const adminProfiles = await admin.firestore().collection("adminUser").get();
   const recipients = (await Promise.all(adminProfiles.docs.map(async (snapshot) => {
     const profile = snapshot.data() || {};
-    const role = normalizeApprovalKey(profile.role || profile.userRole);
+    const roles = roleValues([
+      profile.role,
+      profile.userRole,
+      ...(Array.isArray(profile.roles) ? profile.roles : []),
+    ]);
     const status = String(profile.status || "active").trim().toLowerCase();
-    const activeAdmin = ["admin", "superadmin"].includes(role) &&
+    const activeAdmin = hasAnyRole(roles, ["admin", "superadmin"]) &&
       !["disabled", "inactive", "suspended"].includes(status);
     if (!activeAdmin || openForAll) return activeAdmin ? snapshot : null;
 
@@ -1680,12 +1704,18 @@ async function isEventOrganizerProposal(eventData) {
     admin.firestore().collection("eventOrganizations").doc(uid).get(),
     admin.firestore().collection("adminUser").doc(uid).get(),
   ]);
-  const profileRole = normalizeApprovalKey(
-    (adminProfile.exists ? adminProfile.data()?.role || adminProfile.data()?.userRole : "") ||
-    (organizerProfile.exists ? organizerProfile.data()?.role || organizerProfile.data()?.userRole : ""),
-  );
-  return ["eventorganizer", "organizer", "eo"].includes(normalizeApprovalKey(roleSnapshot.val())) ||
-    ["eventorganizer", "organizer", "eo"].includes(profileRole) ||
+  const adminData = adminProfile.exists ? adminProfile.data() || {} : {};
+  const organizerData = organizerProfile.exists ? organizerProfile.data() || {} : {};
+  const profileRoles = roleValues([
+    adminData.role,
+    adminData.userRole,
+    ...(Array.isArray(adminData.roles) ? adminData.roles : []),
+    organizerData.role,
+    organizerData.userRole,
+    ...(Array.isArray(organizerData.roles) ? organizerData.roles : []),
+  ]);
+  return hasAnyRole(roleSnapshot.val(), ["eventorganizer", "organizer", "eo"]) ||
+    hasAnyRole(profileRoles, ["eventorganizer", "organizer", "eo"]) ||
     organizerProfile.exists;
 }
 
@@ -1710,8 +1740,12 @@ function normalizeStudentDepartmentValue(value) {
 }
 
 function studentProfileMatchesEventAudience(profile, audience) {
-  const role = normalizeApprovalKey(profile.role || profile.userRole || "student");
-  if (role !== "student") return false;
+  const roles = roleValues([
+    profile.role,
+    profile.userRole,
+    ...(Array.isArray(profile.roles) ? profile.roles : []),
+  ]);
+  if (roles.length ? !roles.includes("student") : false) return false;
   if (audience.openForAll) return true;
 
   const profileOrganizations = getNotificationProfileValues(profile, [
@@ -2332,10 +2366,10 @@ async function verifyEventCreator(authData) {
   if (!authData || !authData.uid) throw new functions.https.HttpsError("unauthenticated", "Sign in before creating an event.");
   const roleSnap = await admin.database().ref(`roles/${authData.uid}`).once("value");
   const role = roleSnap.val();
-  if (role !== "event_organizer" && role !== "teacher") {
+  if (!hasAnyRole(role, ["eventorganizer", "teacher"])) {
     throw new functions.https.HttpsError("permission-denied", "Only event organizers and teachers can create events.");
   }
-  return role;
+  return hasAnyRole(role, ["eventorganizer"]) ? "event_organizer" : "teacher";
 }
 
 function validateDraftId(draftId) {
@@ -2389,7 +2423,7 @@ exports.rebuildOrganizerEventsIndex = functions.region("asia-southeast1").https.
     throw new functions.https.HttpsError("unauthenticated", "Sign in before performing this action.");
   }
   const roleSnap = await admin.database().ref(`roles/${context.auth.uid}`).once("value");
-  if (roleSnap.val() !== "admin") {
+  if (!hasAnyRole(roleSnap.val(), ["admin"])) {
     throw new functions.https.HttpsError("permission-denied", "Only administrators can rebuild the organizer events index.");
   }
   const identity = await getAdminApprovalIdentity(context.auth);
@@ -2826,7 +2860,7 @@ exports.resubmitEvent = functions.region("asia-southeast1").https.onCall(async (
     at: now,
     note: note || "Proposal resubmitted with requested updates.",
   });
-  if (role === "event_organizer") {
+  if (hasAnyRole(role, ["eventorganizer"])) {
     await createAdminProposalNotifications(
       eventId,
       eventData,
@@ -2855,40 +2889,41 @@ exports.publishEvent = functions.region("asia-southeast1").https.onCall(async (d
   const firestoreEventRef = admin.firestore().collection("events").doc(String(eventId));
   const firestoreEventSnap = await firestoreEventRef.get();
   if (firestoreEventSnap.exists) {
-    let role = "";
+    let roles = [];
     try {
       const roleSnap = await admin.database().ref(`roles/${context.auth.uid}`).once("value");
-      role = String(roleSnap.val() || "")
-        .trim()
-        .toLowerCase()
-        .replace(/[\s_-]+/g, "");
+      roles = roleValues(roleSnap.val());
     } catch (error) {
       console.warn("Could not verify publish role in Realtime Database; trying Firestore.", error);
     }
-    if (!["eventorganizer", "organizer", "eo", "teacher", "admin", "superadmin"].includes(role)) {
+    if (!roles.some((role) =>
+      ["eventorganizer", "organizer", "eo", "teacher", "admin", "superadmin"].includes(role),
+    )) {
       const profiles = await Promise.allSettled([
         admin.firestore().collection("adminUser").doc(context.auth.uid).get(),
         admin.firestore().collection("users").doc(context.auth.uid).get(),
       ]);
-      role = profiles
+      roles = profiles
         .filter((result) => result.status === "fulfilled" && result.value.exists)
         .map((result) => {
           const profile = result.value.data() || {};
-          return String(profile.role || profile.userRole || "")
-            .trim()
-            .toLowerCase()
-            .replace(/[\s_-]+/g, "");
+          return roleValues([
+            profile.role,
+            profile.userRole,
+            ...(Array.isArray(profile.roles) ? profile.roles : []),
+          ]);
         })
-        .find((profileRole) =>
-          ["eventorganizer", "organizer", "eo", "teacher", "admin", "superadmin"].includes(profileRole),
-        ) || role;
+        .flat();
     }
-    if (!["eventorganizer", "organizer", "eo", "teacher", "admin", "superadmin"].includes(role)) {
+    if (!roles.some((role) =>
+      ["eventorganizer", "organizer", "eo", "teacher", "admin", "superadmin"].includes(role),
+    )) {
       throw new functions.https.HttpsError("permission-denied", "You do not have permission to publish this event.");
     }
 
     const eventData = firestoreEventSnap.data() || {};
-    if (["admin", "superadmin"].includes(role)) {
+    const isAdmin = roles.some((role) => ["admin", "superadmin"].includes(role));
+    if (isAdmin) {
       const identity = await getAdminApprovalIdentity(context.auth);
       assertOrganizationScopedApproval(
         identity,
@@ -2896,7 +2931,7 @@ exports.publishEvent = functions.region("asia-southeast1").https.onCall(async (d
       );
     }
     const organizerUid = eventData.organizerUid || eventData.organizerId || eventData.createdBy;
-    if (!["admin", "superadmin"].includes(role) && organizerUid !== context.auth.uid) {
+    if (!isAdmin && organizerUid !== context.auth.uid) {
       throw new functions.https.HttpsError("permission-denied", "You can only publish your own events.");
     }
 
@@ -3074,7 +3109,7 @@ exports.cancelEvent = functions.region("asia-southeast1").https.onCall(async (da
     at: now,
     note: reason || "Event cancelled by organizer.",
   });
-  if (role === "event_organizer") {
+  if (hasAnyRole(role, ["eventorganizer"])) {
     await createAdminProposalNotifications(
       eventId,
       eventData,
@@ -3177,7 +3212,7 @@ exports.reopenEvent = functions.region("asia-southeast1").https.onCall(async (da
   if (!eventId) {
     throw new functions.https.HttpsError("invalid-argument", "Event ID is required.");
   }
-  const { eventData } = await verifyOrganizerEventOwnership(context.auth, eventId);
+  const { eventData, role } = await verifyOrganizerEventOwnership(context.auth, eventId);
 
   if (eventData.status !== "completed") {
     throw new functions.https.HttpsError("failed-precondition", "Only completed events can be reopened.");
@@ -3187,7 +3222,7 @@ exports.reopenEvent = functions.region("asia-southeast1").https.onCall(async (da
   const now = Date.now();
   const TWENTY_FOUR_HOURS = 24 * 60 * 60 * 1000;
 
-  if (role !== "admin" && now - completedAt > TWENTY_FOUR_HOURS) {
+  if (!hasAnyRole(role, ["admin"]) && now - completedAt > TWENTY_FOUR_HOURS) {
     throw new functions.https.HttpsError("failed-precondition", "Events can only be reopened within 24 hours of completion.");
   }
 
@@ -3243,16 +3278,16 @@ exports.addApprover = functions.region("asia-southeast1").https.onCall(async (da
   const event = eventSnap.val() || {};
   const proposalOrganizationCode = await getProposalOrganizationCode(event);
   if (
-    callerRole !== "admin" &&
+    !hasAnyRole(callerRole, ["admin"]) &&
     (event.organizerUid || event.organizerId) !== context.auth.uid
   ) {
     throw new functions.https.HttpsError("permission-denied", "You can only manage the approval chain for your own events.");
   }
-  if (callerRole === "event_organizer" && !proposalOrganizationCode) {
+  if (hasAnyRole(callerRole, ["eventorganizer"]) && !proposalOrganizationCode) {
     throw new functions.https.HttpsError("permission-denied", "This event does not match your assigned organization.");
   }
   let identity = null;
-  if (callerRole === "admin") {
+  if (hasAnyRole(callerRole, ["admin"])) {
     identity = await getAdminApprovalIdentity(context.auth);
     assertOrganizationScopedApproval(identity, proposalOrganizationCode);
   }
@@ -3309,7 +3344,7 @@ exports.removeApprover = functions.region("asia-southeast1").https.onCall(async 
   }
   const callerUid = context.auth.uid;
   const roleSnap = await admin.database().ref(`roles/${callerUid}`).once("value");
-  if (roleSnap.val() !== "admin") {
+  if (!hasAnyRole(roleSnap.val(), ["admin"])) {
     throw new functions.https.HttpsError("permission-denied", "Only administrators can remove approvers.");
   }
 
@@ -3451,7 +3486,7 @@ exports.decideApproval = functions.region("asia-southeast1").https.onCall(async 
   const assignedStage = identity.stage;
   if (!assignedStage) {
     const roleSnap = await admin.database().ref(`roles/${callerUid}`).once("value");
-    if (roleSnap.val() !== "admin") {
+    if (!hasAnyRole(roleSnap.val(), ["admin"])) {
       throw new functions.https.HttpsError("permission-denied", "Only administrators can decide event approvals.");
     }
   }
@@ -3754,10 +3789,15 @@ exports.linkAdminToApprover = functions.region("asia-southeast1").https.onCall(a
     if (assignedStage.key !== key) {
       throw new functions.https.HttpsError("permission-denied", `This account can only be linked to ${assignedStage.label}.`);
     }
-    await admin.database().ref(`roles/${callerUid}`).set("admin");
+    const rolesRef = admin.database().ref(`roles/${callerUid}`);
+    await rolesRef.transaction((currentRole) =>
+      hasAnyRole(currentRole, ["teacher"])
+        ? ["admin", "teacher"]
+        : "admin",
+    );
   } else {
     const roleSnap = await admin.database().ref(`roles/${callerUid}`).once("value");
-    if (roleSnap.val() !== "admin") {
+    if (!hasAnyRole(roleSnap.val(), ["admin"])) {
       throw new functions.https.HttpsError("permission-denied", "Only administrators can link to approver positions.");
     }
   }
@@ -3865,7 +3905,7 @@ exports.remindApprovers = functions.region("asia-southeast1").https.onCall(async
     at: now,
     note: `Reminder sent to ${targetKeys.map((k) => members[k]?.label || k).join(", ")}.`,
   });
-  if (role === "event_organizer") {
+  if (hasAnyRole(role, ["eventorganizer"])) {
     await createAdminProposalNotifications(
       eventId,
       eventData,

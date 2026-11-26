@@ -1387,17 +1387,55 @@
       );
     }, { once: true });
 
+    function lockPageScroll() {
+      if (savedBodyStyles) return;
+      savedScrollY = window.scrollY;
+      const pageWidth = document.documentElement.clientWidth;
+      savedBodyStyles = {
+        position: document.body.style.position,
+        top: document.body.style.top,
+        width: document.body.style.width,
+        overflow: document.body.style.overflow,
+      };
+      document.body.classList.add("event-details-page-locked");
+      document.body.style.position = "fixed";
+      document.body.style.top = `-${savedScrollY}px`;
+      document.body.style.width = `${pageWidth}px`;
+      document.body.style.overflow = "hidden";
+    }
+
+    function unlockPageScroll() {
+      if (!savedBodyStyles) return;
+      document.body.classList.remove("event-details-page-locked");
+      document.body.style.position = savedBodyStyles.position;
+      document.body.style.top = savedBodyStyles.top;
+      document.body.style.width = savedBodyStyles.width;
+      document.body.style.overflow = savedBodyStyles.overflow;
+      window.scrollTo(0, savedScrollY);
+      savedBodyStyles = null;
+    }
+
     function closeConfirmation(restore = true) {
+      const detailsOpen = detailOverlay.classList.contains("is-open");
       if (confirmOverlay.contains(document.activeElement)) {
-        if (restore && detailOverlay.classList.contains("is-open")) {
+        if (restore && detailsOpen) {
           actionButton.focus();
         } else {
           document.activeElement.blur();
         }
       }
       confirmOverlay.classList.remove("is-open");
+      confirmOverlay.classList.remove("is-over-details");
       confirmOverlay.setAttribute("aria-hidden", "true");
       errorElement.textContent = "";
+      if (!detailsOpen) {
+        unlockPageScroll();
+        if (previousFocus && typeof previousFocus.focus === "function") {
+          previousFocus.focus();
+          previousFocus = null;
+        }
+        if (restore) selectedEvent = null;
+      }
     }
 
     function closeDetails() {
@@ -1407,15 +1445,7 @@
       }
       detailOverlay.classList.remove("is-open");
       detailOverlay.setAttribute("aria-hidden", "true");
-      if (savedBodyStyles) {
-        document.body.classList.remove("event-details-page-locked");
-        document.body.style.position = savedBodyStyles.position;
-        document.body.style.top = savedBodyStyles.top;
-        document.body.style.width = savedBodyStyles.width;
-        document.body.style.overflow = savedBodyStyles.overflow;
-        window.scrollTo(0, savedScrollY);
-        savedBodyStyles = null;
-      }
+      unlockPageScroll();
       if (previousFocus && typeof previousFocus.focus === "function")
         previousFocus.focus();
       selectedEvent = null;
@@ -1423,9 +1453,11 @@
     }
 
     function openConfirmation() {
-      if (!selectedEvent || pending) return;
+      if (!selectedEvent || pending) return false;
       updateAction();
-      if (actionButton.disabled) return;
+      if (actionButton.disabled) return false;
+      const eventTitle = selectedEvent.title || selectedEvent.eventName ||
+        selectedEvent.name || "event";
       selectedAction = readIds().has(
         String(selectedEvent.id || selectedEvent.eventId),
       )
@@ -1435,15 +1467,20 @@
         selectedAction === "join" ? "Join Event?" : "Cancel Participation?";
       messageElement.textContent =
         selectedAction === "join"
-          ? `Are you sure you want to join the ${selectedEvent.title}? By confirming, you will be registered as a participant for this event.`
-          : `Are you sure you want to cancel your participation in the ${selectedEvent.title}? Your slot may be made available to another student.`;
+          ? `Are you sure you want to join the ${eventTitle}? By confirming, you will be registered as a participant for this event.`
+          : `Are you sure you want to cancel your participation in the ${eventTitle}? Your slot may be made available to another student.`;
       primaryButton.textContent =
         selectedAction === "join" ? "Participate" : "Yes";
       cancelButton.textContent = selectedAction === "join" ? "Cancel" : "No";
       errorElement.textContent = "";
+      confirmOverlay.classList.toggle(
+        "is-over-details",
+        detailOverlay.classList.contains("is-open"),
+      );
       confirmOverlay.setAttribute("aria-hidden", "false");
       confirmOverlay.classList.add("is-open");
       primaryButton.focus();
+      return true;
     }
 
     async function confirmAction() {
@@ -1537,9 +1574,11 @@
         closeConfirmation(false);
         renderEvent(selectedEvent);
         updateAction();
+        const eventTitle = selectedEvent.title || selectedEvent.eventName ||
+          selectedEvent.name || "event";
         const successMessage = action === "cancel"
-          ? `Cancelled registration to ${selectedEvent.title}.`
-          : `You registered for ${selectedEvent.title}.`;
+          ? `Cancelled registration to ${eventTitle}.`
+          : `You registered for ${eventTitle}.`;
         const toast = document.getElementById("toast");
         if (toast) {
           toast.textContent = successMessage;
@@ -1606,7 +1645,10 @@
       if (!pending) closeConfirmation();
     });
     document.addEventListener("keydown", (event) => {
-      if (!detailOverlay.classList.contains("is-open")) return;
+      if (
+        !detailOverlay.classList.contains("is-open") &&
+        !confirmOverlay.classList.contains("is-open")
+      ) return;
       if (event.key === "Escape") {
         if (confirmOverlay.classList.contains("is-open")) closeConfirmation();
         else closeDetails();
@@ -1660,19 +1702,7 @@
           options.dashboardRegistrationConfirmation === true;
         if (!detailOverlay.classList.contains("is-open")) {
           previousFocus = document.activeElement;
-          savedScrollY = window.scrollY;
-          const pageWidth = document.documentElement.clientWidth;
-          savedBodyStyles = {
-            position: document.body.style.position,
-            top: document.body.style.top,
-            width: document.body.style.width,
-            overflow: document.body.style.overflow,
-          };
-          document.body.classList.add("event-details-page-locked");
-          document.body.style.position = "fixed";
-          document.body.style.top = `-${savedScrollY}px`;
-          document.body.style.width = `${pageWidth}px`;
-          document.body.style.overflow = "hidden";
+          lockPageScroll();
         }
         renderEvent(event);
         updateAction();
@@ -1680,6 +1710,18 @@
         detailOverlay.classList.add("is-open");
         detailDialog.focus();
         if (dashboardRegistrationConfirmation) openConfirmation();
+      },
+      openRegistrationConfirmation(event) {
+        if (!event || isHoliday(event)) return false;
+        if (detailOverlay.classList.contains("is-open")) closeDetails();
+        selectedEvent = event;
+        dashboardRegistrationConfirmation = false;
+        renderEvent(event);
+        updateAction();
+        if (actionButton.disabled) return false;
+        previousFocus = document.activeElement;
+        lockPageScroll();
+        return openConfirmation();
       },
       close: closeDetails,
     };

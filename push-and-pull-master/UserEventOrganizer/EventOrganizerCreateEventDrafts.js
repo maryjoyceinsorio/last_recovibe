@@ -1343,7 +1343,7 @@ document.addEventListener("click", (event) => {
   const modal = document.getElementById("ceConfirmModal");
   const title = modal?.querySelector("#confirmModalTitle")?.textContent.trim() || "";
   const buttonText = confirmButton.textContent.trim().toLowerCase();
-  if (title === "Save Event to Firestore?" && !validateRescheduleDate()) {
+  if (title === "Submit Event?" && !validateRescheduleDate()) {
     event.preventDefault();
     event.stopPropagation();
     event.stopImmediatePropagation();
