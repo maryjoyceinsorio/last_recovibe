@@ -125,6 +125,41 @@ test("reads times from combined startAt and endAt strings", () => {
   assert.equal(range.end.getTime() - range.start.getTime(), 3.5 * 60 * 60 * 1000);
 });
 
+test("parses combined startDateTime and endDateTime fields", () => {
+  const range = getEventDateRange({
+    startDateTime: "2026-11-27T09:00:00+08:00",
+    endDateTime: "2026-11-27T17:00:00+08:00",
+  });
+  assert.ok(range);
+  assert.equal(range.start.toISOString(), "2026-11-27T01:00:00.000Z");
+  assert.equal(range.end.toISOString(), "2026-11-27T09:00:00.000Z");
+});
+
+test("uses event timestamps when the display time is unavailable", () => {
+  const range = getEventDateRange({
+    dateISO: "2026-11-27",
+    time: "Time TBA",
+    startAt: "2026-11-27T09:00:00+08:00",
+    endAt: "2026-11-27T17:00:00+08:00",
+  });
+  assert.ok(range);
+  assert.equal(range.start.toISOString(), "2026-11-27T01:00:00.000Z");
+  assert.equal(range.end.toISOString(), "2026-11-27T09:00:00.000Z");
+});
+
+test("parses schedule startDateTime and endDateTime aliases", () => {
+  assertRange(
+    {
+      schedule: {
+        startDateTime: "2026-11-27T09:00:00+08:00",
+        endDateTime: "2026-11-27T17:00:00+08:00",
+      },
+    },
+    "2026-11-27",
+    "2026-11-27",
+  );
+});
+
 test("preserves event ranges longer than fourteen calendar days", () => {
   assertRange(
     { startDate: "2026-11-01", endDate: "2026-12-01" },

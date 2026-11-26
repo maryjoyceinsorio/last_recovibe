@@ -7,8 +7,9 @@ import {
 } from "./studentIdentity.js";
 import {
   isEventVisibleToStudent,
+  isStudentEventPublished,
   isStudentEventStatus,
-  STUDENT_EVENT_STATUSES,
+  STUDENT_EVENT_QUERY_STATUSES,
 } from "./eventAudience.js";
 import {
   clampEventDateRangeToGrid,
@@ -316,6 +317,9 @@ import {
     return events.filter((event) => {
       const holiday = isHolidayEvent(event);
       if (!holiday && !isStudentEventStatus(event.status || event.publicationStatus)) {
+        return false;
+      }
+      if (!holiday && !isStudentEventPublished(event)) {
         return false;
       }
       if (!holiday && !isEventVisibleToStudent(event, studentProfile)) {
@@ -743,9 +747,7 @@ import {
         where(
           "status",
           "in",
-          STUDENT_EVENT_STATUSES.filter(
-            (status) => status !== "cancelled" && status !== "canceled",
-          ),
+          STUDENT_EVENT_QUERY_STATUSES,
         ),
         limit(150),
       );

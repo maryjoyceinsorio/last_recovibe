@@ -52,7 +52,10 @@ import {
 import {
   isEventVisibleToStudent,
   isStudentEventPublished,
+  isStudentEventStatus,
+  STUDENT_EVENT_QUERY_STATUSES,
 } from "./eventAudience.js";
+import { getEventDateRange } from "./calendarDateRange.mjs";
 import {
   clearCachedStudentProfile,
   loadStudentProfile,
@@ -611,28 +614,10 @@ function calendarDateToISO(value) {
 }
 
 function calendarEventDateRange(event) {
-  const start =
-    [
-      event.dateISO,
-      event.eventDate,
-      event.date,
-      event.startDate,
-      event.start_date,
-      event.event_date,
-      event.dateStart,
-      event.schedule?.date,
-      event.schedule?.startDate,
-    ].map(calendarDateToISO).find(Boolean) || "";
-  const end =
-    [
-      event.endDateISO,
-      event.eventEndDate,
-      event.endDate,
-      event.end_date,
-      event.dateEnd,
-      event.end,
-      start,
-    ].map(calendarDateToISO).find(Boolean) || start;
+  const eventDateRange = getEventDateRange(event);
+  if (!eventDateRange) return null;
+  const start = calendarDateToISO(eventDateRange.start);
+  const end = calendarDateToISO(eventDateRange.end);
   return start ? { start, end: end && end >= start ? end : start } : null;
 }
 
@@ -643,6 +628,7 @@ function calendarEventOccursOn(event, isoDate) {
 
 function normalizeEvent(id, data) {
   eventDetailsDataMap.set(String(id), data);
+  const eventDateRange = getEventDateRange(data);
   const name = data.name || data.title || data.eventName || "Untitled Event";
   const categoryValue = data.category || data.categories || data.tag || "Academic & Learning";
   const categories = (Array.isArray(categoryValue)
@@ -712,13 +698,15 @@ function normalizeEvent(id, data) {
     data.registration_end_time ??
     "";
   const dateISO = calendarDateToISO(
-    data.dateISO || data.eventDate || data.event_date || data.date ||
-    data.startDate || data.start_date || data.dateStart || data.startDateTime ||
-    data.schedule?.date || data.schedule?.startDate,
+    eventDateRange?.start ||
+      data.dateISO || data.eventDate || data.event_date || data.date ||
+      data.startDate || data.start_date || data.dateStart || data.startDateTime ||
+      data.schedule?.date || data.schedule?.startDate,
   );
   const endDateISO = calendarDateToISO(
-    data.endDateISO || data.eventEndDate || data.endDate || data.end_date ||
-    data.dateEnd || data.end || data.schedule?.endDate,
+    eventDateRange?.end ||
+      data.endDateISO || data.eventEndDate || data.endDate || data.end_date ||
+      data.dateEnd || data.end || data.schedule?.endDate,
   );
   const toMillis = (value) => {
     if (typeof value === "number") return value;
@@ -747,7 +735,7 @@ function normalizeEvent(id, data) {
   const eventTimes = String(data.time || "").split(/\s*[-–—]\s*/);
   const startTime = eventTimes[0] || data.timeStart || data.startTime;
   const endTime = eventTimes[1] || data.timeEnd || data.endTime;
-  let startMs = 0;
+  let startMs = eventDateRange?.start.getTime() || 0;
   if (data.startAt) {
     startMs = toMillis(data.startAt);
   }
@@ -756,7 +744,7 @@ function normalizeEvent(id, data) {
   }
   if (isNaN(startMs) || startMs === 0) startMs = Date.now();
 
-  let endMs = 0;
+  let endMs = eventDateRange?.end.getTime() || 0;
   if (data.endAt) {
     endMs = toMillis(data.endAt);
   }
@@ -1001,12 +989,35 @@ function rebuildStudentEvents() {
 
 function normalizeFirestoreStudentEvent(documentSnapshot) {
   const data = documentSnapshot.data();
-  if (!isStudentEventPublished(data)) return null;
+  if (!isStudentEventStatus(data.status) || !isStudentEventPublished(data)) return null;
   const rawStatus = String(data.status || "").trim().toLowerCase();
   const preserveStatus =
-    ["approved", "published", "completed", "rescheduled"].includes(rawStatus) ||
+    [
+      "approved",
+      "published",
+      "upcoming",
+      "ongoing",
+      "active",
+      "live",
+      "completed",
+      "rescheduled",
+    ].includes(rawStatus) ||
     isClosedRegistrationStatus(rawStatus) ||
     isFullRegistrationStatus(rawStatus);
+  const startAt =
+    data.startAt ??
+    data.start_at ??
+    data.startDateTime ??
+    data.start_date_time ??
+    data.schedule?.startAt ??
+    data.schedule?.startDateTime;
+  const endAt =
+    data.endAt ??
+    data.end_at ??
+    data.endDateTime ??
+    data.end_date_time ??
+    data.schedule?.endAt ??
+    data.schedule?.endDateTime;
 
   const rawDate =
     data.eventDate ||
@@ -1019,22 +1030,30 @@ function normalizeFirestoreStudentEvent(documentSnapshot) {
     data.schedule?.date ||
     data.schedule?.startDate ||
     "";
-  const dateISO = calendarDateToISO(rawDate);
   const timestampToIso = (value) =>
     value?.toDate ? value.toDate().toISOString() : value;
+  const normalizedStartAt = timestampToIso(startAt);
+  const normalizedEndAt = timestampToIso(endAt);
+  const eventDateRange = getEventDateRange({
+    ...data,
+    startAt: normalizedStartAt,
+    endAt: normalizedEndAt,
+  });
+  const dateISO = calendarDateToISO(eventDateRange?.start) || calendarDateToISO(rawDate);
+  const endDateISO = calendarDateToISO(eventDateRange?.end);
   const time =
     data.time ||
     [data.timeStart || data.startTime, data.timeEnd || data.endTime]
       .filter(Boolean)
-      .join(" - ") ||
-    "Time TBA";
+      .join(" - ");
   return normalizeEvent(documentSnapshot.id, {
     ...data,
     name: data.eventName || data.title || data.name || "Untitled Event",
     dateISO,
+    endDateISO,
     time,
-    startAt: timestampToIso(data.startAt),
-    endAt: timestampToIso(data.endAt),
+    startAt: normalizedStartAt,
+    endAt: normalizedEndAt,
     venue: data.venue || data.location || data.venueOther,
     description: data.eventDescription || data.description || data.desc,
     status: preserveStatus
@@ -1063,7 +1082,7 @@ function getEventClassification(ev, now) {
     return "past";
   }
   if (statuses.some((status) =>
-    ["approved", "published", "rescheduled", "ongoing", "active", "live"].includes(status),
+    ["approved", "published", "upcoming", "rescheduled", "ongoing", "active", "live"].includes(status),
   )) {
     if (ev.startMs <= now && now < ev.endMs) {
       return "live";
@@ -1333,17 +1352,19 @@ function renderRecommended() {
       .filter(Boolean),
   );
   const upcoming = Array.from(rawEventsMap.values())
-    .filter((ev) => isEventJoinable(ev, now))
+    .filter((ev) => getEventClassification(ev, now) === "upcoming")
     .sort((a, b) => a.startMs - b.startMs);
   const matched = upcoming
     .filter((ev) =>
+      isEventJoinable(ev, now) &&
       getEventCategories(ev).some((category) =>
         userCategories.has(normalizePreference(category)),
       ),
     )
     .slice(0, 3);
+  const recommendations = matched.length ? matched : upcoming.slice(0, 3);
 
-  if (matched.length === 0) {
+  if (recommendations.length === 0) {
     container.innerHTML = `
       <div class="empty-state" style="width: 100%;">
         <div class="empty-state-title">No upcoming events at this time.</div>
@@ -1353,7 +1374,7 @@ function renderRecommended() {
     return;
   }
 
-  container.innerHTML = matched
+  container.innerHTML = recommendations
     .map((ev) => {
       const categories = getEventCategories(ev);
       const primaryCategory = categories[0] || "Academic & Learning";
@@ -1374,7 +1395,7 @@ function renderRecommended() {
           <h3>${escapeHtml(ev.name)}</h3>
           <div class="rec-when">${formatDate(ev.startMs)} · ${formatTime(ev.startMs)}</div>
           <div class="rec-venue">${escapeHtml(ev.venue)}</div>
-          <div class="rec-match">Matches your preferences</div>
+          <div class="rec-match">${matched.length ? "Matches your preferences" : "Coming up soon"}</div>
           <button type="button" class="btn-outline btn-toggle-details rec-details-button" data-event-id="${ev.id}">Event Details</button>
         </article>
       `;
@@ -1612,13 +1633,7 @@ function renderUpcoming() {
   const now = getNow();
   const allEvents = Array.from(rawEventsMap.values());
   const upcomingEvents = allEvents
-    .filter((ev) =>
-      ["approved", "published", "rescheduled"].includes(
-        String(ev.status || "").toLowerCase(),
-      ) &&
-      Number.isFinite(ev.startMs) &&
-      ev.startMs > now
-    )
+    .filter((ev) => getEventClassification(ev, now) === "upcoming")
     .sort((a, b) => a.startMs - b.startMs);
 
   const q = normalizeSearchText(state.query);
@@ -2352,12 +2367,7 @@ function initDataListeners(authenticatedUser = auth?.currentUser) {
     const publishedEventsQuery = () =>
       query(
         collection(db, "events"),
-        where("status", "in", [
-          "approved",
-          "published",
-          "completed",
-          "rescheduled",
-        ]),
+        where("status", "in", STUDENT_EVENT_QUERY_STATUSES),
         limit(150),
       );
     retryEventFetch = () => {
@@ -2762,6 +2772,22 @@ function init() {
           role: "student",
           ai: { firebaseConfig: app.options },
           getEvents: () => Array.from(rawEventsMap.values()),
+          getStudentContext: () => ({
+            interests: [
+              studentProfile.interests,
+              ...studentPreferences.categories,
+              ...studentPreferences.tags,
+            ],
+            programs: [studentProfile.program, studentProfile.course],
+            departments: studentProfile.departments,
+            organizations: [
+              studentProfile.organization,
+              studentProfile.courseOrganization,
+              studentProfile.StudentOrgs,
+            ],
+            preferredOrganizations: studentPreferences.organizations,
+            pastEventIds: Array.from(registeredEventIds),
+          }),
         });
 
         Object.keys(studentProfile).forEach((key) => delete studentProfile[key]);

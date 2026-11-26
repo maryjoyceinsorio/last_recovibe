@@ -15,6 +15,10 @@ import {
   isFirebaseConfigured,
 } from "../UserStudent/firebaseConfig.js";
 import { syncOrganizerOrganization } from "../organizationScope.js";
+import {
+  getEventPhase,
+  shouldHideOtherOrganizationCancelledEvent,
+} from "./eventOrganizerAllEventsVisibility.mjs";
 
 (() => {
   const EVENT_PAGE_SIZE = 100;
@@ -44,6 +48,7 @@ import { syncOrganizerOrganization } from "../organizationScope.js";
   const status = document.getElementById("eventStatusFilter");
   const category = document.getElementById("eventCategoryFilter");
   let organizerId = "";
+  let organizerOrganizationCode = "";
   const eventPageStatus = document.createElement("p");
   const loadMoreEventsButton = document.createElement("button");
   eventPageStatus.className = "organizer-empty";
@@ -203,24 +208,7 @@ import { syncOrganizerOrganization } from "../organizationScope.js";
   }
 
   function eventPhase(event, now = Date.now()) {
-    const status = String(event.status || event.publicationStatus || "")
-      .trim()
-      .toLowerCase()
-      .replace(/[ _-]+/g, " ");
-    if (event.cancelled === true || event.canceled === true ||
-        ["cancelled", "canceled"].includes(status)) return "cancelled";
-    if (event.completed === true || ["completed", "complete", "ended", "finished"].includes(status)) {
-      return "completed";
-    }
-    if (status === "ongoing" || status === "active") return "ongoing";
-    if (status === "upcoming") return "upcoming";
-    const end = eventBoundaryMillis(event, true);
-    if (end !== null && end < now) return "completed";
-    const start = eventBoundaryMillis(event);
-    if (start !== null && start <= now && (end === null || end >= now)) return "ongoing";
-    if (start !== null && start > now) return "upcoming";
-    if (event.rescheduled === true || status === "rescheduled") return "rescheduled";
-    return "unknown";
+    return getEventPhase(event, now, eventBoundaryMillis);
   }
 
   function dateRangeBounds(value) {
@@ -278,13 +266,21 @@ import { syncOrganizerOrganization } from "../organizationScope.js";
       .trim()
       .toLowerCase()
       .replace(/[ _-]+/g, " ");
-    const isCancelled =
-      event.cancelled === true ||
-      event.canceled === true ||
-      ["cancelled", "canceled"].includes(eventStatus);
+    const phase = eventPhase(event);
+    if (
+      state.view === "all" &&
+      shouldHideOtherOrganizationCancelledEvent(
+        event,
+        phase,
+        organizerId,
+        organizerOrganizationCode,
+      )
+    ) {
+      return false;
+    }
+    const isCancelled = phase === "cancelled";
     const isRescheduled =
       event.rescheduled === true || eventStatus === "rescheduled";
-    const phase = eventPhase(event);
     const isCompleted = phase === "completed";
     const isHappening = phase === "ongoing" && !isCancelled && !isRescheduled;
     const isUpcoming = phase === "upcoming" && !isCancelled && !isRescheduled;
@@ -1069,6 +1065,7 @@ import { syncOrganizerOrganization } from "../organizationScope.js";
       }
 
       organizerId = user.uid;
+      organizerOrganizationCode = "";
       isLoading = true;
       loadError = "";
       render();
@@ -1081,6 +1078,7 @@ import { syncOrganizerOrganization } from "../organizationScope.js";
         });
       }
       if (auth.currentUser?.uid !== user.uid) return;
+      organizerOrganizationCode = organizationCode;
       const eventsRef = collection(db, "events");
       const eventQueries = [
         ["public-status", query(eventsRef, where("status", "in", [

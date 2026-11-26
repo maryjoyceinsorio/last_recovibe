@@ -3523,7 +3523,11 @@ body:has(#createEventRoot) main {
 }
 
 .ce-confirm-actions button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   min-width: 120px;
+  text-align: center;
 }
 
 .ce-confirm-actions .ce-btn-primary:disabled {
@@ -4964,6 +4968,55 @@ body:has(#createEventRoot) main {
   .ce-admin-doc-actions {
     width: 100%;
     justify-content: flex-end;
+  }
+}
+
+body.ce-skip-confirm-open {
+  overflow: hidden;
+}
+
+.ce-skip-confirm-layer {
+  z-index: 2147483000;
+}
+
+.ce-skip-confirm-layer .ce-confirm {
+  width: min(440px, 100%);
+  text-align: center;
+}
+
+.ce-skip-confirm-layer .ce-confirm-actions {
+  display: flex !important;
+  flex-wrap: wrap !important;
+  justify-content: center !important;
+  align-items: center !important;
+  gap: 12px !important;
+}
+
+.ce-skip-confirm-layer .ce-confirm-actions button {
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  width: auto !important;
+  min-width: 128px !important;
+  min-height: 42px !important;
+  text-align: center !important;
+  line-height: 1.2 !important;
+}
+
+@media (max-width: 420px) {
+  .ce-skip-confirm-layer .ce-confirm {
+    padding-right: 18px;
+    padding-left: 18px;
+  }
+
+  .ce-skip-confirm-layer .ce-confirm-actions {
+    display: grid !important;
+    grid-template-columns: 1fr;
+  }
+
+  .ce-skip-confirm-layer .ce-confirm-actions button {
+    width: 100% !important;
+    min-width: 0 !important;
   }
 }
 

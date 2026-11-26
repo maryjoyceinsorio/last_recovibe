@@ -95,7 +95,16 @@ function timeFromEvent(value, event) {
   const range = String(event.time || "").split(/\s*[-–—]\s*/);
   const rangeTime = parseTime(range[0]);
   if (rangeTime) return rangeTime;
-  const dateTimeValue = value ?? event.startAt ?? event.start_at;
+  const parsedValue = datePart(value);
+  const dateTimeValue = parsedValue?.instant
+    ? value
+    : event.startAt ??
+      event.start_at ??
+      event.startDateTime ??
+      event.start_date_time ??
+      event.schedule?.startAt ??
+      event.schedule?.startDateTime ??
+      value;
   const parsed = datePart(dateTimeValue);
   if (parsed?.time) return parsed.time;
   if (!parsed?.instant) return null;
@@ -140,6 +149,7 @@ export function getEventDateRange(event) {
     event.schedule?.date,
     event.schedule?.startDate,
     event.schedule?.startAt,
+    event.schedule?.startDateTime,
   ].map(datePart).find((value) => value?.date);
   if (!startValue) return null;
 
@@ -163,6 +173,8 @@ export function getEventDateRange(event) {
     event.end_date_time,
     event.end,
     event.schedule?.endDate,
+    event.schedule?.endAt,
+    event.schedule?.endDateTime,
   ];
   const rawEndDate = endDateFields.find((value) => value != null && value !== "");
   const endCandidate = datePart(rawEndDate);

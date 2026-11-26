@@ -687,32 +687,59 @@ loadCachedOrganizations();
     "External",
   ];
 
-  // Helper: Registration end must strictly be 1 or 2 days before event date
-  function calculateAutoRegistrationEnd(eventDateStr) {
-    if (!eventDateStr) return "";
-    const [y, m, d] = eventDateStr.split("-").map(Number);
-    const evDate = new Date(Date.UTC(y, m - 1, d));
-    const [todayYear, todayMonth, todayDay] = getManilaDateInfo().todayStr.split("-").map(Number);
-    const today = new Date(Date.UTC(todayYear, todayMonth - 1, todayDay));
-    const daysDiff = Math.round((evDate - today) / (1000 * 60 * 60 * 24));
-    const daysBefore = daysDiff >= 3 ? 2 : 1;
-    const targetDate = new Date(evDate);
-    targetDate.setUTCDate(targetDate.getUTCDate() - daysBefore);
-    const ty = targetDate.getUTCFullYear();
-    const tm = String(targetDate.getUTCMonth() + 1).padStart(2, "0");
-    const td = String(targetDate.getUTCDate()).padStart(2, "0");
-    return `${ty}-${tm}-${td}T23:59`;
+  function getEventStartTimeValue() {
+    const dailyStart = document.getElementById("dailySchedule")?.value === "Different time by day"
+      ? document.querySelector(
+          "#dailyScheduleList .ce-daily-schedule-row .ce-daily-start-input",
+        )?.value
+      : "";
+    return dailyStart || document.getElementById("timeStart")?.value || "08:00 AM";
   }
 
-  function calculateMaxRegistrationEnd(eventDateStr) {
+  function getEventStartDateTime(eventDateStr, eventStartTime = getEventStartTimeValue()) {
     if (!eventDateStr) return "";
-    const [y, m, d] = eventDateStr.split("-").map(Number);
-    const maxDate = new Date(Date.UTC(y, m - 1, d));
-    maxDate.setUTCDate(maxDate.getUTCDate() - 1);
-    const my = maxDate.getUTCFullYear();
-    const mm = String(maxDate.getUTCMonth() + 1).padStart(2, "0");
-    const md = String(maxDate.getUTCDate()).padStart(2, "0");
-    return `${my}-${mm}-${md}T23:59`;
+    let startMinutes = parseTimeInMinutes(eventStartTime);
+    if (startMinutes === null) {
+      const twentyFourHourTime = /^([01]\d|2[0-3]):([0-5]\d)$/.exec(
+        String(eventStartTime || "").trim(),
+      );
+      if (twentyFourHourTime) {
+        startMinutes = Number(twentyFourHourTime[1]) * 60 + Number(twentyFourHourTime[2]);
+      }
+    }
+    if (startMinutes === null) return "";
+    const hours = String(Math.floor(startMinutes / 60)).padStart(2, "0");
+    const minutes = String(startMinutes % 60).padStart(2, "0");
+    return `${eventDateStr}T${hours}:${minutes}`;
+  }
+
+  function calculateAutoRegistrationEnd(eventDateStr, eventStartTime) {
+    return getEventStartDateTime(eventDateStr, eventStartTime);
+  }
+
+  function calculateMaxRegistrationEnd(eventDateStr, eventStartTime) {
+    return getEventStartDateTime(eventDateStr, eventStartTime);
+  }
+
+  function syncRegistrationDeadlineWithEventStart() {
+    const eventDate = document.getElementById("eventDate")?.value;
+    const registrationEnd = document.getElementById("registrationEnd");
+    if (!eventDate || !registrationEnd) return;
+
+    const maxEnd = calculateMaxRegistrationEnd(eventDate);
+    registrationEnd.max = maxEnd;
+    if (
+      !state.deadlineManuallyEdited ||
+      (maxEnd && registrationEnd.value > maxEnd)
+    ) {
+      state.deadlineManuallyEdited = false;
+      registrationEnd.value = calculateAutoRegistrationEnd(eventDate);
+      const deadlineInput = document.getElementById("registrationDeadline");
+      if (deadlineInput) deadlineInput.value = registrationEnd.value;
+    }
+
+    updateAllReadinessChecks();
+    updateLivePreview();
   }
 
   function getDefaultEventDate(todayStr) {
@@ -2315,8 +2342,8 @@ loadCachedOrganizations();
     const isEditMode = Boolean(state.editingEventId);
     const defaultEventDate = getDefaultEventDate(manilaInfo.todayStr);
     const initialRegStart = getManilaDateTimeString(Date.now() + 15 * 60 * 1000);
-    const initialRegEnd = calculateAutoRegistrationEnd(defaultEventDate);
-    const initialMaxRegEnd = calculateMaxRegistrationEnd(defaultEventDate);
+    const initialRegEnd = calculateAutoRegistrationEnd(defaultEventDate, "08:00 AM");
+    const initialMaxRegEnd = calculateMaxRegistrationEnd(defaultEventDate, "08:00 AM");
 
     return `
       ${state.isCopied && state.copiedFrom ? `
@@ -2776,11 +2803,11 @@ loadCachedOrganizations();
                   <p class="ce-error" id="error-registrationStart" hidden></p>
                 </div>
 
-                <!-- Registration End (1-2 days before event date) -->
+                <!-- Registration End (no later than the event start) -->
                 <div class="ce-field ${state.highlightedFields.has("registrationEnd") || state.highlightedFields.has("registrationDeadline") ? "is-copied-highlight" : ""}" id="wrap-registrationEnd">
                   <div class="ce-label-split">
                     <label for="registrationEnd">Registration End <span class="ce-req">*</span></label>
-                    <button type="button" class="ce-text-link" id="btnResetAutoDeadline" title="Reset to 1-2 days before event date">Reset to auto</button>
+                    <button type="button" class="ce-text-link" id="btnResetAutoDeadline" title="Reset to event start time">Reset to auto</button>
                   </div>
                   <input type="datetime-local"
                          id="registrationEnd"
@@ -2791,7 +2818,7 @@ loadCachedOrganizations();
                          required
                          aria-describedby="error-registrationEnd">
                   <input type="hidden" id="registrationDeadline" name="registrationDeadline" value="${escapeHTML(initialRegEnd)}">
-                  <small class="ce-hint">Must be 1 or 2 days before the event date.</small>
+                  <small class="ce-hint">Must be at or before the event start time.</small>
                   <p class="ce-error" id="error-registrationEnd" hidden></p>
                 </div>
 
@@ -3101,7 +3128,7 @@ loadCachedOrganizations();
               <li class="ce-check-item is-failed" id="check-deadline">
                 <span class="ce-check-icon" aria-hidden="true">✕</span>
                 <span class="ce-check-status-sr sr-only">Not yet: </span>
-                <span class="ce-check-label">Registration end is 1 or 2 days before event date</span>
+                <span class="ce-check-label">Registration end is at or before event start time</span>
               </li>
               <li class="ce-check-item is-failed" id="check-capacity">
                 <span class="ce-check-icon" aria-hidden="true">✕</span>
@@ -3242,9 +3269,17 @@ loadCachedOrganizations();
     state.mode = "new";
     state.dirty = true;
     state.deadlineManuallyEdited = true;
-    const savedApprovalSteps = getStages(ev);
+    const savedApprovalSteps = new Set([
+      ...getStages(ev),
+      ...(Array.isArray(ev.approvalSteps) ? ev.approvalSteps : []),
+      ...(Array.isArray(ev.approvers) ? ev.approvers : []),
+    ].map(String));
     state.selectedApprovers = getFormApprovalStageOptions()
-      .filter((stage) => savedApprovalSteps.includes(stage.key))
+      .filter((stage) =>
+        stage.required ||
+        savedApprovalSteps.has(String(stage.id)) ||
+        savedApprovalSteps.has(String(stage.key)),
+      )
       .map((stage) => stage.id);
 
     state.highlightedFields = new Set(["eventDate", "timeStart", "timeEnd", "category"]);
@@ -3392,6 +3427,7 @@ loadCachedOrganizations();
         });
       }
       const manilaInfo = getManilaDateInfo();
+      const eventStartTime = ev.timeStart || getEventStartTimeValue();
       if (form.registrationStart) {
         form.registrationStart.value = ev.registrationStart ||
           (isReuse ? "" : getManilaDateTimeString(Date.now() + 15 * 60 * 1000));
@@ -3402,9 +3438,9 @@ loadCachedOrganizations();
           ? (ev.registrationEnd || ev.registrationDeadline || "")
           : preserveDates
             ? (ev.registrationEnd || ev.registrationDeadline || "")
-            : calculateAutoRegistrationEnd(nextDate);
+            : calculateAutoRegistrationEnd(nextDate, eventStartTime);
         form.registrationEnd.min = form.registrationStart?.value || getManilaDateTimeString();
-        form.registrationEnd.max = calculateMaxRegistrationEnd(nextDate);
+        form.registrationEnd.max = calculateMaxRegistrationEnd(nextDate, eventStartTime);
       }
       if (form.registrationDeadline) {
         form.registrationDeadline.value = form.registrationEnd ? form.registrationEnd.value : "";
@@ -3931,16 +3967,11 @@ loadCachedOrganizations();
 
     if (dateInput && regEndInput) {
       dateInput.addEventListener("change", () => {
-        const dVal = dateInput.value;
-        if (dVal) {
-          const maxEnd = calculateMaxRegistrationEnd(dVal);
-          regEndInput.max = maxEnd;
-          if (!state.deadlineManuallyEdited || regEndInput.value > maxEnd) {
-            regEndInput.value = calculateAutoRegistrationEnd(dVal);
-            syncDeadlineWithEnd();
-            regEndInput.dispatchEvent(new Event("input", { bubbles: true }));
-          }
-        }
+        syncRegistrationDeadlineWithEventStart();
+      });
+
+      document.getElementById("timeStart")?.addEventListener("input", () => {
+        syncRegistrationDeadlineWithEventStart();
       });
 
       regEndInput.addEventListener("input", () => {
@@ -3960,8 +3991,9 @@ loadCachedOrganizations();
       if (btnResetDeadline) {
         btnResetDeadline.addEventListener("click", () => {
           const dVal = dateInput.value || getDefaultEventDate(getManilaDateInfo().todayStr);
-          const autoEnd = calculateAutoRegistrationEnd(dVal);
-          regEndInput.max = calculateMaxRegistrationEnd(dVal);
+          const eventStartTime = getEventStartTimeValue();
+          const autoEnd = calculateAutoRegistrationEnd(dVal, eventStartTime);
+          regEndInput.max = calculateMaxRegistrationEnd(dVal, eventStartTime);
           regEndInput.value = autoEnd;
           syncDeadlineWithEnd();
           state.deadlineManuallyEdited = false;
@@ -3969,7 +4001,8 @@ loadCachedOrganizations();
           clearFieldError("registrationDeadline");
           regEndInput.dispatchEvent(new Event("input", { bubbles: true }));
           regEndInput.dispatchEvent(new Event("change", { bubbles: true }));
-          showToast("Registration end reset to 1-2 days before the event date.");
+          state.deadlineManuallyEdited = false;
+          showToast("Registration end reset to the event start time.");
         });
       }
     }
@@ -4594,6 +4627,7 @@ loadCachedOrganizations();
       if (sInp) sInp.addEventListener("input", () => {
         state.dirty = true;
         clearFieldError("dailySchedule");
+        if (idx === 0) syncRegistrationDeadlineWithEventStart();
         updateAllReadinessChecks();
         updateLivePreview();
       });
@@ -4633,6 +4667,7 @@ loadCachedOrganizations();
       }
     }
     clearFieldError("dailySchedule");
+    syncRegistrationDeadlineWithEventStart();
     updateAllReadinessChecks();
     updateLivePreview();
   }
@@ -7339,10 +7374,10 @@ loadCachedOrganizations();
       });
     }
 
-    // 5. Registration Start & End (end must strictly be 1-2 days before event date & start < end)
+    // 5. Registration Start & End (end must be at or before event start & start < end)
     let deadlinePass = false;
-    let deadlineLabel = "Registration end must be 1 or 2 days before event date";
-    let deadlineErrMsg = "Registration end must be 1 or 2 days before event date";
+    let deadlineLabel = "Registration end must be at or before event start time";
+    let deadlineErrMsg = "Registration end must be at or before event start time";
     const regStartVal = form.registrationStart?.value;
     const regEndVal = form.registrationEnd?.value || form.registrationDeadline?.value;
 
@@ -7350,15 +7385,20 @@ loadCachedOrganizations();
       const dlineDate = new Date(regEndVal);
       const isPast = dlineDate < new Date();
       const maxEndStr = calculateMaxRegistrationEnd(dateVal);
-      const isNotBeforeEvent = regEndVal > maxEndStr;
+      const eventStartDate = maxEndStr ? new Date(maxEndStr) : null;
+      const isAfterEventStart = Boolean(
+        eventStartDate &&
+          !Number.isNaN(eventStartDate.getTime()) &&
+          dlineDate > eventStartDate,
+      );
       const startBeforeEnd = !regStartVal || (new Date(regStartVal) < dlineDate);
 
-      if (!isPast && !isNotBeforeEvent && startBeforeEnd && !isNaN(dlineDate.getTime())) {
+      if (!isPast && !isAfterEventStart && startBeforeEnd && !isNaN(dlineDate.getTime())) {
         deadlinePass = true;
-        deadlineLabel = "Registration end is 1 or 2 days before event date";
-      } else if (isNotBeforeEvent) {
-        deadlineLabel = "Registration end cannot be on event date (must be 1-2 days before)";
-        deadlineErrMsg = "Registration end cannot be on event date (must be 1-2 days before).";
+        deadlineLabel = "Registration end is at or before event start time";
+      } else if (isAfterEventStart) {
+        deadlineLabel = "Registration end cannot be after event start time";
+        deadlineErrMsg = "Registration end cannot be after event start time.";
       } else if (!startBeforeEnd) {
         deadlineLabel = "Registration start must be earlier than Registration end";
         deadlineErrMsg = "Registration start must be earlier than Registration end.";
@@ -7375,7 +7415,7 @@ loadCachedOrganizations();
     } else {
       failingChecks.push({
         id: "registrationEnd",
-        label: "Registration end is 1 or 2 days before event date",
+        label: "Registration end is at or before event start time",
         message: deadlineErrMsg,
       });
     }
@@ -7703,14 +7743,17 @@ loadCachedOrganizations();
       } else if (regEndVal < getManilaDateTimeString()) {
         markError("registrationEnd", "Registration end cannot be in the past.");
       } else if (dateVal) {
-        const [ey, em, ed] = dateVal.split("-").map(Number);
-        const eventDayStart = new Date(ey, em - 1, ed, 0, 0, 0);
         const maxEndStr = calculateMaxRegistrationEnd(dateVal);
+        const eventStartDate = maxEndStr ? new Date(maxEndStr) : null;
 
-        if (regEndVal > maxEndStr || regEndDate >= eventDayStart) {
+        if (
+          eventStartDate &&
+          !Number.isNaN(eventStartDate.getTime()) &&
+          regEndDate > eventStartDate
+        ) {
           markError(
             "registrationEnd",
-            "Registration end cannot be on the exact date of the event. It must be 1 or 2 days before the event."
+            "Registration end cannot be after event start time."
           );
         }
       }

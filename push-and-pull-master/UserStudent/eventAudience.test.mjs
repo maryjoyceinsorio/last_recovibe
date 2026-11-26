@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   isEventVisibleToStudent,
   isStudentEventPublished,
+  isStudentEventStatus,
 } from "./eventAudience.js";
 
 test("warns for every mixed-audience event without targets", () => {
@@ -58,6 +59,28 @@ test("published events and approved events with a publish marker are visible", (
     true,
   );
   assert.equal(isStudentEventPublished({ status: "rescheduled" }), true);
+});
+
+test("active, ongoing, and upcoming statuses are student-visible event states", () => {
+  for (const status of ["ACTIVE", "Ongoing", "upcoming"]) {
+    assert.equal(isStudentEventStatus(status), true);
+    assert.equal(isStudentEventPublished({ status }), true);
+  }
+  assert.equal(
+    isStudentEventPublished({ status: "ongoing", approvalStatus: "pending" }),
+    false,
+  );
+});
+
+test("events without audience metadata or targeting remain visible to students", () => {
+  assert.equal(isEventVisibleToStudent({ title: "Legacy published event" }, {}), true);
+  assert.equal(
+    isEventVisibleToStudent(
+      { title: "Targeted event", targetAudience: "Organization Members Only" },
+      {},
+    ),
+    false,
+  );
 });
 
 test("unpublished lifecycle states override publication markers", () => {

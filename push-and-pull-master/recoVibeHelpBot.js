@@ -1,4 +1,8 @@
 import { askGemini, geminiEnabled, geminiStatus } from "./recoVibeGemini.js";
+import {
+  buildPersonalizedEventRecommendations,
+  isEventRecommendationQuestion,
+} from "./recoVibeRecommendations.mjs";
 
 // RecoVibe built-in help chatbot. FAQ mode is local; optional Gemini requests use the companion module.
 // Usage: import { mountHelpBot } from "./recoVibeHelpBot.js"; mountHelpBot({ role: "student" });
@@ -280,7 +284,7 @@ function resolveHits(q) {
   return f ? [{ f }] : [];
 }
 
-export function mountHelpBot({ role = "default", onUnanswered, getEvents } = {}) {
+export function mountHelpBot({ role = "default", onUnanswered, getEvents, getStudentContext } = {}) {
   const roleKey = String(role).toLowerCase().replace(/[^a-z]/g, "");
   if (roleKey !== "student") {
     if (activeUnmount) activeUnmount();
@@ -519,7 +523,12 @@ export function mountHelpBot({ role = "default", onUnanswered, getEvents } = {})
 
     (async () => {
       try {
-        const dynamicAnswer = eventAnswer(q, getEvents);
+        const dynamicAnswer = isEventRecommendationQuestion(q)
+          ? buildPersonalizedEventRecommendations(
+            typeof getEvents === "function" ? getEvents() : [],
+            typeof getStudentContext === "function" ? getStudentContext() : {},
+          )
+          : eventAnswer(q, getEvents);
         const localHits = known ? [known] : resolveHits(q).map((hit) => hit.f);
         if (!known && !dynamicAnswer && !localHits.length && isPortalQuestion(q) && geminiEnabled()) {
           try {

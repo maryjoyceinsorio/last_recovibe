@@ -1,10 +1,20 @@
 export const STUDENT_EVENT_STATUSES = Object.freeze([
   "approved",
   "published",
+  "upcoming",
+  "ongoing",
+  "active",
   "completed",
   "rescheduled",
   "cancelled",
   "canceled",
+]);
+
+export const STUDENT_EVENT_QUERY_STATUSES = Object.freeze([
+  "approved",
+  "published",
+  "completed",
+  "rescheduled",
 ]);
 
 export function isStudentEventStatus(status) {
@@ -19,6 +29,9 @@ const PUBLISHED_EVENT_STATUSES = new Set([
   "published",
   "published live",
   "live",
+  "upcoming",
+  "ongoing",
+  "active",
   "completed",
   "rescheduled",
 ]);
@@ -311,9 +324,9 @@ export function isEventVisibleToStudent(eventData, studentProfile) {
       if (derivedDepartment) studentDepartments.add(derivedDepartment);
     }
 
-    if (audienceType === "all") return true;
-
     const hasTargets = targetOrganizations.size > 0 || targetDepartments.size > 0;
+    if (audienceType === "all" || (!audienceValue && !hasTargets)) return true;
+
     if (audienceType === "mixed" && !hasTargets) {
       if (isDevelopment() && !audienceWarnings.has(logKey)) {
         audienceWarnings.add(logKey);
