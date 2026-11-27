@@ -86,6 +86,63 @@
     return "";
   };
 
+  const attendanceRequirementText = (event) => {
+    const requirement = String(event?.attendanceRequirement || "")
+      .trim()
+      .toLowerCase()
+      .replace(/[\s-]+/g, "_");
+    const labels = {
+      standard: "Optional",
+      optional: "Optional",
+      highly_encouraged: "Optional",
+      required: "Required",
+      required_attendance: "Required",
+    };
+    if (Object.prototype.hasOwnProperty.call(labels, requirement)) {
+      return labels[requirement];
+    }
+    if (typeof event?.attendanceRequired === "boolean") {
+      return event.attendanceRequired ? "Required" : "Optional";
+    }
+    return eventText(event?.attendanceRequired) || "N/A";
+  };
+
+  const attendanceTargetYearLevelsText = (event) => {
+    const requirement = String(event?.attendanceRequirement || "")
+      .trim()
+      .toLowerCase()
+      .replace(/[\s-]+/g, "_");
+    const required = requirement === "required" || requirement === "required_attendance" ||
+      (!requirement && event?.attendanceRequired === true);
+    if (!required) {
+      return "";
+    }
+    if (!Object.prototype.hasOwnProperty.call(event || {}, "attendanceTargetYearLevels")) {
+      return "All Year Level";
+    }
+    const yearLevels = asList(event.attendanceTargetYearLevels)
+      .map(eventText)
+      .filter(Boolean);
+    return yearLevels.join(", ") || "All Year Level";
+  };
+
+  const highlyEncouragedYearLevelsText = (event) => {
+    const legacyRequirement = String(event?.attendanceRequirement || "")
+      .trim()
+      .toLowerCase()
+      .replace(/[\s-]+/g, "_") === "highly_encouraged";
+    const enabled = typeof event?.attendanceHighlyEncouraged === "boolean"
+      ? event.attendanceHighlyEncouraged
+      : legacyRequirement;
+    if (!enabled) return "";
+    const years = Array.isArray(event?.highlyEncouragedYearLevels)
+      ? event.highlyEncouragedYearLevels
+      : legacyRequirement
+        ? event?.attendanceTargetYearLevels
+        : [];
+    return asList(years).map(eventText).filter(Boolean).join(", ") || "All Year Level";
+  };
+
   const approvalReasonDetails = (event) => {
     const specificReasonFields = [
       "rejectionReason", "rejection_reason", "disapprovalReason",
@@ -463,10 +520,9 @@
       .map((item) => typeof item === "object" ? item.name || item.title || item.label || "" : item)
       .filter(Boolean)
       .join(", ") || "Open to All";
-    const attendanceRequired =
-      typeof event.attendanceRequired === "boolean"
-        ? event.attendanceRequired ? "Required" : "Not Required"
-        : event.attendanceRequired || "N/A";
+    const attendanceRequirement = attendanceRequirementText(event);
+    const attendanceTargetYearLevels = attendanceTargetYearLevelsText(event);
+    const highlyEncouragedYearLevels = highlyEncouragedYearLevelsText(event);
     const dateStart = event.dateStart || event.dateISO || event.date;
     const dateEnd = event.dateEnd || event.endDate || event.eventEndDate || dateStart;
     const timeText = (value) => formatEventTime(value, event) || "N/A";
@@ -639,7 +695,9 @@
       <div class="student-event-header-meta">
         <div><strong>Categories:</strong><div class="student-event-categories" title="${escapeHTML(badgeList.join(", "))}">${badgeList.map((category) => `<span class="student-event-pill student-event-pill--${categoryTone(category)}" title="${escapeHTML(category)}">${escapeHTML(category)}</span>`).join("")}</div></div>
         <p><strong>Target Audience:</strong> ${escapeHTML(targetAudience)}</p>
-        <p><strong>Attendance:</strong> ${escapeHTML(attendanceRequired)}</p>
+        <p><strong>Participation Requirement:</strong> ${escapeHTML(attendanceRequirement)}</p>
+        ${attendanceTargetYearLevels ? `<p><strong>Required for:</strong> ${escapeHTML(attendanceTargetYearLevels)}</p>` : ""}
+        ${highlyEncouragedYearLevels ? `<p><strong>Highly Encouraged for:</strong> ${escapeHTML(highlyEncouragedYearLevels)}</p>` : ""}
       </div>`;
     const infoCard = (label, value) =>
       `<div class="student-event-info-card"><strong>${escapeHTML(label)}</strong><span>${escapeHTML(value || "N/A")}</span></div>`;
@@ -1185,12 +1243,9 @@
         .map(text)
         .filter(Boolean)
         .join(", ") || "Open to All";
-      const attendanceRequired =
-        typeof event.attendanceRequired === "boolean"
-          ? event.attendanceRequired
-            ? "Required"
-            : "Not Required"
-          : displayText(event.attendanceRequired, "N/A", event);
+      const attendanceRequirement = attendanceRequirementText(event);
+      const attendanceTargetYearLevels = attendanceTargetYearLevelsText(event);
+      const highlyEncouragedYearLevels = highlyEncouragedYearLevelsText(event);
       const descriptionValue = firstValue(event, [
         "description", "descriptionText", "description_text",
         "eventDescription", "eventDescriptionText", "event_description",
@@ -1308,7 +1363,9 @@
         <div class="student-event-header-meta">
           <div><strong>Categories:</strong><div class="student-event-categories" title="${escapeHTML(badgeList.map(text).join(", "))}">${badgeList.map((category) => `<span class="student-event-pill student-event-pill--${categoryTone(text(category))}" title="${escapeHTML(text(category))}">${escapeHTML(text(category))}</span>`).join("")}</div></div>
           <p><strong>Target Audience:</strong> ${escapeHTML(targetAudience)}</p>
-          <p><strong>Attendance:</strong> ${escapeHTML(displayText(attendanceRequired, "N/A", event))}</p>
+          <p><strong>Participation Requirement:</strong> ${escapeHTML(attendanceRequirement)}</p>
+          ${attendanceTargetYearLevels ? `<p><strong>Required for:</strong> ${escapeHTML(attendanceTargetYearLevels)}</p>` : ""}
+          ${highlyEncouragedYearLevels ? `<p><strong>Highly Encouraged for:</strong> ${escapeHTML(highlyEncouragedYearLevels)}</p>` : ""}
         </div>`;
       detailContent.innerHTML = `
         <section class="student-event-info" aria-label="Event schedule and capacity">

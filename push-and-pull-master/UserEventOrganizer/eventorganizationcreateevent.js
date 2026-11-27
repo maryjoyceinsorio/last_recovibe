@@ -797,6 +797,98 @@ loadCachedOrganizations();
     "4th Year",
     "Ladderize",
   ];
+  const ATTENDANCE_REQUIREMENTS = new Set(["optional", "required"]);
+  function normalizeAttendanceRequirement(value) {
+    const normalized = String(value || "").trim().toLowerCase().replace(/[\s-]+/g, "_");
+    if (normalized === "standard" || normalized === "highly_encouraged") return "optional";
+    return ATTENDANCE_REQUIREMENTS.has(normalized) ? normalized : "";
+  }
+  function attendanceRequirementForEvent(event) {
+    return normalizeAttendanceRequirement(event?.attendanceRequirement) ||
+      (event?.attendanceRequired === false ? "optional" : "required");
+  }
+  function isLegacyHighlyEncouragedEvent(event) {
+    const requirement = String(event?.attendanceRequirement || "")
+      .trim()
+      .toLowerCase()
+      .replace(/[\s-]+/g, "_");
+    const hasSplitAttendanceFields =
+      typeof event?.attendanceHighlyEncouraged === "boolean" ||
+      Array.isArray(event?.highlyEncouragedYearLevels);
+    return requirement === "highly_encouraged" && !hasSplitAttendanceFields;
+  }
+  function attendanceHighlyEncouragedForEvent(event) {
+    return typeof event?.attendanceHighlyEncouraged === "boolean"
+      ? event.attendanceHighlyEncouraged
+      : String(event?.attendanceRequirement || "")
+        .trim()
+        .toLowerCase()
+        .replace(/[\s-]+/g, "_") === "highly_encouraged";
+  }
+  function normalizeAttendanceTargetYearLevels(values) {
+    if (!Array.isArray(values)) return [];
+    return [...new Set(values.map((year) => String(year).trim()).filter((year) =>
+      TARGET_YEARS.includes(year),
+    ))];
+  }
+  function attendanceTargetYearLevelsForEvent(event) {
+    if (isLegacyHighlyEncouragedEvent(event)) return [];
+    return normalizeAttendanceTargetYearLevels(event?.attendanceTargetYearLevels);
+  }
+  function highlyEncouragedYearLevelsForEvent(event) {
+    if (Array.isArray(event?.highlyEncouragedYearLevels)) {
+      return normalizeAttendanceTargetYearLevels(event.highlyEncouragedYearLevels);
+    }
+    if (!isLegacyHighlyEncouragedEvent(event)) return [];
+    const legacyYears = normalizeAttendanceTargetYearLevels(event?.attendanceTargetYearLevels);
+    return legacyYears.length ? legacyYears : [...TARGET_YEARS];
+  }
+  function getSelectedHighlyEncouragedYearLevels() {
+    return normalizeAttendanceTargetYearLevels(
+      [...document.querySelectorAll(".ce-highly-encouraged-year:checked")]
+        .map((input) => input.value),
+    );
+  }
+  function getSelectedTargetYearLevels() {
+    return normalizeAttendanceTargetYearLevels(
+      [...document.querySelectorAll(".ce-target-year:checked")]
+        .map((input) => input.value),
+    );
+  }
+  function resolveAttendanceTargetYearLevels() {
+    return normalizeAttendanceRequirement(
+      document.getElementById("attendanceRequirement")?.value,
+    ) === "required"
+      ? getSelectedTargetYearLevels()
+      : [];
+  }
+  function syncHighlyEncouragedYearLevels() {
+    const participation = normalizeAttendanceRequirement(
+      document.getElementById("attendanceRequirement")?.value,
+    );
+    const requiredYears = getSelectedTargetYearLevels();
+    const requiredAllYears = participation === "required" && requiredYears.length === 0;
+    const requiredYearSet = new Set(
+      participation === "required" && !requiredAllYears ? requiredYears : [],
+    );
+    const yearInputs = [...document.querySelectorAll(".ce-highly-encouraged-year")];
+    yearInputs.forEach((input) => {
+      input.disabled = requiredAllYears || requiredYearSet.has(input.value);
+      if (input.disabled) input.checked = false;
+    });
+
+    const toggle = document.getElementById("attendanceHighlyEncouraged");
+    const group = document.getElementById("wrap-highlyEncouragedYearLevels");
+    const hasEligibleYears = yearInputs.some((input) => !input.disabled);
+    if (toggle) {
+      toggle.disabled = !hasEligibleYears;
+      if (toggle.disabled) toggle.checked = false;
+      state.attendanceHighlyEncouraged = toggle.checked;
+    }
+    if (group) group.hidden = !toggle?.checked;
+    state.highlyEncouragedYearLevels = getSelectedHighlyEncouragedYearLevels();
+    if (!toggle?.checked) clearFieldError("highlyEncouragedYearLevels");
+  }
   const TARGET_DEPARTMENTS = [
     "BSCpE",
     "BSBA-HRM",
@@ -954,6 +1046,10 @@ loadCachedOrganizations();
     targetOrganizations: [],
     targetYearLevels: [],
     targetSections: [],
+    attendanceRequirement: "optional",
+    attendanceHighlyEncouraged: false,
+    attendanceTargetYearLevels: [],
+    highlyEncouragedYearLevels: [],
     isCollaboration: false,
     partnerOrganizations: [],
     collaborationNotes: "",
@@ -2522,7 +2618,8 @@ loadCachedOrganizations();
               <div class="ce-card-header">
                 <h2 class="ce-card-title">2. Schedule & Venue</h2>
               </div>
-              <div class="ce-fields-grid">
+              <div class="ce-field ce-field--full">
+                <div class="ce-fields-grid">
                 <!-- Date Start with Manila Min/Max -->
                 <div class="ce-field ${state.highlightedFields.has("eventDate") ? "is-copied-highlight" : ""}" id="wrap-eventDate">
                   <label for="eventDate">Date Start <span class="ce-req">*</span></label>
@@ -2779,6 +2876,34 @@ loadCachedOrganizations();
                   </div>
                 </div>
 
+                <div class="ce-field ce-field--full">
+                  <div class="ce-fields-grid">
+                    <div class="ce-field" id="wrap-attendanceRequirement">
+                      <label for="attendanceRequirement" class="ce-label">Participation Requirement</label>
+                      <select id="attendanceRequirement" name="attendanceRequirement" class="ce-select" required aria-describedby="error-attendanceRequirement">
+                        <option value="optional" ${state.attendanceRequirement === "optional" ? "selected" : ""}>Optional</option>
+                        <option value="required" ${state.attendanceRequirement === "required" ? "selected" : ""}>Required</option>
+                      </select>
+                      <p class="ce-error" id="error-attendanceRequirement" hidden></p>
+                    </div>
+                    <div class="ce-field ce-field--full" id="wrap-attendanceHighlyEncouraged">
+                      <label>
+                        <input type="checkbox" id="attendanceHighlyEncouraged" name="attendanceHighlyEncouraged" ${state.attendanceHighlyEncouraged ? "checked" : ""}>
+                        Highly Encouraged
+                      </label>
+                    </div>
+                    <fieldset class="ce-field ce-field--full" id="wrap-highlyEncouragedYearLevels" hidden>
+                      <legend>Highly Encouraged year levels</legend>
+                      <div class="ce-audience-options">
+                        ${TARGET_YEARS.map((year) => `
+                          <label><input type="checkbox" class="ce-highly-encouraged-year" name="highlyEncouragedYearLevels" value="${escapeHTML(year)}" ${state.highlyEncouragedYearLevels.includes(year) ? "checked" : ""}> ${escapeHTML(year)}</label>
+                        `).join("")}
+                      </div>
+                      <p class="ce-error" id="error-highlyEncouragedYearLevels" hidden></p>
+                    </fieldset>
+                  </div>
+                </div>
+
                 <!-- Partner Organizations -->
                 <div class="ce-field ce-field--full ce-partner-section" id="wrap-partnerOrgs">
                   <div class="ce-partner-header">
@@ -2896,13 +3021,6 @@ loadCachedOrganizations();
                   <p class="ce-error" id="error-registrationEnd" hidden></p>
                 </div>
 
-                <div class="ce-field ce-field--full ce-field--toggle" id="wrap-attendanceRequired">
-                  <span class="ce-toggle-label">Attendance Required</span>
-                  <label class="ce-switch">
-                    <input type="checkbox" id="attendanceRequired" name="attendanceRequired" checked>
-                    <span class="ce-slider"></span>
-                  </label>
-                </div>
               </div>
             </section>
 
@@ -3434,6 +3552,15 @@ loadCachedOrganizations();
         ? String(ev.targetYear).split(",").map((year) => year.trim()).filter((year) => TARGET_YEARS.includes(year))
         : [];
     state.targetSections = normalizeTargetSections(ev.targetSections);
+    state.attendanceRequirement = attendanceRequirementForEvent(ev);
+    state.attendanceHighlyEncouraged = attendanceHighlyEncouragedForEvent(ev);
+    state.attendanceTargetYearLevels = attendanceTargetYearLevelsForEvent(ev);
+    state.highlyEncouragedYearLevels = highlyEncouragedYearLevelsForEvent(ev);
+    if (state.attendanceRequirement === "required" &&
+        state.targetYearLevels.length === 0 &&
+        state.attendanceTargetYearLevels.length > 0) {
+      state.targetYearLevels = [...state.attendanceTargetYearLevels];
+    }
     state.isCollaboration = ev.isCollaboration !== undefined ? Boolean(ev.isCollaboration) : Boolean(Array.isArray(ev.partnerOrganizations) && ev.partnerOrganizations.length > 0);
     state.partnerOrganizations = Array.isArray(ev.partnerOrganizations) ? [...ev.partnerOrganizations] : [];
     state.collaborationNotes = ev.collaborationNotes || "";
@@ -3526,11 +3653,6 @@ loadCachedOrganizations();
       }
       if (form.registrationDeadline) {
         form.registrationDeadline.value = form.registrationEnd ? form.registrationEnd.value : "";
-      }
-      if (form.attendanceRequired) {
-        form.attendanceRequired.checked = isReuse
-          ? ev.attendanceRequired === true
-          : ev.attendanceRequired !== false;
       }
       if (form.timeStart) form.timeStart.value = ev.timeStart || (isReuse ? "" : form.timeStart.value);
       if (form.timeEnd) form.timeEnd.value = ev.timeEnd || (isReuse ? "" : form.timeEnd.value);
@@ -3981,7 +4103,6 @@ loadCachedOrganizations();
       "registrationStart",
       "registrationEnd",
       "registrationDeadline",
-      "attendanceRequired",
       "weatherContingency",
       "description",
       "rationale",
@@ -6196,6 +6317,66 @@ loadCachedOrganizations();
     const targetSectionsMode = document.getElementById("targetSectionsMode");
     const targetSectionsCustomWrap = document.getElementById("targetSectionsCustomWrap");
     const targetSectionsInput = document.getElementById("targetSections");
+    const attendanceRequirementSelect = document.getElementById("attendanceRequirement");
+    const attendanceHighlyEncouraged = document.getElementById("attendanceHighlyEncouraged");
+    const highlyEncouragedYearInputs = [
+      ...document.querySelectorAll(".ce-highly-encouraged-year"),
+    ];
+    const syncTargetAudienceDetailsVisibility = () => {
+      if (!targetAudienceDetails) return;
+      const participation = normalizeAttendanceRequirement(attendanceRequirementSelect?.value);
+      targetAudienceDetails.hidden =
+        targetAudienceSelect?.value === "Open to All" && participation !== "required";
+    };
+    const syncParticipationRequirementLock = () => {
+      const hasSpecificOrganizationYears =
+        targetAudienceSelect?.value === "Organization Members Only" &&
+        getSelectedTargetYearLevels().length > 0;
+      const optionalOption = attendanceRequirementSelect?.querySelector(
+        'option[value="optional"]',
+      );
+      if (optionalOption) optionalOption.disabled = hasSpecificOrganizationYears;
+      if (hasSpecificOrganizationYears && attendanceRequirementSelect) {
+        attendanceRequirementSelect.value = "required";
+      }
+      state.attendanceRequirement =
+        normalizeAttendanceRequirement(attendanceRequirementSelect?.value) || "optional";
+      return hasSpecificOrganizationYears;
+    };
+    if (attendanceRequirementSelect) {
+      state.attendanceRequirement =
+        normalizeAttendanceRequirement(attendanceRequirementSelect.value) || "optional";
+      attendanceRequirementSelect.value = state.attendanceRequirement;
+      attendanceRequirementSelect.addEventListener("change", () => {
+        syncParticipationRequirementLock();
+        state.attendanceRequirement =
+          normalizeAttendanceRequirement(attendanceRequirementSelect.value) || "optional";
+        state.dirty = true;
+        clearFieldError("attendanceRequirement");
+        syncTargetAudienceDetailsVisibility();
+        updateAudienceControls();
+        syncHighlyEncouragedYearLevels();
+        updateLivePreview();
+        updateAllReadinessChecks();
+      });
+    }
+    attendanceHighlyEncouraged?.addEventListener("change", () => {
+      state.attendanceHighlyEncouraged = attendanceHighlyEncouraged.checked;
+      syncHighlyEncouragedYearLevels();
+      state.dirty = true;
+      clearFieldError("highlyEncouragedYearLevels");
+      updateLivePreview();
+      updateAllReadinessChecks();
+    });
+    highlyEncouragedYearInputs.forEach((input) => {
+      input.addEventListener("change", () => {
+        syncHighlyEncouragedYearLevels();
+        state.dirty = true;
+        clearFieldError("highlyEncouragedYearLevels");
+        updateLivePreview();
+        updateAllReadinessChecks();
+      });
+    });
     syncTargetSectionControlFromState();
     if (targetSectionsMode) {
       targetSectionsMode.addEventListener("change", () => {
@@ -6239,9 +6420,10 @@ loadCachedOrganizations();
     const departmentInputs = [...document.querySelectorAll(".ce-target-department")];
     let previousDepartmentSelection = null;
     let lastAudience = "";
-    const updateAudienceControls = () => {
+    function updateAudienceControls() {
       state.targetAudience = normalizeTargetAudience(targetAudienceSelect?.value);
-      const needsAudienceDetails = state.targetAudience !== "Open to All";
+      const needsAudienceDetails = state.targetAudience !== "Open to All" ||
+        normalizeAttendanceRequirement(attendanceRequirementSelect?.value) === "required";
       if (targetAudienceDetails) targetAudienceDetails.hidden = !needsAudienceDetails;
 
       const organizationMembersOnly = state.targetAudience === "Organization Members Only";
@@ -6368,6 +6550,9 @@ loadCachedOrganizations();
       if (legacyYearField) legacyYearField.value = needsAudienceDetails
         ? yearLevels.join(", ") || "All Levels"
         : "All Levels";
+      syncParticipationRequirementLock();
+      syncTargetAudienceDetailsVisibility();
+      syncHighlyEncouragedYearLevels();
 
       if (state.targetAudience === "Mixed Audience" && isCollabCheckbox && !isCollabCheckbox.checked) {
         isCollabCheckbox.checked = true;
@@ -6378,7 +6563,7 @@ loadCachedOrganizations();
       }
       updateOutsideGuestsStatus();
       lastAudience = state.targetAudience;
-    };
+    }
 
     if (targetAudienceSelect) {
       targetAudienceSelect.addEventListener("change", () => {
@@ -6395,6 +6580,10 @@ loadCachedOrganizations();
             document.querySelectorAll(".ce-target-year").forEach((yearInput) => {
               yearInput.checked = false;
             });
+            if (attendanceRequirementSelect) {
+              attendanceRequirementSelect.value = "optional";
+              state.attendanceRequirement = "optional";
+            }
           } else if (input.classList.contains("ce-target-year") && input.checked) {
             const allYears = document.getElementById("targetAllYears");
             if (allYears) allYears.checked = false;
@@ -7668,6 +7857,7 @@ loadCachedOrganizations();
         if (id === "approvalDocs") inputEl = document.getElementById("dropzoneApproval");
         else if (id === "participantDocs") inputEl = document.getElementById("participantDocsLinks");
         else if (id === "targetDepartments") inputEl = document.querySelector(".ce-target-organization");
+        else if (id === "highlyEncouragedYearLevels") inputEl = document.getElementById("attendanceHighlyEncouraged");
         else if (id === "facultyChips") inputEl = document.getElementById("facultySearchInput");
         else if (id === "facultyInCharge") inputEl = document.getElementById("facultyInChargeSearchInput");
       }
@@ -7997,6 +8187,34 @@ loadCachedOrganizations();
       }
     }
 
+    if (targetAudienceVal === "Organization Members Only" &&
+        getSelectedTargetYearLevels().length > 0) {
+      form.attendanceRequirement.value = "required";
+    }
+    const attendanceRequirement = normalizeAttendanceRequirement(
+      form.attendanceRequirement?.value,
+    );
+    if (!attendanceRequirement) {
+      markError("attendanceRequirement", "Select an attendance requirement.");
+    } else {
+      state.attendanceRequirement = attendanceRequirement;
+    }
+    syncHighlyEncouragedYearLevels();
+    const attendanceHighlyEncouraged =
+      Boolean(form.attendanceHighlyEncouraged?.checked);
+    const highlyEncouragedYearLevels = attendanceHighlyEncouraged
+      ? getSelectedHighlyEncouragedYearLevels()
+      : [];
+    if (attendanceHighlyEncouraged && highlyEncouragedYearLevels.length === 0) {
+      markError(
+        "highlyEncouragedYearLevels",
+        "Select at least one eligible year level for Highly Encouraged attendance.",
+      );
+    }
+    state.attendanceHighlyEncouraged = attendanceHighlyEncouraged;
+    state.attendanceTargetYearLevels = resolveAttendanceTargetYearLevels();
+    state.highlyEncouragedYearLevels = highlyEncouragedYearLevels;
+
     // 15. External Guests validation if any added
     collectExternalGuests();
     if (state.externalGuests && state.externalGuests.length > 0) {
@@ -8067,6 +8285,7 @@ loadCachedOrganizations();
       else if (id === "participantDocs") inputEl = document.getElementById("participantDocsLinks");
       else if (id === "approvers") inputEl = document.getElementById("approverList");
       else if (id === "targetDepartments") inputEl = document.querySelector(".ce-target-organization");
+      else if (id === "highlyEncouragedYearLevels") inputEl = document.getElementById("attendanceHighlyEncouraged");
       else if (id === "facultyChips") inputEl = document.getElementById("facultySearchInput");
       else if (id === "facultyInCharge") inputEl = document.getElementById("facultyInChargeSearchInput");
     }
@@ -8152,7 +8371,19 @@ loadCachedOrganizations();
     const targetOrganizations = targetAudience === "Open to All"
       ? []
       : getSelectedTargetOrganizations();
+    const attendanceRequirement =
+      normalizeAttendanceRequirement(form?.attendanceRequirement?.value) || "optional";
+    const attendanceTargetYearLevels = resolveAttendanceTargetYearLevels();
+    const attendanceHighlyEncouraged =
+      Boolean(form?.attendanceHighlyEncouraged?.checked);
+    const highlyEncouragedYearLevels = attendanceHighlyEncouraged
+      ? getSelectedHighlyEncouragedYearLevels()
+      : [];
     state.targetDepartments = targetDepartments;
+    state.attendanceRequirement = attendanceRequirement;
+    state.attendanceTargetYearLevels = attendanceTargetYearLevels;
+    state.attendanceHighlyEncouraged = attendanceHighlyEncouraged;
+    state.highlyEncouragedYearLevels = highlyEncouragedYearLevels;
 
     return {
       id,
@@ -8204,7 +8435,11 @@ loadCachedOrganizations();
       registrationEnd: form?.registrationEnd?.value || form?.registrationDeadline?.value || "",
       registrationDeadline: form?.registrationEnd?.value || form?.registrationDeadline?.value || "",
       registrationEnabled,
-      attendanceRequired: form?.attendanceRequired?.checked ?? true,
+      attendanceRequirement,
+      attendanceTargetYearLevels,
+      attendanceRequired: attendanceRequirement === "required",
+      attendanceHighlyEncouraged,
+      highlyEncouragedYearLevels,
       weatherContingency: form?.weatherContingency?.value || "",
       venueType: form?.weatherContingency?.value || "",
       description: form?.description?.value.trim() || "",
@@ -8353,6 +8588,15 @@ loadCachedOrganizations();
           ? String(target.targetYear).split(",").map((year) => year.trim()).filter((year) => TARGET_YEARS.includes(year))
           : [];
       state.targetSections = normalizeTargetSections(target.targetSections);
+      state.attendanceRequirement = attendanceRequirementForEvent(target);
+      state.attendanceHighlyEncouraged = attendanceHighlyEncouragedForEvent(target);
+      state.attendanceTargetYearLevels = attendanceTargetYearLevelsForEvent(target);
+      state.highlyEncouragedYearLevels = highlyEncouragedYearLevelsForEvent(target);
+      if (state.attendanceRequirement === "required" &&
+          state.targetYearLevels.length === 0 &&
+          state.attendanceTargetYearLevels.length > 0) {
+        state.targetYearLevels = [...state.attendanceTargetYearLevels];
+      }
       state.isCollaboration = target.isCollaboration !== undefined ? Boolean(target.isCollaboration) : Boolean(Array.isArray(target.partnerOrganizations) && target.partnerOrganizations.length > 0);
       state.partnerOrganizations = Array.isArray(target.partnerOrganizations) ? [...target.partnerOrganizations] : [];
       state.collaborationNotes = target.collaborationNotes || "";
@@ -8386,7 +8630,6 @@ loadCachedOrganizations();
         if (form.targetYear) form.targetYear.value = state.targetYearLevels.join(", ") || "All Levels";
         if (form.targetAudience) form.targetAudience.value = state.targetAudience;
         renderTargetSectionTags();
-        if (form.attendanceRequired) form.attendanceRequired.checked = target.attendanceRequired !== false;
         if (form.isCollaboration) form.isCollaboration.checked = state.isCollaboration;
         if (form.collaborationNotes) form.collaborationNotes.value = state.collaborationNotes;
         renderPartnerOrgList();

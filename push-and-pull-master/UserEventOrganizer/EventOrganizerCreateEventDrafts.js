@@ -107,6 +107,9 @@ function markDraftUserEdit(event) {
   if (target.matches(".ce-target-year, #targetAllYears")) {
     draftUserEditedFields.add("targetYearLevels");
   }
+  if (target.matches(".ce-highly-encouraged-year")) {
+    draftUserEditedFields.add("highlyEncouragedYearLevels");
+  }
   if (target.matches(".ce-target-organization, .ce-target-department")) {
     draftUserEditedFields.add("targetOrganizations");
     draftUserEditedFields.add("targetDepartments");
@@ -466,7 +469,20 @@ function collectDraftPayload(status = "draft") {
   const eventName = getFieldValue("eventName") || "Untitled Event";
   const categories = getCheckedValues(".ce-cat-checkbox");
   const targetAudience = getFieldValue("targetAudience");
-  const targetYearLevels = getCheckedValues(".ce-target-year");
+  const attendanceRequirement =
+    form.querySelector("#attendanceRequirement")?.value || "optional";
+  const targetYearLevels = targetAudience === "Open to All" &&
+      attendanceRequirement !== "required"
+    ? []
+    : getCheckedValues(".ce-target-year");
+  const attendanceTargetYearLevels = attendanceRequirement === "required"
+    ? targetYearLevels
+    : [];
+  const attendanceHighlyEncouraged =
+    Boolean(form.querySelector("#attendanceHighlyEncouraged")?.checked);
+  const highlyEncouragedYearLevels = attendanceHighlyEncouraged
+    ? getCheckedValues(".ce-highly-encouraged-year")
+    : [];
   const targetDepartments = targetAudience === "Open to All"
     ? []
     : getCheckedValues(".ce-target-department");
@@ -559,7 +575,11 @@ function collectDraftPayload(status = "draft") {
     registrationStart: getFieldValue("registrationStart"),
     registrationEnd: getFieldValue("registrationEnd") || getFieldValue("registrationDeadline"),
     registrationDeadline: getFieldValue("registrationEnd") || getFieldValue("registrationDeadline"),
-    attendanceRequired: document.getElementById("attendanceRequired")?.checked ?? true,
+    attendanceRequirement,
+    attendanceTargetYearLevels,
+    attendanceRequired: attendanceRequirement === "required",
+    attendanceHighlyEncouraged,
+    highlyEncouragedYearLevels,
     description: getFieldValue("description"),
     rationale: getFieldValue("rationale"),
     keyDetails,
@@ -753,6 +773,8 @@ function draftControlWasEdited(control, record = {}) {
       draftUserEditedFields.has("categories")) return true;
   if ((className.includes("ce-target-year") || control.id === "targetAllYears") &&
       draftUserEditedFields.has("targetYearLevels")) return true;
+  if (className.includes("ce-highly-encouraged-year") &&
+      draftUserEditedFields.has("highlyEncouragedYearLevels")) return true;
   if (control.id === "targetYear" &&
       draftUserEditedFields.has("targetYearLevels")) return true;
   if ((className.includes("ce-target-organization") ||
@@ -783,8 +805,15 @@ function restoreFormInputSnapshot(form, values) {
   const controls = Array.from(form.querySelectorAll("input, select, textarea"));
   values.forEach((record) => {
     if (!record || typeof record !== "object") return;
+    const recordClassName = String(record.className || "");
+    if (record.id === "attendanceAllYears" ||
+        recordClassName.includes("ce-attendance-year") ||
+        recordClassName.includes("ce-highly-encouraged-year")) return;
     const control = findSnapshotControl(controls, record);
-    if (!control || control instanceof HTMLInputElement && control.type === "file" ||
+    const controlClassName = String(control?.className || "");
+    if (!control || ["attendanceRequirement", "attendanceHighlyEncouraged"].includes(control.id) ||
+        controlClassName.includes("ce-highly-encouraged-year") ||
+        control instanceof HTMLInputElement && control.type === "file" ||
         draftControlWasEdited(control, record)) return;
 
     if (control instanceof HTMLSelectElement && Array.isArray(record.selectedValues)) {
@@ -924,7 +953,10 @@ function dispatchDraftDependencyChanges(form) {
   if (!form) return;
   const dependentIds = new Set([
     "targetAudience",
+    "targetAllYears",
     "targetSectionsMode",
+    "attendanceRequirement",
+    "attendanceHighlyEncouraged",
     "venue",
     "outsideGuests",
     "isCollaboration",
@@ -949,9 +981,12 @@ function dispatchDraftDependencyChanges(form) {
     "#onlineMeetingLink",
     ".ce-cat-checkbox",
     ".ce-target-year",
+    "#targetAllYears",
     ".ce-target-organization",
     ".ce-target-department",
-    "#attendanceRequired",
+    "#attendanceRequirement",
+    "#attendanceHighlyEncouraged",
+    ".ce-highly-encouraged-year",
   ].join(", ");
   form.querySelectorAll("input, select, textarea").forEach((control) => {
     if (draftControlWasEdited(control)) return;
@@ -1061,13 +1096,57 @@ function restoreDraftFormFields(draft) {
   const collaboration = typeof draft.isCollaboration === "boolean"
     ? draft.isCollaboration
     : Boolean(Array.isArray(draft.partnerOrganizations) && draft.partnerOrganizations.length);
+  const validTargetYears = new Set(
+    [...form.querySelectorAll(".ce-target-year")].map((input) => input.value),
+  );
+  const validHighlyEncouragedYears = new Set(
+    [...form.querySelectorAll(".ce-highly-encouraged-year")].map((input) => input.value),
+  );
+  const rawAttendanceRequirement = String(draft.attendanceRequirement || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[\s-]+/g, "_");
+  const legacyHighlyEncouraged = rawAttendanceRequirement === "highly_encouraged" &&
+    typeof draft.attendanceHighlyEncouraged !== "boolean" &&
+    !Array.isArray(draft.highlyEncouragedYearLevels);
+  const attendanceRequirement = rawAttendanceRequirement === "required"
+    ? "required"
+    : ["optional", "standard", "highly_encouraged"].includes(rawAttendanceRequirement)
+      ? "optional"
+      : draft.attendanceRequired === false
+        ? "optional"
+        : "required";
+  const attendanceHighlyEncouraged =
+    typeof draft.attendanceHighlyEncouraged === "boolean"
+      ? draft.attendanceHighlyEncouraged
+      : rawAttendanceRequirement === "highly_encouraged";
+  const attendanceTargetYearLevels = !legacyHighlyEncouraged &&
+      Array.isArray(draft.attendanceTargetYearLevels)
+    ? [...new Set(draft.attendanceTargetYearLevels.map(String))]
+      .filter((year) => validTargetYears.has(year))
+    : [];
+  const restoredTargetYearLevels = years.length
+    ? years
+    : attendanceRequirement === "required" && attendanceTargetYearLevels.length
+    ? attendanceTargetYearLevels
+    : years;
+  const highlyEncouragedYearLevels = Array.isArray(draft.highlyEncouragedYearLevels)
+    ? [...new Set(draft.highlyEncouragedYearLevels.map(String))]
+      .filter((year) => validHighlyEncouragedYears.has(year))
+    : legacyHighlyEncouraged && Array.isArray(draft.attendanceTargetYearLevels)
+      ? [...new Set(draft.attendanceTargetYearLevels.map(String))]
+        .filter((year) => validHighlyEncouragedYears.has(year))
+      : [];
+  if (legacyHighlyEncouraged && highlyEncouragedYearLevels.length === 0) {
+    highlyEncouragedYearLevels.push(...validHighlyEncouragedYears);
+  }
 
   if (!draftUserEditedFields.has("targetYearLevels")) {
     form.querySelectorAll(".ce-target-year").forEach((input) => {
-      input.checked = years.includes(input.value);
+      input.checked = restoredTargetYearLevels.includes(input.value);
     });
     const allYears = form.querySelector("#targetAllYears");
-    if (allYears) allYears.checked = years.length === 0;
+    if (allYears) allYears.checked = restoredTargetYearLevels.length === 0;
   }
   if (!draftUserEditedFields.has("categories")) {
     form.querySelectorAll(".ce-cat-checkbox").forEach((input) => {
@@ -1082,10 +1161,21 @@ function restoreDraftFormFields(draft) {
   } else if (collaborationInput && !draftUserEditedFields.has("isCollaboration")) {
     collaborationInput.checked = collaboration;
   }
-  const attendanceInput = form.querySelector("#attendanceRequired");
-  if (attendanceInput && !draftUserEditedFields.has("attendanceRequired") &&
-      typeof draft.attendanceRequired === "boolean") {
-    attendanceInput.checked = draft.attendanceRequired;
+  const attendanceRequirementInput = form.querySelector("#attendanceRequirement");
+  if (attendanceRequirementInput &&
+      !draftUserEditedFields.has("attendanceRequirement")) {
+    attendanceRequirementInput.value = attendanceRequirement;
+  }
+  const attendanceHighlyEncouragedInput =
+    form.querySelector("#attendanceHighlyEncouraged");
+  if (attendanceHighlyEncouragedInput &&
+      !draftUserEditedFields.has("attendanceHighlyEncouraged")) {
+    attendanceHighlyEncouragedInput.checked = attendanceHighlyEncouraged;
+  }
+  if (!draftUserEditedFields.has("highlyEncouragedYearLevels")) {
+    form.querySelectorAll(".ce-highly-encouraged-year").forEach((input) => {
+      input.checked = highlyEncouragedYearLevels.includes(input.value);
+    });
   }
   const outsideGuestsInput = form.querySelector("#outsideGuests");
   if (outsideGuestsInput && !draftUserEditedFields.has("outsideGuests")) {
@@ -1094,7 +1184,8 @@ function restoreDraftFormFields(draft) {
 
   form.querySelectorAll("input[name], select[name], textarea[name]").forEach((control) => {
     const name = control.name;
-    if (!name || name === "targetSections" || control instanceof HTMLInputElement &&
+    if (!name || name === "targetSections" || name === "attendanceRequirement" ||
+        control instanceof HTMLInputElement &&
         ["checkbox", "radio", "file"].includes(control.type) ||
         !Object.prototype.hasOwnProperty.call(draft, name) ||
         draftControlWasEdited(control)) return;
@@ -1138,6 +1229,11 @@ function synchronizeHydratedDraft(draft) {
   restoreDraftFormFields(draft);
   dispatchDraftDependencyChanges(getForm());
   restoreDraftFormFields(draft);
+  ["attendanceRequirement", "attendanceHighlyEncouraged"].forEach((id) => {
+    getForm()?.querySelector(`#${id}`)?.dispatchEvent(
+      new Event("change", { bubbles: true }),
+    );
+  });
   getForm()?.querySelector("#eventName")?.dispatchEvent(
     new Event("input", { bubbles: true }),
   );
