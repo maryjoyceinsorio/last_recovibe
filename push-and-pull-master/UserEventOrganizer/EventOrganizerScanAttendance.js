@@ -17,7 +17,6 @@ import {
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 import {
   buildManualAttendeeIndex,
-  normalizeManualWalkInEntry,
   searchManualAttendees,
 } from "./scanAttendanceManualLookup.js";
 import { writeEventAttendance } from "../UserStudent/eventRtdb.js";
@@ -73,9 +72,7 @@ const manualSearchResult = document.getElementById("manualSearchResult");
 const manualHint = document.getElementById("manualHint");
 const manualWalkInEntry = document.getElementById("manualWalkInEntry");
 const manualWalkInForm = document.getElementById("manualWalkInForm");
-const manualWalkInName = document.getElementById("manualWalkInName");
 const manualWalkInStudentNo = document.getElementById("manualWalkInStudentNo");
-const manualWalkInOrganization = document.getElementById("manualWalkInOrganization");
 const manualWalkInError = document.getElementById("manualWalkInError");
 const btnManualWalkInSubmit = document.getElementById("btnManualWalkInSubmit");
 
@@ -884,7 +881,7 @@ async function populateEventDropdown() {
 
   const setAttendanceControlsDisabled = (disabled) => {
     [btnCompleteEvent, walkInToggle, btnToggleCamera, btnSwitchCamera, btnManualSubmit,
-      manualStudentNo, manualWalkInName, manualWalkInStudentNo, manualWalkInOrganization,
+      manualStudentNo, manualWalkInStudentNo,
       btnManualWalkInSubmit, btnExportCsv].forEach((control) => {
       if (control) control.disabled = disabled;
     });
@@ -1030,7 +1027,7 @@ async function showEventDetails(eventId) {
   if (scanLayoutGrid) scanLayoutGrid.style.display = "";
   if (scanRosterSection) scanRosterSection.style.display = "";
   [btnCompleteEvent, walkInToggle, btnToggleCamera, btnSwitchCamera, btnManualSubmit,
-    manualStudentNo, manualWalkInName, manualWalkInStudentNo, manualWalkInOrganization,
+    manualStudentNo, manualWalkInStudentNo,
     btnManualWalkInSubmit, btnExportCsv].forEach((control) => {
     if (control) control.disabled = false;
   });
@@ -1990,6 +1987,23 @@ async function processAttendance({ eventId, token, allowWalkIn }) {
   }
 
   try {
+    const qrPayload = parseAttendanceQrPayload(token, eventId);
+    if (!qrPayload) {
+      throw new Error("Static student QR codes are not accepted. Ask the student to refresh their attendance QR code.");
+    }
+
+    const issuedAt = qrPayload.issuedAt;
+    const qrAge = Date.now() - issuedAt;
+    if (
+      typeof issuedAt !== "number" ||
+      !Number.isFinite(issuedAt) ||
+      !String(qrPayload.nonce || "").trim() ||
+      qrAge < -60 * 1000 ||
+      qrAge > 5 * 60 * 1000
+    ) {
+      throw new Error("This attendance QR code is expired or invalid. Ask the student to refresh it.");
+    }
+
     const result = await handleLocalAttendanceProcessing(eventId, token, allowWalkIn);
     handleAttendanceResult(result, token);
   } catch (err) {
@@ -2841,11 +2855,7 @@ if (manualWalkInForm) {
 
     const eventId = currentEventId;
     const currentEvent = currentEvents.find((item) => String(item.id) === String(eventId));
-    const attendee = normalizeManualWalkInEntry({
-      name: manualWalkInName?.value,
-      studentNo: manualWalkInStudentNo?.value,
-      organization: manualWalkInOrganization?.value,
-    });
+    const studentNo = formatStudentNo(manualWalkInStudentNo?.value);
     if (!isWalkInAllowed) {
       if (manualWalkInError) {
         manualWalkInError.textContent = "Enable Allow walk-ins before checking in a walk-in attendee.";
@@ -2853,12 +2863,12 @@ if (manualWalkInForm) {
       }
       return;
     }
-    if (!attendee) {
+    if (!studentNo || !STUDENT_NO_REGEX.test(studentNo)) {
       if (manualWalkInError) {
-        manualWalkInError.textContent = "Enter the attendee's name to continue.";
+        manualWalkInError.textContent = "Enter a valid student number to look up the attendee's account.";
         manualWalkInError.hidden = false;
       }
-      manualWalkInName?.focus();
+      manualWalkInStudentNo?.focus();
       return;
     }
     if (!eventId || currentEvent?.status === "completed" || !rtdb || !auth?.currentUser) {
@@ -2881,17 +2891,16 @@ if (manualWalkInForm) {
       manualWalkInError.textContent = "";
     }
 
-    const uid = `walkin-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
     try {
-      const walkInAttendee = { ...attendee, uid, walkIn: true };
-      const result = await handleLocalAttendanceProcessing(eventId, uid, true, walkInAttendee);
+      const result = await handleLocalAttendanceProcessing(eventId, studentNo, true);
       if (String(currentEventId) === String(eventId)) {
-        handleAttendanceResult(result, uid);
-        if (result.status === "ok") manualWalkInForm.reset();
+        handleAttendanceResult(result, studentNo);
         if (result.status !== "ok" && manualWalkInError) {
           manualWalkInError.textContent = result.status === "already"
             ? "This attendee has already been checked in."
-            : "Could not record this walk-in. Please check the details and try again.";
+            : result.status === "not_found"
+              ? "No student account matches this student number. Walk-ins require an existing account."
+              : "Could not record this walk-in. Please check the student number and try again.";
           manualWalkInError.hidden = false;
         }
       }
@@ -2906,8 +2915,8 @@ if (manualWalkInForm) {
       showResultBanner({
         type: "error",
         title: "Walk-in check-in failed",
-        name: attendee.name,
-        meta: attendee.studentNo,
+        name: "",
+        meta: studentNo,
         note: error.message || "Could not record this walk-in.",
       });
     } finally {

@@ -1208,12 +1208,46 @@ loadCachedOrganizations();
   // 7. Load Past Events for Current User
   function loadCurrentUserEvents() {
     const list = readJSON(storageKeyEvents, []);
+    const seenEventIds = new Set(
+      list.map((ev) => String(ev?.id || ev?.eventId || "")).filter(Boolean),
+    );
+    readJSON("recovibeEventsCache", []).forEach((ev) => {
+      const eventId = String(ev?.id || ev?.eventId || "");
+      if (!eventId || seenEventIds.has(eventId)) return;
+      seenEventIds.add(eventId);
+      list.push(ev);
+    });
+    const ownerIdentifiers = new Set(
+      [
+        userIdentifier,
+        currentAuthUid,
+        organizerProfile.uid,
+        organizerProfile.id,
+        organizerProfile.userId,
+        organizerProfile.organizerId,
+        organizerProfile.email,
+        organizerProfile.username,
+      ]
+        .filter(Boolean)
+        .map((value) => String(value).trim().toLowerCase()),
+    );
     const filtered = list.filter((ev) => {
       if (!ev) return false;
       if (isOrganizerPage) {
         const eventOrganizer = String(ev.organizer || ev.organizerName || "").toLowerCase();
         const orgMatch = Boolean(organizerOrgName && eventOrganizer.includes(organizerOrgName.toLowerCase()));
-        const idMatch = Boolean(userIdentifier && String(ev.createdBy || ev.organizerId || "").toLowerCase() === userIdentifier.toLowerCase());
+        const idMatch = [
+          ev.organizerUid,
+          ev.organizerId,
+          ev.createdBy,
+          ev.createdByUid,
+          ev.authorId,
+          ev.uid,
+        ].some((owner) =>
+          owner !== null &&
+          owner !== undefined &&
+          ownerIdentifiers.has(String(owner).trim().toLowerCase()),
+        );
         return orgMatch || idMatch;
       } else {
         const creatorMatch = Boolean(userIdentifier && String(ev.createdBy || ev.teacherId || "").toLowerCase() === userIdentifier.toLowerCase());
@@ -3880,7 +3914,7 @@ loadCachedOrganizations();
           alert(safeUserFacingErrorMessage(error?.message || String(error)) || "Could not submit the event.");
         }
       });
-    } else {
+    } else if (root.querySelector("#createEventMainForm")) {
       console.error("Submit button #btnSubmitApproval was not rendered.");
     }
 

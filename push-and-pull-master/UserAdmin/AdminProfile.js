@@ -34,6 +34,7 @@ import {
   let profile = {};
   let firebaseUser = null;
   let hasAdminProfileDocument = false;
+  let hasUserProfileDocument = false;
   const cachedProfile = read("recovibeAdminProfile", {}),
     identity = localStorage.getItem("recovibeAdminId") || "";
   const root = document.getElementById("profileRoot"),
@@ -74,10 +75,15 @@ import {
     window.dispatchEvent(new Event("page-data-ready"));
   };
   async function saveAccountProfileFields(uid, fields) {
+    if (!hasAdminProfileDocument && !hasUserProfileDocument) {
+      throw new Error("The Admin profile record is unavailable. Please sign in again before saving.");
+    }
     const batch = writeBatch(db);
-    batch.set(doc(db, "users", uid), fields, { merge: true });
     if (hasAdminProfileDocument) {
-      batch.set(doc(db, "adminUser", uid), fields, { merge: true });
+      batch.update(doc(db, "adminUser", uid), fields);
+    }
+    if (hasUserProfileDocument) {
+      batch.update(doc(db, "users", uid), fields);
     }
     await batch.commit();
   }
@@ -86,8 +92,10 @@ import {
       throw new Error("The Admin profile record is unavailable. Please sign in again before saving.");
     }
     const batch = writeBatch(db);
-    batch.set(doc(db, "adminUser", uid), fields, { merge: true });
-    batch.set(doc(db, "users", uid), fields, { merge: true });
+    batch.update(doc(db, "adminUser", uid), fields);
+    if (hasUserProfileDocument) {
+      batch.update(doc(db, "users", uid), fields);
+    }
     await batch.commit();
   }
   const profileLoadTimer = setTimeout(() => {
@@ -123,6 +131,8 @@ import {
     if (profileLoadExpired) return;
     hasAdminProfileDocument =
       adminResult.status === "fulfilled" && adminResult.value.exists();
+    hasUserProfileDocument =
+      userResult.status === "fulfilled" && userResult.value.exists();
     const adminProfile = hasAdminProfileDocument
       ? adminResult.value.data()
       : {};

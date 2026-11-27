@@ -15,7 +15,6 @@ import {
   deleteField,
   doc,
   getDoc,
-  setDoc,
   updateDoc,
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 import {
@@ -43,6 +42,41 @@ import { updatePendingEmailNotice } from "../profilePendingEmail.js";
 
   function formatPhilippinePhone(raw) {
     return formatPhilippineMobile(raw);
+  }
+
+  function getOrganizerProfileSource() {
+    const source = profile.profileSource;
+    const allowedCollections = ["adminUser", "users", "eventOrganizations"];
+    const allowedNestedFields = ["profile", "userProfile", "organizerProfile"];
+    if (
+      !source ||
+      !allowedCollections.includes(source.collectionName) ||
+      !String(source.documentId || "").trim() ||
+      (source.nestedField && !allowedNestedFields.includes(source.nestedField))
+    ) {
+      throw new Error("The organizer profile source is unavailable. Sign in again before saving.");
+    }
+    return source;
+  }
+
+  function organizerProfileRef() {
+    const source = getOrganizerProfileSource();
+    return doc(db, source.collectionName, source.documentId);
+  }
+
+  function organizerProfileUpdates(fields) {
+    const { nestedField } = getOrganizerProfileSource();
+    if (!nestedField) return fields;
+    return Object.fromEntries(
+      Object.entries(fields).map(([field, value]) => [`${nestedField}.${field}`, value]),
+    );
+  }
+
+  function organizerProfileData(data) {
+    const { nestedField } = getOrganizerProfileSource();
+    return nestedField
+      ? { ...(data || {}), ...(data?.[nestedField] || {}) }
+      : data || {};
   }
 
   const invalidNameCharacters = /[^\p{L}\p{M} .'-]/gu;
@@ -196,13 +230,16 @@ import { updatePendingEmailNotice } from "../profilePendingEmail.js";
 
   async function persistOrganizerProfileFields(uid, fields) {
     if (!db || !isFirebaseConfigured) throw new Error("Profile storage is unavailable.");
-    const profileRef = doc(db, "users", uid);
-    await setDoc(profileRef, fields, { merge: true });
+    if (profile.uid && profile.uid !== uid) {
+      throw new Error("The signed-in organizer profile changed. Sign in again before saving.");
+    }
+    const profileRef = organizerProfileRef();
+    await updateDoc(profileRef, organizerProfileUpdates(fields));
     const snapshot = await getDoc(profileRef);
     if (!snapshot.exists()) {
       throw new Error("The updated organizer profile could not be verified.");
     }
-    return snapshot.data();
+    return organizerProfileData(snapshot.data());
   }
 
   async function saveOrganizerProfileFields(uid, fields) {
@@ -243,9 +280,9 @@ import { updatePendingEmailNotice } from "../profilePendingEmail.js";
       return null;
     }
 
-    const profileRef = doc(db, "users", authUser.uid);
+    const profileRef = organizerProfileRef();
     const profileSnapshot = await getDoc(profileRef);
-    const data = profileSnapshot.exists() ? profileSnapshot.data() : {};
+    const data = profileSnapshot.exists() ? organizerProfileData(profileSnapshot.data()) : {};
     const normalizedEmail = email.toLowerCase();
     const updates = {};
     if (String(data.email || "").trim().toLowerCase() !== normalizedEmail) {
@@ -293,9 +330,9 @@ import { updatePendingEmailNotice } from "../profilePendingEmail.js";
 
   async function loadOrganizerSelfProfile(authUser) {
     if (!db || !isFirebaseConfigured || !authUser?.uid) return;
-    const snapshot = await getDoc(doc(db, "users", authUser.uid));
+    const snapshot = await getDoc(organizerProfileRef());
     if (!snapshot.exists() || auth?.currentUser?.uid !== authUser.uid) return;
-    const savedProfile = snapshot.data();
+    const savedProfile = organizerProfileData(snapshot.data());
     const editableFields = [
       "firstName",
       "middleName",
@@ -1310,7 +1347,10 @@ import { updatePendingEmailNotice } from "../profilePendingEmail.js";
 
     button.disabled = true;
     try {
-      await updateDoc(doc(db, "users", authUser.uid), { pendingEmail: deleteField() });
+      await updateDoc(
+        organizerProfileRef(),
+        organizerProfileUpdates({ pendingEmail: deleteField() }),
+      );
       const pendingKey = `recovibe_pending_email_${authUser.uid}`;
       localStorage.removeItem(pendingKey);
       sessionStorage.removeItem(pendingKey);

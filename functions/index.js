@@ -295,12 +295,10 @@ exports.recordAttendanceByStudentNo = functions.region("asia-southeast1").https.
       organization: d.organization || "PUP Biñan",
     };
   } else {
-    studentUid = cleanNo.replace(/[^a-zA-Z0-9_-]/g, "_");
-    studentData = {
-      name: "Student",
-      studentNo: cleanNo,
-      organization: "PUP Biñan",
-    };
+    throw new functions.https.HttpsError(
+      "not-found",
+      "No student account matches that student number.",
+    );
   }
 
   const regSnap = await admin.database().ref(`registrations/${eventId}/${studentUid}`).once("value");
@@ -3994,7 +3992,7 @@ exports.syncUserEmail = functions.region("asia-southeast1").https.onCall(async (
 
   await admin.database().ref(`users/${uid}/email`).set(authEmail);
   try {
-    await admin.firestore().collection("users").doc(uid).set({ email: authEmail }, { merge: true });
+    await admin.firestore().collection("users").doc(uid).update({ email: authEmail });
   } catch (err) {
     console.warn("Firestore sync email notice:", err);
   }

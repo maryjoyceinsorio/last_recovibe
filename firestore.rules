@@ -377,8 +377,76 @@ service cloud.firestore {
     }
 
     match /eventOrganizations/{userId} {
+      function validOrganizerProfileMap(before, after) {
+        let changed = after.diff(before).affectedKeys();
+        return changed.hasOnly([
+            "firstName", "middleName", "lastName", "fullName", "name",
+            "contactNumber", "email", "pendingEmail"
+          ])
+          && (!changed.hasAny(["firstName"])
+            || (after.get("firstName", "") is string
+              && after.get("firstName", "").size() > 0
+              && after.get("firstName", "").size() <= 100))
+          && (!changed.hasAny(["middleName"])
+            || (after.get("middleName", "") is string
+              && after.get("middleName", "").size() <= 100))
+          && (!changed.hasAny(["lastName"])
+            || (after.get("lastName", "") is string
+              && after.get("lastName", "").size() > 0
+              && after.get("lastName", "").size() <= 100))
+          && (!changed.hasAny(["fullName"])
+            || (after.get("fullName", "") is string
+              && after.get("fullName", "").size() > 0
+              && after.get("fullName", "").size() <= 302))
+          && (!changed.hasAny(["name"])
+            || (after.get("name", "") is string
+              && after.get("name", "").size() > 0
+              && after.get("name", "").size() <= 302))
+          && (!changed.hasAny(["contactNumber"])
+            || (after.get("contactNumber", "") is string
+              && after.get("contactNumber", "").matches("^09[0-9]{9}$")))
+          && (!changed.hasAny(["email"])
+            || (after.get("email", "") is string
+              && request.auth.token.email_verified == true
+              && after.get("email", "") == request.auth.token.email
+              && after.get("email", "").size() > 0
+              && after.get("email", "").size() <= 254))
+          && (!changed.hasAny(["pendingEmail"])
+            || (after.get("pendingEmail", "") is string
+              && after.get("pendingEmail", "").size() <= 254));
+      }
+
+      function validOwnOrganizerProfileUpdate() {
+        let changed = request.resource.data.diff(resource.data).affectedKeys();
+        return validOrganizerProfileMap(resource.data, request.resource.data)
+          || (
+            changed.hasOnly(["profile"])
+            && validOrganizerProfileMap(
+              resource.data.get("profile", {}),
+              request.resource.data.get("profile", {})
+            )
+          )
+          || (
+            changed.hasOnly(["userProfile"])
+            && validOrganizerProfileMap(
+              resource.data.get("userProfile", {}),
+              request.resource.data.get("userProfile", {})
+            )
+          )
+          || (
+            changed.hasOnly(["organizerProfile"])
+            && validOrganizerProfileMap(
+              resource.data.get("organizerProfile", {}),
+              request.resource.data.get("organizerProfile", {})
+            )
+          );
+      }
+
       allow read: if signedIn() && request.auth.uid == userId;
-      allow write: if false;
+      allow create, delete: if false;
+      allow update: if signedIn()
+        && request.auth.uid == userId
+        && validOwnOrganizerProfileUpdate();
     }
 
     match /system_settings/{settingsId} {

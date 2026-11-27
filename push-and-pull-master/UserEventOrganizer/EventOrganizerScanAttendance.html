@@ -357,19 +357,11 @@
 
               <div id="manualWalkInEntry" class="manual-walkin-entry" hidden>
                 <h4>Check in a walk-in</h4>
-                <p>Walk-in check-in is active. Name is required; student number and organization are optional.</p>
+                <p>Enter the attendee's student number. Account details are used for the attendance record.</p>
                 <form id="manualWalkInForm" class="manual-walkin-form" novalidate>
                   <div class="manual-walkin-field">
-                    <label for="manualWalkInName">Name</label>
-                    <input id="manualWalkInName" type="text" maxlength="120" autocomplete="name" required />
-                  </div>
-                  <div class="manual-walkin-field">
-                    <label for="manualWalkInStudentNo">Student number <span>(optional)</span></label>
-                    <input id="manualWalkInStudentNo" type="text" maxlength="60" autocomplete="off" />
-                  </div>
-                  <div class="manual-walkin-field">
-                    <label for="manualWalkInOrganization">Organization <span>(optional)</span></label>
-                    <input id="manualWalkInOrganization" type="text" maxlength="120" autocomplete="organization" />
+                    <label for="manualWalkInStudentNo">Student number</label>
+                    <input id="manualWalkInStudentNo" type="text" maxlength="60" autocomplete="off" required />
                   </div>
                   <p id="manualWalkInError" class="manual-validation-error" role="alert" hidden></p>
                   <button type="submit" id="btnManualWalkInSubmit" class="btn-manual-walkin-submit">

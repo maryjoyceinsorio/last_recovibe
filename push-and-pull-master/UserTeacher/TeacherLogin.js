@@ -5,10 +5,8 @@ import {
   signOut,
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
 import {
-  deleteField,
   doc,
   getDoc,
-  setDoc,
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 import { auth, authReady, db, isFirebaseConfigured } from "../UserStudent/firebaseConfig.js";
 import {
@@ -183,14 +181,6 @@ import {
         profile.email = emailSync.email;
         if (emailSync.pendingEmail) profile.pendingEmail = emailSync.pendingEmail;
         else delete profile.pendingEmail;
-        await setDoc(
-          doc(db, "users", credential.user.uid),
-          {
-            email: emailSync.email,
-            pendingEmail: emailSync.pendingEmail || deleteField(),
-          },
-          { merge: true },
-        );
       }
       accessSettings = await readSystemAccessSettings(db);
       if (!accessSettings.userLoginEnabled) {

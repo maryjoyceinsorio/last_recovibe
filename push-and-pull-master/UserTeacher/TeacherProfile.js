@@ -5,7 +5,6 @@ import {
 import {
   deleteField,
   doc,
-  setDoc,
   writeBatch,
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 import { auth, authReady, db, isFirebaseConfigured } from "../UserStudent/firebaseConfig.js";
@@ -31,8 +30,7 @@ import { updatePendingEmailNotice } from "../profilePendingEmail.js";
 
   async function saveAccountProfileFields(uid, fields) {
     const batch = writeBatch(db);
-    batch.set(doc(db, "users", uid), fields, { merge: true });
-    batch.set(doc(db, "adminUser", uid), fields, { merge: true });
+    batch.update(doc(db, "adminUser", uid), fields);
     await batch.commit();
   }
 
@@ -209,14 +207,6 @@ import { updatePendingEmailNotice } from "../profilePendingEmail.js";
       profileCollectionsForRole("teacher"),
     ).then(async (result) => {
       if (!result || auth?.currentUser?.uid !== authUser.uid) return;
-      await setDoc(
-        doc(db, "users", authUser.uid),
-        {
-          email: result.email,
-          pendingEmail: result.pendingEmail || deleteField(),
-        },
-        { merge: true },
-      );
       profile.uid = authUser.uid;
       profile.email = result.email;
       if (result.pendingEmail) profile.pendingEmail = result.pendingEmail;
