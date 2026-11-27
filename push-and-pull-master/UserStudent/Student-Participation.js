@@ -1061,7 +1061,25 @@ function render() {
     }
     return true;
   });
-  visibleRows.sort((a, b) => (b.event.startAt || 0) - (a.event.startAt || 0));
+  if (["completed", "attended", "absent"].includes(filterState.status)) {
+    visibleRows.sort((first, second) => {
+      const firstStart = Number(first.event.startAt) || 0;
+      const secondStart = Number(second.event.startAt) || 0;
+      const firstEnd = Number(first.event.endAt) || firstStart;
+      const secondEnd = Number(second.event.endAt) || secondStart;
+      return secondEnd - firstEnd || secondStart - firstStart;
+    });
+  } else if (["participating", "registered"].includes(filterState.status)) {
+    visibleRows.sort(
+      (first, second) =>
+        (Number(first.event.startAt) || 0) - (Number(second.event.startAt) || 0),
+    );
+  } else {
+    visibleRows.sort(
+      (first, second) =>
+        (Number(second.event.startAt) || 0) - (Number(first.event.startAt) || 0),
+    );
+  }
 
   if (countEl) {
     countEl.textContent = `${visibleRows.length} event${visibleRows.length === 1 ? "" : "s"}`;

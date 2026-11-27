@@ -15,6 +15,7 @@ import {
   getCurrentlyLivePublishedEvents,
   toEventDate,
 } from "./eventOrganizerDashboardDates.js";
+import { isFullyApproved as isEventFullyApproved } from "../eventWorkflow.js";
 
 const { toMillis, formatCreatedDate } = window.RecovibeOrganizerDashboardDates;
 const CREATION_DATE_PATHS = [
@@ -740,11 +741,46 @@ function renderUpcomingEvents() {
     .filter((event) => {
       const start = eventBoundaryMillis(event);
       const status = getDashboardStatus(event);
+      const statuses = getEventStatusValues(event);
+      const hasExplicitApprovalStatus = statuses.some((value) =>
+        ["approved", "published"].includes(value),
+      ) || [
+        event.approved,
+        event.isApproved,
+        event.published,
+        event.isPublished,
+        event.isLive,
+      ].some(hasTrueFlag);
+      const blockingFlags = [
+        event.pending,
+        event.isPending,
+        event.draft,
+        event.isDraft,
+        event.isRejected,
+        event.rejected,
+        event.revision,
+        event.isRevision,
+        event.revisionRequested,
+        event.needsRevision,
+        event.isCancelled,
+        event.cancelled,
+        event.canceled,
+        event.completed,
+        event.isCompleted,
+      ];
+      const hasIneligibleStatus = statuses.some((value) =>
+        ["pending", "draft", "rejected", "revision", "cancelled", "completed"].includes(value),
+      ) || blockingFlags.some((value) =>
+        hasTrueFlag(value) ||
+        ["pending", "draft", "rejected", "revision", "cancelled", "completed"].includes(normalizeStatus(value)),
+      );
       return start !== null && start > now &&
-        status !== "rejected" && status !== "cancelled";
+        !hasIneligibleStatus &&
+        (hasExplicitApprovalStatus ||
+          (isEventFullyApproved(event) && ["approved", "published"].includes(status)));
     })
     .sort((first, second) => eventBoundaryMillis(first) - eventBoundaryMillis(second))
-    .slice(0, 4);
+    .slice(0, 3);
 
   if (!upcoming.length) {
     upcomingEventsList.innerHTML = `<div class="dashboard-empty-state compact"><strong>No upcoming events</strong><span>Future events you create will appear here.</span></div>`;

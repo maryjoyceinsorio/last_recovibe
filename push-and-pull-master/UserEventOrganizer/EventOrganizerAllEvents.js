@@ -19,6 +19,8 @@ import {
   getEventPhase,
   shouldHideOtherOrganizationCancelledEvent,
 } from "./eventOrganizerAllEventsVisibility.mjs";
+import { isFullyApproved as isEventFullyApproved } from "../eventWorkflow.js";
+import { eventBoundaryMillis as manilaEventBoundaryMillis } from "./eventOrganizerDashboardDates.js";
 
 (() => {
   const EVENT_PAGE_SIZE = 100;
@@ -173,42 +175,61 @@ import {
     return Number.isNaN(date.getTime()) ? null : date;
   }
 
-  function eventBoundaryMillis(event, isEnd = false) {
-    const date = eventDateObject(event, isEnd);
-    if (!date) return null;
-
-    let timeValue = String(
-      isEnd
-        ? event.endTime || event.timeEnd || ""
-        : event.startTime || event.timeStart || "",
-    ).trim();
-    if (!timeValue && event.time) {
-      const timeParts = String(event.time).split(/\s*[-–—]\s*/);
-      timeValue = String(timeParts[isEnd ? 1 : 0] || "").trim();
-    }
-    const timeMatch = /^(\d{1,2}):(\d{2})(?::(\d{2}))?\s*(AM|PM)?$/i.exec(timeValue);
-    if (timeMatch) {
-      let hours = Number(timeMatch[1]);
-      const minutes = Number(timeMatch[2]);
-      const seconds = Number(timeMatch[3] || 0);
-      const meridiem = String(timeMatch[4] || "").toUpperCase();
-      if (meridiem) {
-        if (hours < 1 || hours > 12) return null;
-        if (hours === 12) hours = 0;
-        if (meridiem === "PM") hours += 12;
-      } else if (hours > 23) {
-        return null;
-      }
-      if (minutes > 59 || seconds > 59) return null;
-      date.setHours(hours, minutes, seconds, 0);
-    } else {
-      date.setHours(isEnd ? 23 : 0, isEnd ? 59 : 0, isEnd ? 59 : 0, isEnd ? 999 : 0);
-    }
-    return date.getTime();
+  function eventPhase(event, now = Date.now()) {
+    return getEventPhase(event, now, manilaEventBoundaryMillis);
   }
 
-  function eventPhase(event, now = Date.now()) {
-    return getEventPhase(event, now, eventBoundaryMillis);
+  function isApprovedUpcomingEvent(event) {
+    const statusValues = [
+      event.status,
+      event.approvalStatus,
+      event.approval_status,
+      event.adminStatus,
+      event.admin_status,
+      event.publicationStatus,
+      event.eventStatus,
+      event.submissionStatus,
+      event.workflowStatus,
+      event.reviewStatus,
+      event.reviewDecision,
+      event.approval?.status,
+      event.approval?.approvalStatus,
+      event.review?.status,
+      event.review?.decision,
+      event.workflow?.status,
+      event.approvalData?.status,
+      event.approvalData?.approvalStatus,
+    ].map((value) => String(value || "").trim().toLowerCase().replace(/[\s_-]+/g, ""));
+    const excludedStatus = /^(pending|awaitingapproval|awaitingreview|underreview|inreview|reviewing|submitted|draft|rejected|disapproved|revision|needsrevision|cancelled|canceled|completed|complete|ended|finished)/;
+    const hasExplicitApprovalStatus = statusValues.some((status) =>
+      ["approved", "fullyapproved", "approvedandunpublished", "approvedbutunpublished", "published", "publishedlive"].includes(status),
+    );
+    const blockingFlags = [
+      event.pending,
+      event.isPending,
+      event.draft,
+      event.isDraft,
+      event.isRejected,
+      event.rejected,
+      event.revision,
+      event.isRevision,
+      event.revisionRequested,
+      event.needsRevision,
+      event.isCancelled,
+      event.cancelled,
+      event.canceled,
+      event.completed,
+      event.isCompleted,
+    ];
+    const hasIneligibleFlag = blockingFlags.some((value) =>
+      value === true || value === 1 ||
+      ["true", "yes", "1"].includes(String(value || "").trim().toLowerCase()) ||
+      ["pending", "draft", "rejected", "revision", "cancelled", "canceled", "completed"]
+        .includes(String(value || "").trim().toLowerCase().replace(/[\s_-]+/g, "")),
+    );
+    return (isEventFullyApproved(event) || hasExplicitApprovalStatus) &&
+      !hasIneligibleFlag &&
+      !statusValues.some((status) => excludedStatus.test(status));
   }
 
   function dateRangeBounds(value) {
@@ -283,7 +304,8 @@ import {
       event.rescheduled === true || eventStatus === "rescheduled";
     const isCompleted = phase === "completed";
     const isHappening = phase === "ongoing" && !isCancelled && !isRescheduled;
-    const isUpcoming = phase === "upcoming" && !isCancelled && !isRescheduled;
+    const isUpcoming = phase === "upcoming" && !isCancelled && !isRescheduled &&
+      isApprovedUpcomingEvent(event);
     const statusMatches =
       state.status === "all" ||
       (state.status === "ongoing" && isHappening) ||
@@ -375,12 +397,25 @@ import {
           new Date(first.createdAt || 0).getTime(),
       );
     const happeningNow = visible.filter((event) => eventPhase(event) === "ongoing");
-    const completed = visible.filter((event) => eventPhase(event) === "completed");
+    const completed = visible
+      .filter((event) => eventPhase(event) === "completed")
+      .sort((first, second) => {
+        const firstStart = manilaEventBoundaryMillis(first) ?? 0;
+        const secondStart = manilaEventBoundaryMillis(second) ?? 0;
+        const firstEnd = manilaEventBoundaryMillis(first, true) ?? firstStart;
+        const secondEnd = manilaEventBoundaryMillis(second, true) ?? secondStart;
+        return secondEnd - firstEnd || secondStart - firstStart;
+      });
     const cancelled = visible.filter((event) => eventPhase(event) === "cancelled");
     const upcoming = visible.filter((event) =>
+      isApprovedUpcomingEvent(event) &&
       !happeningNow.includes(event) &&
       !completed.includes(event) &&
       !cancelled.includes(event),
+    ).sort(
+      (first, second) =>
+        (manilaEventBoundaryMillis(first) ?? 0) -
+        (manilaEventBoundaryMillis(second) ?? 0),
     );
     if (upcomingHeading) {
       const headingLabel = state.status === "all"

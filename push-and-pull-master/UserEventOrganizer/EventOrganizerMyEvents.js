@@ -31,6 +31,7 @@ import {
   getEventStage,
   isFullyApproved as isEventFullyApproved,
 } from "../eventWorkflow.js";
+import { eventBoundaryMillis } from "./eventOrganizerDashboardDates.js";
 
 (() => {
   "use strict";
@@ -561,15 +562,53 @@ import {
   function getFilteredEvents() {
     const query = searchInput?.value.trim().toLowerCase() || "";
     const selectedDate = dateFilter?.value || "all";
-    const currentDate = new Date();
+    const now = Date.now();
+    const currentDate = new Date(now);
     currentDate.setHours(0, 0, 0, 0);
 
-    return organizerEvents.filter((event) => {
+    const filteredEvents = organizerEvents.filter((event) => {
       const searchableText = `${event.title || event.eventName || event.name || ""} ${event.location || event.venue || ""} ${event.category || ""}`.toLowerCase();
       const eventDateValue = getEventDate(event);
       const eventDate = eventDateValue
         ? new Date(`${String(eventDateValue).substring(0, 10)}T00:00:00`)
         : null;
+      const eventStatus = getEffectiveStatus(event);
+      const blockingFlags = [
+        event.pending,
+        event.isPending,
+        event.draft,
+        event.isDraft,
+        event.isRejected,
+        event.rejected,
+        event.revision,
+        event.isRevision,
+        event.revisionRequested,
+        event.needsRevision,
+        event.isCancelled,
+        event.cancelled,
+        event.canceled,
+        event.completed,
+        event.isCompleted,
+      ];
+      const hasIneligibleStatus = getEventStatusValues(event).some((status) =>
+        ["pending", "draft", "rejected", "revision", "cancelled", "completed"].includes(status),
+      ) || blockingFlags.some((value) =>
+        hasTrueFlag(value) ||
+        ["pending", "draft", "rejected", "revision", "cancelled", "completed"].includes(normalizeStatus(value)),
+      );
+      const hasExplicitApprovalStatus = getEventStatusValues(event).some((status) =>
+        ["approved", "published"].includes(status),
+      ) || [
+        event.approved,
+        event.isApproved,
+        event.published,
+        event.isPublished,
+        event.isLive,
+      ].some(hasTrueFlag);
+      const eligibleForUpcoming = !hasIneligibleStatus &&
+        (hasExplicitApprovalStatus ||
+          (isFullyApproved(event) && ["approved", "published"].includes(eventStatus)));
+      const eventStart = eventBoundaryMillis(event);
 
       const matchesSearch = !query || searchableText.includes(query);
       const validEventDate = eventDate && !Number.isNaN(eventDate.getTime());
@@ -577,7 +616,7 @@ import {
       const customRange = /^custom:(\d{4}-\d{2}-\d{2}):(\d{4}-\d{2}-\d{2})$/.exec(selectedDate);
       const matchesDate =
         selectedDate === "all" ||
-        (validEventDate && selectedDate === "upcoming" && eventDate >= currentDate) ||
+        (selectedDate === "upcoming" && eligibleForUpcoming && eventStart !== null && eventStart > now) ||
         (validEventDate && selectedDate === "past" && eventDate < currentDate) ||
         (validEventDate && selectedRange && eventDate >= selectedRange[0] && eventDate <= selectedRange[1]) ||
         (validEventDate &&
@@ -587,6 +626,25 @@ import {
 
       return matchesSearch && matchesDate;
     });
+
+    if (selectedDate === "past") {
+      return filteredEvents.sort((first, second) => {
+        const firstStart = eventBoundaryMillis(first) ?? 0;
+        const secondStart = eventBoundaryMillis(second) ?? 0;
+        const firstEnd = eventBoundaryMillis(first, true) ?? firstStart;
+        const secondEnd = eventBoundaryMillis(second, true) ?? secondStart;
+        return secondEnd - firstEnd || secondStart - firstStart;
+      });
+    }
+
+    if (selectedDate === "upcoming") {
+      return filteredEvents.sort(
+        (first, second) =>
+          (eventBoundaryMillis(first) ?? 0) - (eventBoundaryMillis(second) ?? 0),
+      );
+    }
+
+    return filteredEvents;
   }
 
   function renderStatistics(events) {

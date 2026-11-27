@@ -537,8 +537,8 @@
       .filter-dropdown--events .filter-button {
         min-width: 118px;
       }
-      .filter-dropdown--sources .filter-button {
-        min-width: 124px;
+      .filter-dropdown--organizations .filter-button {
+        min-width: 154px;
       }
       .filter-dropdown--category .filter-button {
         min-width: 104px;
@@ -2785,41 +2785,23 @@
             />
           </div>
           <div class="filter-pills" id="filterPills">
-            <div class="filter-dropdown filter-dropdown--sources">
+            <div class="filter-dropdown filter-dropdown--organizations">
               <button
                 type="button"
                 class="filter-button"
-                id="sourceFilterBtn"
-                data-filter="source"
+                id="organizationFilterBtn"
+                data-filter="organization"
                 aria-expanded="false"
               >
-                All Sources
+                All Organizations
               </button>
-              <div class="filter-menu" data-menu="source">
+              <div class="filter-menu" data-menu="organization">
                 <button
                   type="button"
                   class="filter-option active"
-                  data-value="All Sources"
+                  data-value="All Organizations"
                 >
-                  All Sources</button
-                ><button
-                  type="button"
-                  class="filter-option"
-                  data-value="PUP Official"
-                >
-                  PUP Official</button
-                ><button
-                  type="button"
-                  class="filter-option"
-                  data-value="Organizational"
-                >
-                  Organizational</button
-                ><button
-                  type="button"
-                  class="filter-option"
-                  data-value="Others / External"
-                >
-                  Others / External
+                  All Organizations
                 </button>
               </div>
             </div>
@@ -3284,7 +3266,7 @@
       // Filter State
       const filterState = {
         q: "",
-        source: "All Sources",
+        organization: "All Organizations",
         category: "All Categories",
         from: "", // YYYY-MM-DD
         to: "", // YYYY-MM-DD
@@ -3582,6 +3564,264 @@
         return ["Organizational", "Others / External"];
       }
 
+      const CANONICAL_ORGANIZATIONS = [
+        {
+          value: "CSC",
+          label: "CSC (Central Student Council)",
+          aliases: [
+            "CSC",
+            "Central Student Council",
+            "College Student Council",
+            "Campus Student Council",
+          ],
+        },
+        {
+          value: "ACES",
+          label: "ACES",
+          aliases: ["ACES", "Association of Computer Engineering Students"],
+        },
+        {
+          value: "HRSS",
+          label: "HRSS",
+          aliases: ["HRSS", "Human Resource Students Society"],
+        },
+        {
+          value: "IBITS",
+          label: "IBITS",
+          aliases: [
+            "IBITS",
+            "Institute of Bachelors in Information Technology Studies",
+            "Information Technology and Business Intelligence Society",
+          ],
+        },
+        {
+          value: "JPCS",
+          label: "JPCS",
+          aliases: ["JPCS", "Junior Philippine Computer Society"],
+        },
+        {
+          value: "PIIE",
+          label: "PIIE",
+          aliases: [
+            "PIIE",
+            "PIEE",
+            "Philippine Institute of Industrial Engineers",
+            "Philippine Institute of Industrial Engineers PUP Biñan Student Chapter",
+          ],
+        },
+        {
+          value: "SMS",
+          label: "SMS",
+          aliases: ["SMS", "Samahan ng mga Mag-aaral ng Sikolohiya"],
+        },
+        {
+          value: "YES",
+          label: "YES",
+          aliases: ["YES", "Young Educators' Society"],
+        },
+      ];
+      const ORGANIZATION_FIELDS = [
+        "organizationName",
+        "organization",
+        "orgName",
+        "organizerOrganization",
+        "organizerOrg",
+        "studentOrganization",
+        "studentOrg",
+        "organizations",
+        "studentOrganizations",
+        "affiliation",
+        "organizationCode",
+        "orgCode",
+        "organizationId",
+        "orgId",
+      ];
+      const ORGANIZATION_OBJECT_FIELDS = [
+        "organizationCode",
+        "orgCode",
+        "organizationId",
+        "orgId",
+        "code",
+        "organizationName",
+        "orgName",
+        "name",
+        "label",
+      ];
+      const normalizeOrganizationIdentifier = (value) =>
+        String(value || "")
+          .normalize("NFKD")
+          .replace(/[\u0300-\u036f]/g, "")
+          .toLowerCase()
+          .replace(/[^a-z0-9]/g, "");
+      const organizationAliasKeys = (organization) =>
+        new Set(
+          [organization.value, ...organization.aliases]
+            .map(normalizeOrganizationIdentifier)
+            .filter(Boolean),
+        );
+      let organizationFilterOptions = [
+        { value: "All Organizations", label: "All Organizations", aliases: new Set() },
+        ...CANONICAL_ORGANIZATIONS.map((organization) => ({
+          ...organization,
+          aliases: organizationAliasKeys(organization),
+        })),
+      ];
+
+      function collectOrganizationValues(value, results, depth = 0) {
+        if (depth > 4 || value === null || value === undefined) return;
+        if (Array.isArray(value)) {
+          value.forEach((item) => collectOrganizationValues(item, results, depth + 1));
+          return;
+        }
+        if (typeof value === "object") {
+          ORGANIZATION_OBJECT_FIELDS.forEach((field) => {
+            collectOrganizationValues(value[field], results, depth + 1);
+          });
+          return;
+        }
+        const text = String(value).trim();
+        const normalized = normalizeOrganizationIdentifier(text);
+        if (
+          text &&
+          ![
+            "eventorganizer",
+            "notspecified",
+            "na",
+            "none",
+            "null",
+            "undefined",
+            "pupofficial",
+            "organizational",
+            "othersexternal",
+            "teacherfaculty",
+          ].includes(normalized)
+        ) {
+          results.push(text);
+          text
+            .split(/[,;|\/()]/)
+            .map((part) => part.trim())
+            .filter(Boolean)
+            .forEach((part) => results.push(part));
+        }
+      }
+
+      function eventOrganizationValues(event) {
+        const values = [];
+        const records = [event.raw, event].filter(
+          (record) => record && typeof record === "object",
+        );
+        records.forEach((record, recordIndex) => {
+          ORGANIZATION_FIELDS.forEach((field) => {
+            if (recordIndex === 1 && field === "organizationName" && event.raw) return;
+            collectOrganizationValues(record[field], values);
+          });
+        });
+        return [...new Set(values)];
+      }
+
+      function eventOrganizationMatchValues(event) {
+        const values = eventOrganizationValues(event);
+        const fallbackFields = [
+          "organizerName",
+          "organizer",
+          "org",
+          "createdByOrg",
+          "source",
+          "eventSource",
+        ];
+        [event.raw, event].forEach((record) => {
+          if (!record || typeof record !== "object") return;
+          fallbackFields.forEach((field) => {
+            collectOrganizationValues(record[field], values);
+          });
+        });
+        return [...new Set(values)];
+      }
+
+      function updateOrganizationFilterOptions() {
+        const options = [
+          { value: "All Organizations", label: "All Organizations", aliases: new Set() },
+          ...CANONICAL_ORGANIZATIONS.map((organization) => ({
+            ...organization,
+            aliases: organizationAliasKeys(organization),
+          })),
+        ];
+        const dynamicOptions = [];
+
+        rawEventsMap.forEach((event) => {
+          const values = eventOrganizationValues(event);
+          const aliasKeys = new Set(values.map(normalizeOrganizationIdentifier).filter(Boolean));
+          if (!aliasKeys.size) return;
+
+          const canonical = options.find(
+            (option) =>
+              option.value !== "All Organizations" &&
+              [...aliasKeys].some((alias) => option.aliases.has(alias)),
+          );
+          if (canonical) return;
+
+          const label =
+            values.find((value) => /\s/.test(value) && normalizeOrganizationIdentifier(value).length > 8) ||
+            values[0];
+          if (!label) return;
+
+          const existing = dynamicOptions.find((option) =>
+            [...aliasKeys].some((alias) => option.aliases.has(alias)),
+          );
+          if (existing) {
+            aliasKeys.forEach((alias) => existing.aliases.add(alias));
+            if (
+              label.length > existing.label.length &&
+              /\s/.test(label) &&
+              normalizeOrganizationIdentifier(label).length > 8
+            ) {
+              existing.label = label;
+            }
+            return;
+          }
+
+          dynamicOptions.push({
+            value: `custom:${normalizeOrganizationIdentifier(label)}`,
+            label,
+            aliases: aliasKeys,
+          });
+        });
+
+        organizationFilterOptions = [
+          ...options,
+          ...dynamicOptions.sort((first, second) => first.label.localeCompare(second.label)),
+        ];
+        const menu = document.querySelector('[data-menu="organization"]');
+        if (!menu) return;
+        menu.innerHTML = organizationFilterOptions
+          .map(
+            (option) => `
+              <button
+                type="button"
+                class="filter-option"
+                data-value="${escapeHTML(option.value)}"
+              >${escapeHTML(option.label)}</button>
+            `,
+          )
+          .join("");
+        updateDropdownButtons();
+      }
+
+      function matchesOrganization(event, selectedOrganization) {
+        if (!selectedOrganization || selectedOrganization === "All Organizations") return true;
+        const option =
+          organizationFilterOptions.find((candidate) => candidate.value === selectedOrganization) ||
+          organizationFilterOptions.find((candidate) =>
+            candidate.aliases.has(normalizeOrganizationIdentifier(selectedOrganization)),
+          );
+        const expectedAliases = option?.aliases || new Set([
+          normalizeOrganizationIdentifier(selectedOrganization),
+        ]);
+        return eventOrganizationMatchValues(event).some((value) =>
+          expectedAliases.has(normalizeOrganizationIdentifier(value)),
+        );
+      }
+
       function normalizeEvent(id, data) {
         const eventDateTimes = getEventDateRange(data);
         const startMs = eventDateTimes?.start.getTime() || 0;
@@ -3717,7 +3957,24 @@
       }
 
       function getEventClassification(ev, now) {
-        if (ev.status === "completed") return "ended";
+        const statusValues = [
+          ev.status,
+          ev.eventStatus,
+          ev.event_status,
+          ev.publicationStatus,
+          ev.publication_status,
+          ev.raw?.status,
+          ev.raw?.eventStatus,
+          ev.raw?.event_status,
+          ev.raw?.publicationStatus,
+          ev.raw?.publication_status,
+        ].map((status) =>
+          String(status || "").trim().toLowerCase().replace(/[\s_-]+/g, " "),
+        );
+        if (statusValues.includes("completed")) return "ended";
+        if (statusValues.some((status) => ["ongoing", "active", "live"].includes(status))) {
+          return now >= ev.endAt ? "ended" : "live";
+        }
         if (now < ev.startAt) return "upcoming";
         if (now >= ev.endAt) return "ended";
         return "live";
@@ -3808,7 +4065,7 @@
           evStatus === "cancelled" || evStatus === "canceled";
         const isRescheduled = evStatus === "rescheduled" || Boolean(ev.rescheduledFrom || ev.rescheduledDate);
         const isCompleted = evStatus === "completed" || classification === "ended";
-        const isUpcoming = !isCancelled && !isRescheduled && !isCompleted && (classification === "upcoming" || classification === "live");
+        const isUpcoming = !isCancelled && !isRescheduled && !isCompleted && classification === "upcoming";
 
         const activeStatus = filterState.status || filterState.reg || "all";
 
@@ -3840,9 +4097,9 @@
           if (!eventName.includes(q)) return false;
         }
 
-        // Source filter
-        if (filterState.source !== "All Sources") {
-          if (!(ev.sourceGroups || [ev.source]).includes(filterState.source)) return false;
+        // Organization filter
+        if (!matchesOrganization(ev, filterState.organization)) {
+          return false;
         }
 
         // Category filter
@@ -3881,12 +4138,13 @@
       function readUrlParams() {
         const params = new URLSearchParams(window.location.search);
         if (params.has("q")) filterState.q = params.get("q").trim();
-        if (params.has("source")) {
-          const source = params.get("source").trim();
-          filterState.source = /\bcsc\b/i.test(source) ||
-            /campus student council|central student council/i.test(source)
-            ? "Organizational"
-            : source;
+        if (params.has("organization")) {
+          const requestedOrganization = params.get("organization").trim();
+          const normalized = normalizeOrganizationIdentifier(requestedOrganization);
+          const canonical = CANONICAL_ORGANIZATIONS.find((organization) =>
+            organizationAliasKeys(organization).has(normalized),
+          );
+          filterState.organization = canonical?.value || requestedOrganization;
         }
         if (params.has("category")) filterState.category = params.get("category").trim();
         if (params.has("from")) filterState.from = params.get("from").trim();
@@ -3926,8 +4184,12 @@
         if (filterState.q) url.searchParams.set("q", filterState.q);
         else url.searchParams.delete("q");
 
-        if (filterState.source && filterState.source !== "All Sources") url.searchParams.set("source", filterState.source);
-        else url.searchParams.delete("source");
+        if (filterState.organization && filterState.organization !== "All Organizations") {
+          url.searchParams.set("organization", filterState.organization);
+        } else {
+          url.searchParams.delete("organization");
+        }
+        url.searchParams.delete("source");
 
         if (filterState.category && filterState.category !== "All Categories") url.searchParams.set("category", filterState.category);
         else url.searchParams.delete("category");
@@ -3957,8 +4219,15 @@
       }
 
       function updateDropdownButtons(statusLabel = "") {
-        const srcBtn = document.getElementById("sourceFilterBtn");
-        if (srcBtn) srcBtn.textContent = filterState.source;
+        const organizationBtn = document.getElementById("organizationFilterBtn");
+        const selectedOrganization = organizationFilterOptions.find(
+          (option) => option.value === filterState.organization,
+        ) || organizationFilterOptions.find((option) =>
+          option.aliases.has(normalizeOrganizationIdentifier(filterState.organization)),
+        );
+        if (organizationBtn) {
+          organizationBtn.textContent = selectedOrganization?.label || filterState.organization;
+        }
 
         const catBtn = document.getElementById("categoryFilterBtn");
         if (catBtn) catBtn.textContent = filterState.category;
@@ -4005,7 +4274,15 @@
           menu.querySelectorAll(".filter-option").forEach((opt) => {
             const val = opt.dataset.value;
             let active = false;
-            if (type === "source") active = (val === filterState.source);
+            if (type === "organization") {
+              const option = organizationFilterOptions.find(
+                (candidate) => candidate.value === val,
+              );
+              active = val === filterState.organization ||
+                Boolean(option?.aliases.has(
+                  normalizeOrganizationIdentifier(filterState.organization),
+                ));
+            }
             if (type === "category") active = (val === filterState.category);
             if (type === "status" || type === "registration") active = (val === (filterState.status || filterState.reg || "all"));
             if (type === "availability") {
@@ -4043,8 +4320,16 @@
         if (filterState.q) {
           chips.push({ key: "q", label: `Search: "${filterState.q}"` });
         }
-        if (filterState.source !== "All Sources") {
-          chips.push({ key: "source", label: `Source: ${filterState.source}` });
+        if (filterState.organization !== "All Organizations") {
+          const selectedOrganization = organizationFilterOptions.find(
+            (option) => option.value === filterState.organization,
+          ) || organizationFilterOptions.find((option) =>
+            option.aliases.has(normalizeOrganizationIdentifier(filterState.organization)),
+          );
+          chips.push({
+            key: "organization",
+            label: `Organization: ${selectedOrganization?.label || filterState.organization}`,
+          });
         }
         if (filterState.category !== "All Categories") {
           chips.push({ key: "category", label: `Category: ${filterState.category}` });
@@ -4093,7 +4378,7 @@
 
       function clearAllFilters() {
         filterState.q = "";
-        filterState.source = "All Sources";
+        filterState.organization = "All Organizations";
         filterState.category = "All Categories";
         filterState.from = "";
         filterState.to = "";
@@ -5242,6 +5527,7 @@
         const upcomingEvents = [];
 
         rawEventsMap.forEach((ev) => {
+          if (!matchesOrganization(ev, filterState.organization)) return;
           const classification = getEventClassification(ev, now);
           const status = String(ev.status || "").toLowerCase();
           const cancelled = ev.cancelled === true || ev.canceled === true ||
@@ -5466,8 +5752,16 @@
           }
         });
 
-        // Sorted by start time ascending
-        matching.sort((a, b) => a.startAt - b.startAt);
+        matching.sort((first, second) => {
+          const firstStart = Number(first.startAt) || 0;
+          const secondStart = Number(second.startAt) || 0;
+          if (activeStatus === "completed") {
+            const firstEnd = Number(first.endAt) || firstStart;
+            const secondEnd = Number(second.endAt) || secondStart;
+            return secondEnd - firstEnd || secondStart - firstStart;
+          }
+          return firstStart - secondStart;
+        });
 
         const displayedEvents = matching.filter((ev) => {
           const status = String(ev.status || "").toLowerCase();
@@ -5641,6 +5935,7 @@
       }
 
       function renderAll() {
+        updateOrganizationFilterOptions();
         renderHappeningNow();
         renderAllEvents();
         renderActiveChips();
@@ -5959,7 +6254,7 @@
           });
         }
 
-        // Dropdowns (Source, Category, Registration, Availability)
+        // Dropdowns (Organization, Category, Registration, Availability)
         document.querySelectorAll(".filter-dropdown").forEach((dropdown) => {
           const btn = dropdown.querySelector(".filter-button");
           const menu = dropdown.querySelector(".filter-menu");
@@ -5977,35 +6272,35 @@
             }
           });
 
-          menu.querySelectorAll(".filter-option").forEach((opt) => {
-            opt.addEventListener("click", (e) => {
-              e.stopPropagation();
-              const val = opt.dataset.value;
-              const type = menu.dataset.menu;
+          menu.addEventListener("click", (e) => {
+            const opt = e.target.closest(".filter-option");
+            if (!opt || !menu.contains(opt)) return;
+            e.stopPropagation();
+            const val = opt.dataset.value;
+            const type = menu.dataset.menu;
 
-              if (type === "source") {
-                filterState.source = val;
-              } else if (type === "category") {
-                filterState.category = val;
-              } else if (type === "status" || type === "registration") {
-                filterState.status = val;
-                filterState.reg = val;
-              } else if (type === "availability") {
-                filterState.avail = normalizeAvailability(val);
-              }
+            if (type === "organization") {
+              filterState.organization = val;
+            } else if (type === "category") {
+              filterState.category = val;
+            } else if (type === "status" || type === "registration") {
+              filterState.status = val;
+              filterState.reg = val;
+            } else if (type === "availability") {
+              filterState.avail = normalizeAvailability(val);
+            }
 
-              menu.classList.remove("show");
-              btn.setAttribute("aria-expanded", "false");
-              updateDropdownButtons(
-                type === "status" || type === "registration"
-                  ? opt.textContent.trim()
-                  : "",
-              );
-              writeUrlParams();
-              renderActiveChips();
-              renderAll();
-              announce(`Filter applied: ${val}.`);
-            });
+            menu.classList.remove("show");
+            btn.setAttribute("aria-expanded", "false");
+            updateDropdownButtons(
+              type === "status" || type === "registration"
+                ? opt.textContent.trim()
+                : "",
+            );
+            writeUrlParams();
+            renderActiveChips();
+            renderAll();
+            announce(`Filter applied: ${val}.`);
           });
         });
 
@@ -6028,8 +6323,8 @@
               filterState.q = "";
               const searchInput = document.getElementById("searchInput");
               if (searchInput) searchInput.value = "";
-            } else if (key === "source") {
-              filterState.source = "All Sources";
+            } else if (key === "organization") {
+              filterState.organization = "All Organizations";
             } else if (key === "category") {
               filterState.category = "All Categories";
             } else if (key === "date") {

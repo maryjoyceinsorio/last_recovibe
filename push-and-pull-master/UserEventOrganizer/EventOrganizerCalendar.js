@@ -16,6 +16,7 @@ import {
 } from "../UserStudent/firebaseConfig.js";
 import { fetchMonthHolidays } from "../holidayService.js";
 import { getEventDateRange } from "../UserStudent/calendarDateRange.mjs";
+import { isFullyApproved as isEventFullyApproved } from "../eventWorkflow.js";
 
 (() => {
   const monthNames = [
@@ -344,6 +345,58 @@ import { getEventDateRange } from "../UserStudent/calendarDateRange.mjs";
     return ["cancelled", "canceled", "rejected", "disapproved"].includes(status);
   }
 
+  function isApprovedUpcomingEvent(event) {
+    const statuses = [
+      event.status,
+      event.publicationStatus,
+      event.approvalStatus,
+      event.approval_status,
+      event.adminStatus,
+      event.admin_status,
+      event.submissionStatus,
+      event.workflowStatus,
+      event.reviewStatus,
+      event.reviewDecision,
+      event.approval?.status,
+      event.approval?.approvalStatus,
+      event.review?.status,
+      event.review?.decision,
+      event.workflow?.status,
+      event.approvalData?.status,
+      event.approvalData?.approvalStatus,
+    ].map((value) => String(value || "").trim().toLowerCase().replace(/[\s_-]+/g, ""));
+    const excludedStatus = /^(pending|awaitingapproval|awaitingreview|underreview|inreview|reviewing|submitted|draft|rejected|disapproved|revision|needsrevision|cancelled|canceled|completed|complete|ended|finished)/;
+    const hasExplicitApprovalStatus = statuses.some((status) =>
+      ["approved", "fullyapproved", "approvedandunpublished", "approvedbutunpublished", "published", "publishedlive"].includes(status),
+    );
+    const blockingFlags = [
+      event.pending,
+      event.isPending,
+      event.draft,
+      event.isDraft,
+      event.isRejected,
+      event.rejected,
+      event.revision,
+      event.isRevision,
+      event.revisionRequested,
+      event.needsRevision,
+      event.isCancelled,
+      event.cancelled,
+      event.canceled,
+      event.completed,
+      event.isCompleted,
+    ];
+    const hasIneligibleFlag = blockingFlags.some((value) =>
+      value === true || value === 1 ||
+      ["true", "yes", "1"].includes(String(value || "").trim().toLowerCase()) ||
+      ["pending", "draft", "rejected", "revision", "cancelled", "canceled", "completed"]
+        .includes(String(value || "").trim().toLowerCase().replace(/[\s_-]+/g, "")),
+    );
+    return (isEventFullyApproved(event) || hasExplicitApprovalStatus) &&
+      !hasIneligibleFlag &&
+      !statuses.some((status) => excludedStatus.test(status));
+  }
+
   function normalizeEvent(id, data) {
     const dateRange = getEventDateRange(data);
     if (
@@ -655,11 +708,10 @@ import { getEventDateRange } from "../UserStudent/calendarDateRange.mjs";
     }
 
     const filtered = getFilteredEvents();
-    const todayIso = toPhDateStr(new Date());
+    const now = Date.now();
 
-    // Filter upcoming events: events occurring on or after today
     const upcoming = filtered
-      .filter((ev) => ev.endDay && ev.endDay >= todayIso)
+      .filter((ev) => ev.startAt > now && isApprovedUpcomingEvent(ev))
       .sort((a, b) => {
         const diff = (a.startAt || 0) - (b.startAt || 0);
         if (diff !== 0) return diff;

@@ -747,14 +747,15 @@ ul {
 /* Recommended horizontal card strip */
 .rec-grid {
   display: flex;
+  flex-wrap: nowrap;
   gap: 14px;
   overflow-x: auto;
   padding: 0 0 10px;
-  scroll-snap-type: x proximity;
+  scroll-snap-type: x mandatory;
   scrollbar-width: auto;
 }
 .rec-card {
-  flex: 0 0 calc((100% - 28px) / 3);
+  flex: 0 0 clamp(260px, 34vw, 340px);
   scroll-snap-align: start;
 }
 .rec-card {

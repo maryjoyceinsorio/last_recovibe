@@ -347,6 +347,18 @@ import {
       .filter((event) => {
         const range = eventDateRange(event);
         if (!range || manilaDateKey(range.end) < today) return false;
+        if (!isHolidayEvent(event)) {
+          const statuses = [
+            event.status,
+            event.eventStatus,
+            event.event_status,
+            event.publicationStatus,
+            event.publication_status,
+          ].map((value) => String(value || "").trim().toLowerCase().replace(/[\s_-]+/g, ""));
+          if (statuses.includes("ongoing") || range.start.getTime() <= Date.now()) {
+            return false;
+          }
+        }
         if (!currentMonthOnly) return true;
         const start = manilaDateKey(range.start);
         const upcomingDate = start < today ? today : start;
@@ -355,11 +367,7 @@ import {
       .sort((first, second) => {
         const firstRange = eventDateRange(first);
         const secondRange = eventDateRange(second);
-        const firstStart = manilaDateKey(firstRange.start);
-        const secondStart = manilaDateKey(secondRange.start);
-        const firstDate = firstStart < today ? today : firstStart;
-        const secondDate = secondStart < today ? today : secondStart;
-        return firstDate.localeCompare(secondDate) ||
+        return firstRange.start.getTime() - secondRange.start.getTime() ||
           String(first.title).localeCompare(String(second.title));
       });
   }

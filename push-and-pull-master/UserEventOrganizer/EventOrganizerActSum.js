@@ -7,6 +7,7 @@ import {
 import { onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
 import { auth, authReady, db, isFirebaseConfigured } from "../UserStudent/firebaseConfig.js";
 import { syncOrganizerOrganization } from "../organizationScope.js";
+import { eventBoundaryMillis } from "./eventOrganizerDashboardDates.js";
 import "./OrganizerNotificationBadge.js";
 
 (() => {
@@ -777,6 +778,18 @@ import "./OrganizerNotificationBadge.js";
       const text = `${event.title} ${event.venue || ""} ${getActivitySourceText(event)} ${event.category || ""}`.toLowerCase();
       return (!search || text.includes(search)) &&
         (!dateFilter || String(event.dateISO || event.date || "").slice(0, 10) === dateFilter);
+    }).sort((first, second) => {
+      const firstStart = eventBoundaryMillis(first) ?? 0;
+      const secondStart = eventBoundaryMillis(second) ?? 0;
+      if (activityStatusFilter.value === "completed") {
+        const firstEnd = eventBoundaryMillis(first, true) ?? firstStart;
+        const secondEnd = eventBoundaryMillis(second, true) ?? secondStart;
+        return secondEnd - firstEnd || secondStart - firstStart;
+      }
+      if (activityStatusFilter.value === "upcoming") {
+        return firstStart - secondStart;
+      }
+      return 0;
     });
     const eventsEmpty = document.getElementById("activityEventsEmpty");
     const eventsTableWrap = document.getElementById("activityEventsTableWrap");

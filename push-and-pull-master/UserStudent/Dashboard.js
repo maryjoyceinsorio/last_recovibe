@@ -1081,6 +1081,9 @@ function getEventClassification(ev, now) {
   ) {
     return "past";
   }
+  if (statuses.some((status) => ["ongoing", "active", "live"].includes(status))) {
+    return "live";
+  }
   if (statuses.some((status) =>
     ["approved", "published", "upcoming", "rescheduled", "ongoing", "active", "live"].includes(status),
   )) {
@@ -1360,9 +1363,8 @@ function renderRecommended() {
       getEventCategories(ev).some((category) =>
         userCategories.has(normalizePreference(category)),
       ),
-    )
-    .slice(0, 3);
-  const recommendations = matched.length ? matched : upcoming.slice(0, 3);
+    );
+  const recommendations = matched.length ? matched : upcoming;
 
   if (recommendations.length === 0) {
     container.innerHTML = `
@@ -1659,7 +1661,7 @@ function renderUpcoming() {
   }
 
   container.innerHTML = filtered
-    .slice(0, 10)
+    .slice(0, 3)
     .map((ev) => {
       const isRegistered = registeredEventIds.has(ev.id);
       const isDetailsOpen = openDetailsEventIds.has(ev.id);
