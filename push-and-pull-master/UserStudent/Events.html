@@ -3011,6 +3011,12 @@
                 ><button
                   type="button"
                   class="filter-option"
+                  data-value="live"
+                >
+                  Ongoing (Live)</button
+                ><button
+                  type="button"
+                  class="filter-option"
                   data-value="cancelled"
                 >
                   Cancelled</button
@@ -4071,23 +4077,20 @@
 
         // Date range matching
         const hasRange = Boolean(filterState.from && filterState.to);
-        if (!isLiveSection) {
-          if (!hasRange) {
-            // With NO range: ended events are hidden from All Events unless status is explicitly "completed"
-            if (
-              activeStatus !== "completed" &&
-              classification === "ended" &&
-              !(activeStatus === "all" && filterState.avail === "closed")
-            ) return false;
-          } else {
-            // With A range: event matches if any part falls inside range
-            // (startDate <= range end and endDate >= range start), whole days inclusive
-            const evStartDay = new Date(ev.startAt).toLocaleDateString("en-CA");
-            const evEndDay = new Date(ev.endAt || ev.startAt).toLocaleDateString("en-CA");
-            if (!(evStartDay <= filterState.to && evEndDay >= filterState.from)) {
-              return false;
-            }
+        if (hasRange) {
+          // Event matches if any part falls inside the range, whole days inclusive.
+          const evStartDay = new Date(ev.startAt).toLocaleDateString("en-CA");
+          const evEndDay = new Date(ev.endAt || ev.startAt).toLocaleDateString("en-CA");
+          if (!(evStartDay <= filterState.to && evEndDay >= filterState.from)) {
+            return false;
           }
+        } else if (!isLiveSection) {
+          // Without a range, hide ended events from All Events unless status is explicitly "completed".
+          if (
+            activeStatus !== "completed" &&
+            classification === "ended" &&
+            !(activeStatus === "all" && filterState.avail === "closed")
+          ) return false;
         }
 
         // Search query
@@ -4111,9 +4114,11 @@
           }
         }
 
-        // Status filter: "all" | "upcoming" | "cancelled" | "rescheduled" | "completed"
+        // Status filter: "all" | "upcoming" | "live" | "cancelled" | "rescheduled" | "completed"
         if (activeStatus === "upcoming") {
           if (!isUpcoming) return false;
+        } else if (activeStatus === "live") {
+          if (classification !== "live" || isCancelled || isRescheduled) return false;
         } else if (activeStatus === "cancelled") {
           if (!isCancelled) return false;
         } else if (activeStatus === "rescheduled") {
@@ -4301,6 +4306,7 @@
         const labels = {
           all: forHeading ? "Upcoming" : "All Events",
           upcoming: "Upcoming",
+          live: "Ongoing (Live)",
           cancelled: "Cancelled",
           rescheduled: "Rescheduled",
           completed: "Completed",
@@ -4344,6 +4350,7 @@
         if (currentStatus !== "all") {
           let label = "All Events";
           if (currentStatus === "upcoming") label = "Upcoming";
+          else if (currentStatus === "live") label = "Ongoing (Live)";
           else if (currentStatus === "cancelled") label = "Cancelled";
           else if (currentStatus === "rescheduled") label = "Rescheduled";
           else if (currentStatus === "completed") label = "Completed";
@@ -5507,6 +5514,9 @@
         const list = document.getElementById("happeningNowList");
         const countBadge = document.getElementById("happeningNowCountBadge");
         if (!panel || !list) return;
+        const activeStatus = String(filterState.status || filterState.reg || "all").toLowerCase();
+        panel.hidden = activeStatus !== "all";
+        if (panel.hidden) return;
         if (eventsLoading) {
           list.innerHTML = '<div style="padding:16px; color:var(--ink-500);">Loading live events...</div>';
           return;
@@ -5527,7 +5537,7 @@
         const upcomingEvents = [];
 
         rawEventsMap.forEach((ev) => {
-          if (!matchesOrganization(ev, filterState.organization)) return;
+          if (!matchesFilters(ev, true)) return;
           const classification = getEventClassification(ev, now);
           const status = String(ev.status || "").toLowerCase();
           const cancelled = ev.cancelled === true || ev.canceled === true ||

@@ -1,4 +1,5 @@
 import { signOut } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
+import { buildLogoutRedirectUrl } from "../UserStudent/portalAuthLifecycle.js";
 
 const LOGOUT_TIMEOUT_MS = 3000;
 const AUTH_STORAGE_KEYS = [
@@ -55,39 +56,49 @@ export async function logoutSuperAdmin(auth, logoutLink, loginUrl = "SuperAdminL
       ]);
     }
   } catch (error) {
-    console.warn("Super Admin sign-out did not complete before redirect.", error);
-  } finally {
     window.clearTimeout(timeoutId);
-    try {
-      removeStorageKeys(window.localStorage, "localStorage");
-    } catch (error) {
-      console.warn("Could not access localStorage during logout.", error);
-    }
-    try {
-      removeStorageKeys(window.sessionStorage, "sessionStorage");
-    } catch (error) {
-      console.warn("Could not access sessionStorage during logout.", error);
-    }
+    console.error("Super Admin sign-out did not complete.", error);
     try {
       window.dispatchEvent(new Event("superadmin-logout-reset"));
-    } catch (error) {
-      console.warn("Could not reset the logout dialog state.", error);
-    }
-    try {
       resetLogoutUi(logoutLink);
-    } catch (error) {
-      console.warn("Could not reset the logout controls.", error);
+    } catch (resetError) {
+      console.warn("Could not reset the logout controls.", resetError);
     }
+    window.alert("Could not sign out. Your session is still active; please try again.");
+    return;
+  }
 
+  window.clearTimeout(timeoutId);
+  try {
+    removeStorageKeys(window.localStorage, "localStorage");
+  } catch (error) {
+    console.warn("Could not access localStorage during logout.", error);
+  }
+  try {
+    removeStorageKeys(window.sessionStorage, "sessionStorage");
+  } catch (error) {
+    console.warn("Could not access sessionStorage during logout.", error);
+  }
+  try {
+    window.dispatchEvent(new Event("superadmin-logout-reset"));
+  } catch (error) {
+    console.warn("Could not reset the logout dialog state.", error);
+  }
+  try {
+    resetLogoutUi(logoutLink);
+  } catch (error) {
+    console.warn("Could not reset the logout controls.", error);
+  }
+
+  const logoutUrl = buildLogoutRedirectUrl(loginUrl);
+  try {
+    window.location.replace(logoutUrl);
+  } catch (error) {
+    console.error("Could not replace the page with the Super Admin login.", error);
     try {
-      window.location.replace(loginUrl);
-    } catch (error) {
-      console.error("Could not replace the page with the Super Admin login.", error);
-      try {
-        window.location.href = loginUrl;
-      } catch (fallbackError) {
-        console.error("Could not redirect to the Super Admin login.", fallbackError);
-      }
+      window.location.href = logoutUrl;
+    } catch (fallbackError) {
+      console.error("Could not redirect to the Super Admin login.", fallbackError);
     }
   }
 }

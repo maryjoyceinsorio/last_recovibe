@@ -459,10 +459,6 @@ import {
     }
   }
 
-  window.addEventListener("pageshow", (event) => {
-    if (event.persisted) window.location.reload();
-  });
-
   loginButton.addEventListener("click", handleSignIn);
   passwordInput.addEventListener("keydown", (event) => {
     if (event.key === "Enter") handleSignIn();

@@ -1964,7 +1964,30 @@ async function handleRegister(eventId) {
   if (pendingRegistrationIds.has(eventId)) {
     return registrationFailure("Registration is already in progress.");
   }
+  if (registeredEventIds.has(eventId)) {
+    const message = "You are already registered for this event.";
+    showToast(message);
+    announce(message);
+    return registrationFailure(message);
+  }
 
+  pendingRegistrationIds.add(eventId);
+  try {
+    renderHappeningNow();
+    renderUpcoming();
+    renderRecommended();
+    renderCalendar();
+    return await performRegistration(eventId);
+  } finally {
+    pendingRegistrationIds.delete(eventId);
+    renderHappeningNow();
+    renderUpcoming();
+    renderRecommended();
+    renderCalendar();
+  }
+}
+
+async function performRegistration(eventId) {
   try {
     systemAccessSettings = await readSystemAccessSettings(db);
   } catch (error) {
@@ -2026,7 +2049,6 @@ async function handleRegister(eventId) {
     return registrationFailure(registrationBlockReason);
   }
 
-  pendingRegistrationIds.add(eventId);
   renderHappeningNow();
   renderUpcoming();
   renderRecommended();
@@ -2098,12 +2120,6 @@ async function handleRegister(eventId) {
     showToast(message);
     announce(message);
     return registrationFailure(message);
-  } finally {
-    pendingRegistrationIds.delete(eventId);
-    renderHappeningNow();
-    renderUpcoming();
-    renderRecommended();
-    renderCalendar();
   }
   return true;
 }

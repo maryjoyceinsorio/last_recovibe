@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   createAttendanceQrPayload,
+  getSharedAttendanceQrPayload,
   parseAttendanceQrPayload,
 } from "./attendanceQr.js";
 
@@ -66,4 +67,75 @@ test("attendance QR payload requires a user and supports generic profile codes",
     ),
     /no event context/,
   );
+});
+
+test("shared profile QR payload stays identical across page loads while fresh", async () => {
+  const previousStorage = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
+  const values = new Map();
+  Object.defineProperty(globalThis, "localStorage", {
+    configurable: true,
+    value: {
+      getItem: (key) => values.get(key) || null,
+      setItem: (key, value) => values.set(key, String(value)),
+    },
+  });
+  try {
+    const user = { uid: "shared-qr-student", email: "student@example.edu" };
+    const first = getSharedAttendanceQrPayload(user);
+    const reloadedModule = await import(`./attendanceQr.js?reload=${Date.now()}`);
+    const afterNavigation = reloadedModule.getSharedAttendanceQrPayload(user);
+
+    assert.equal(afterNavigation, first);
+    assert.equal(
+      parseAttendanceQrPayload(afterNavigation, "event-456").registrationStatus,
+      "profile",
+    );
+    assert.equal(
+      values.get("recovibeAttendanceQr:shared-qr-student"),
+      first,
+    );
+  } finally {
+    if (previousStorage) {
+      Object.defineProperty(globalThis, "localStorage", previousStorage);
+    } else {
+      delete globalThis.localStorage;
+    }
+  }
+});
+
+test("shared profile QR payload refreshes before scanner expiry and on request", () => {
+  const previousStorage = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
+  const values = new Map();
+  Object.defineProperty(globalThis, "localStorage", {
+    configurable: true,
+    value: {
+      getItem: (key) => values.get(key) || null,
+      setItem: (key, value) => values.set(key, String(value)),
+    },
+  });
+  const originalNow = Date.now;
+  try {
+    const user = { uid: "expiring-qr-student", email: "student@example.edu" };
+    const first = getSharedAttendanceQrPayload(user);
+    const firstIssuedAt = JSON.parse(first).issuedAt;
+    Date.now = () => firstIssuedAt + 4 * 60 * 1000;
+
+    const rotated = getSharedAttendanceQrPayload(user);
+    assert.notEqual(rotated, first);
+    assert.equal(
+      getSharedAttendanceQrPayload(user, { forceRefresh: true }),
+      values.get("recovibeAttendanceQr:expiring-qr-student"),
+    );
+    assert.notEqual(
+      values.get("recovibeAttendanceQr:expiring-qr-student"),
+      rotated,
+    );
+  } finally {
+    Date.now = originalNow;
+    if (previousStorage) {
+      Object.defineProperty(globalThis, "localStorage", previousStorage);
+    } else {
+      delete globalThis.localStorage;
+    }
+  }
 });

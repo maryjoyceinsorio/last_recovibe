@@ -60,9 +60,9 @@ function normalizeLoginIdentifier(value) {
 
 function studentNumberValidationMessage(value) {
   const identifier = String(value || "").trim();
-  if (!identifier) return "Student number or email is required.";
+  if (!identifier) return "Student number is required.";
   if (looksLikeEmailIdentifier(identifier)) {
-    return emailPattern.test(identifier) ? "" : "Enter a valid email address or student number.";
+    return emailPattern.test(identifier) ? "" : "Enter a valid student number.";
   }
   return validateStudentNumber(identifier);
 }
@@ -185,7 +185,7 @@ function loginErrorMessage(error) {
     case "auth/wrong-password":
     case "auth/user-not-found":
     case "auth/invalid-email":
-      return "Incorrect sign-in email, Student Number, or password.";
+      return "Incorrect student number or password.";
     case "student/profile-mismatch":
       return "The student profile does not match this account. Try your email address or contact support.";
     case "student/profile-lookup-failed":
@@ -275,7 +275,6 @@ async function signIn(submittedPassword) {
     }
 
     await authReady;
-    if (auth.currentUser) await signOut(auth);
     diagnosticStage = emailLogin ? "email profile lookup" : "Student Number profile lookup";
     const numberLookup = emailLogin ? null : await findStudentProfilesByNumber(studentNumber);
     const profiles = emailLogin
@@ -567,7 +566,7 @@ studentNumberInput.addEventListener("paste", (event) => {
     const email = pastedText.toLowerCase();
     const message = emailPattern.test(email)
       ? ""
-      : "Enter a valid email address or student number.";
+      : "Enter a valid student number.";
     studentNumberPasteError = message;
     studentNumberInput.value = email;
     setStudentNumberError(message);

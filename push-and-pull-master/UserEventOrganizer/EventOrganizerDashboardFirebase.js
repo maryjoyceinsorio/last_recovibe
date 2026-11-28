@@ -8,6 +8,7 @@ import {
   where,
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 import { app, auth, db, isFirebaseConfigured } from "../UserStudent/firebaseConfig.js";
+import { buildLogoutRedirectUrl } from "../UserStudent/portalAuthLifecycle.js";
 import { mountHelpBot } from "../recoVibeHelpBot.js";
 import {
   eventBoundaryMillis,
@@ -1182,9 +1183,14 @@ logoutButton?.addEventListener("click", async (event) => {
       await auth.authStateReady();
       await signOut(auth);
     }
-    localStorage.removeItem("recovibeOrganizerId");
-    localStorage.removeItem("recovibeOrganizerProfile");
-    window.location.assign(loginPath);
+    for (const storage of [localStorage, sessionStorage]) {
+      storage.removeItem("recovibeOrganizerId");
+      storage.removeItem("recovibeOrganizerProfile");
+      storage.removeItem("recovibeCurrentOrganizer");
+      storage.removeItem("recovibeTeacherId");
+      storage.removeItem("recovibeOrganizer");
+    }
+    window.location.replace(buildLogoutRedirectUrl(loginPath));
   } catch (error) {
     console.error("Unable to sign out organizer:", error);
     setDashboardMessage("events", "Could not sign out. Your session is still active; please try again.");

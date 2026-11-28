@@ -3,6 +3,22 @@
   if (!script) return;
 
   const scriptUrl = script.src || new URL("../SidebarLayout.js", document.baseURI).href;
+  const currentPath = window.location.pathname.replace(/\\/g, "/");
+  const portalName = ["UserStudent", "UserEventOrganizer", "UserSuperAdmin"]
+    .find((name) => currentPath.includes(`/${name}/`));
+  if (portalName) {
+    window.__rvAuthOriginalVisibility = document.documentElement.style.visibility;
+    document.documentElement.style.visibility = "hidden";
+    import(new URL("./UserStudent/portalAuthLifecycle.js", scriptUrl).href).catch((error) => {
+      console.error("[Portal Auth] Could not load the auth lifecycle guard.", error);
+      const loginPages = {
+        UserStudent: "StudentLogin.html",
+        UserEventOrganizer: "EventOrganizerLogin.html",
+        UserSuperAdmin: "SuperAdminLogin.html",
+      };
+      window.location.replace(new URL(loginPages[portalName], window.location.href).href);
+    });
+  }
   const stylesheetUrl = new URL("./SidebarLayout.css", scriptUrl).href;
   const stylesheetExists = Array.from(
     document.querySelectorAll('link[rel="stylesheet"]'),

@@ -108,7 +108,7 @@ import { logoutSuperAdmin } from "./superAdminLogout.js";
 
   onAuthStateChanged(auth, async (user) => {
     if (!user) {
-      console.info("[SuperAdminGuard] No authenticated user; redirect suppressed in diagnostic mode.");
+      window.location.replace("SuperAdminLogin.html");
       return;
     }
 

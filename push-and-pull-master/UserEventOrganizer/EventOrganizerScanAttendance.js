@@ -1,4 +1,5 @@
 import { auth, authReady, db, rtdb, isFirebaseConfigured } from "../UserStudent/firebaseConfig.js";
+import { buildLogoutRedirectUrl } from "../UserStudent/portalAuthLifecycle.js";
 import { onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
 import { ref, onValue, off, get } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-database.js";
 import {
@@ -472,12 +473,19 @@ if (organizerLogout) {
     cleanupCamera();
     try {
       if (auth) await signOut(auth);
-    } catch {}
-    localStorage.removeItem("recovibeOrganizerId");
-    localStorage.removeItem("recovibeOrganizerProfile");
-    localStorage.removeItem("recovibeCurrentOrganizer");
-    localStorage.removeItem("recovibeTeacherId");
-    window.location.href = "EventOrganizerLogin.html";
+    } catch (error) {
+      console.error("Could not sign out organizer:", error);
+      window.alert("Could not sign out. Your session is still active; please try again.");
+      return;
+    }
+    for (const storage of [localStorage, sessionStorage]) {
+      storage.removeItem("recovibeOrganizerId");
+      storage.removeItem("recovibeOrganizerProfile");
+      storage.removeItem("recovibeCurrentOrganizer");
+      storage.removeItem("recovibeTeacherId");
+      storage.removeItem("recovibeOrganizer");
+    }
+    window.location.replace(buildLogoutRedirectUrl("EventOrganizerLogin.html"));
   });
 }
 

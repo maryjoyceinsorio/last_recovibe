@@ -43,10 +43,11 @@ import {
   mobileDigits,
   savePendingProfileEmail,
 } from "../portalProfileAccount.js";
+import { buildLogoutRedirectUrl } from "./portalAuthLifecycle.js";
 import {
   commitAttendanceQrCanvas,
   createAttendanceQrCanvas,
-  createAttendanceQrPayload,
+  getSharedAttendanceQrPayload,
   renderAttendanceQr,
 } from "./attendanceQr.js";
 
@@ -1951,13 +1952,18 @@ function hydrateUserProfile() {
             "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js"
           );
           await signOut(auth);
+          if (auth.currentUser) {
+            throw new Error("Firebase Auth still has an active user after sign-out.");
+          }
         }
       } catch (e) {
-        console.warn("Sign out error", e);
+        console.error("Could not sign out student:", e);
+        window.alert("Could not sign out. Your session is still active; please try again.");
+        return;
       }
       localStorage.removeItem("recovibeCurrentUser");
       sessionStorage.removeItem("recovibeCurrentUser");
-      window.location.href = "StudentLogin.html";
+      window.location.replace(buildLogoutRedirectUrl("StudentLogin.html"));
     });
   }
 
@@ -2321,7 +2327,7 @@ function hydrateUserProfile() {
    Student QR Attendance: Card Component, Full-Screen Modal & renderMyQr
    ========================================================================== */
 
-function getStudentQrData(profile = {}, authUser = auth?.currentUser) {
+function getStudentQrData(profile = {}, authUser = auth?.currentUser, forceQrRefresh = false) {
   const registration = profile.registration && typeof profile.registration === "object"
     ? profile.registration
     : {};
@@ -2339,9 +2345,8 @@ function getStudentQrData(profile = {}, authUser = auth?.currentUser) {
   const qrUser = authUser?.uid
     ? { uid: authUser.uid, email: authUser.email || profile.email || "" }
     : null;
-  const payload = createAttendanceQrPayload({
-    user: qrUser,
-    registrationStatus: "profile",
+  const payload = getSharedAttendanceQrPayload(qrUser, {
+    forceRefresh: forceQrRefresh,
   });
 
   const organization = studentOrganization(profile);
@@ -2614,7 +2619,7 @@ function renderMyQr(canvas, options = {}) {
       if (auth?.currentUser?.uid !== authUser.uid) {
         throw new Error("Your account changed. Sign in again before refreshing your QR code.");
       }
-      const qrData = getStudentQrData(refreshedProfile, authUser);
+      const qrData = getStudentQrData(refreshedProfile, authUser, true);
       const visibleModal = modalOverlay && !modalOverlay.hidden && modalOverlay.style.display !== "none";
       const targets = [{ canvas, width: 720 }];
       if (visibleModal && modalCanvas) targets.push({ canvas: modalCanvas, width: 720 });

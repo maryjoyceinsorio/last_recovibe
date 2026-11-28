@@ -1485,9 +1485,21 @@ import { isFullyApproved as isEventFullyApproved } from "../eventWorkflow.js";
     window.addEventListener("beforeunload", cleanupListeners);
     window.addEventListener("pagehide", cleanupListeners);
     window.addEventListener("pageshow", () => {
-      if (state.currentUser && !activeEventUnsubscribers.length) {
-        void subscribeMonthData(true).catch(handleCalendarLoadFailure);
-      }
+      if (!state.currentUser || !auth) return;
+      void auth.authStateReady().then(() => {
+        if (!auth.currentUser) {
+          cleanupListeners();
+          window.location.replace("EventOrganizerLogin.html");
+          return;
+        }
+        if (auth.currentUser.uid !== state.currentUser.uid) {
+          window.location.replace("EventOrganizerLogin.html");
+          return;
+        }
+        if (!activeEventUnsubscribers.length) {
+          return subscribeMonthData(true);
+        }
+      }).catch(handleCalendarLoadFailure);
     });
   }
 

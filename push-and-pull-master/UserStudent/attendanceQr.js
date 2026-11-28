@@ -1,5 +1,7 @@
 let lastIssuedAt = 0;
 let qrLibraryLoadPromise = null;
+const sharedQrPayloads = new Map();
+const sharedQrPayloadMaxAge = 4 * 60 * 1000; // Reissue before the scanner's five-minute limit.
 
 function createNonce() {
   const cryptoApi = globalThis.crypto;
@@ -36,6 +38,61 @@ export function createAttendanceQrPayload({
     issuedAt: lastIssuedAt,
     nonce: createNonce(),
   });
+}
+
+function isReusableSharedQrPayload(rawPayload, uid, now) {
+  try {
+    const payload = JSON.parse(rawPayload);
+    const age = now - payload.issuedAt;
+    return payload.type === "recovibe-attendance" &&
+      payload.version === 1 &&
+      payload.uid === uid &&
+      !String(payload.eventId || "").trim() &&
+      payload.registrationStatus === "profile" &&
+      typeof payload.issuedAt === "number" &&
+      Number.isFinite(payload.issuedAt) &&
+      Boolean(String(payload.nonce || "").trim()) &&
+      age >= -60 * 1000 &&
+      age < sharedQrPayloadMaxAge;
+  } catch {
+    return false;
+  }
+}
+
+export function getSharedAttendanceQrPayload(user, { forceRefresh = false } = {}) {
+  const uid = String(user?.uid || "").trim();
+  if (!uid) throw new Error("Sign in to load your attendance QR code.");
+
+  const storageKey = `recovibeAttendanceQr:${uid}`;
+  if (!forceRefresh) {
+    const now = Date.now();
+    const cachedPayloads = [sharedQrPayloads.get(uid)];
+    try {
+      cachedPayloads.push(globalThis.localStorage?.getItem(storageKey) || "");
+    } catch (error) {
+      console.warn("[Attendance QR] Could not read the shared QR cache:", error);
+    }
+
+    const reusablePayload = cachedPayloads.find((payload) =>
+      payload && isReusableSharedQrPayload(payload, uid, now),
+    );
+    if (reusablePayload) {
+      sharedQrPayloads.set(uid, reusablePayload);
+      return reusablePayload;
+    }
+  }
+
+  const payload = createAttendanceQrPayload({
+    user,
+    registrationStatus: "profile",
+  });
+  sharedQrPayloads.set(uid, payload);
+  try {
+    globalThis.localStorage?.setItem(storageKey, payload);
+  } catch (error) {
+    console.warn("[Attendance QR] Could not persist the shared QR cache:", error);
+  }
+  return payload;
 }
 
 export function parseAttendanceQrPayload(rawToken, eventId) {

@@ -206,12 +206,12 @@
 
             <form id="student-login-form" novalidate>
               <div class="field" id="field-student-number">
-                <label for="student-number">Student number or email</label>
+                <label for="student-number">Student number</label>
                 <input
                   type="text"
                   id="student-number"
                   name="studentNumber"
-                  placeholder="2025-12345-BN-0 or name@example.com"
+                  placeholder="2025-12345-BN-0"
                   autocomplete="username"
                   autocapitalize="none"
                   spellcheck="false"
@@ -300,6 +300,7 @@
       </div>
     </div>
 
+    <script type="module" src="portalAuthLifecycle.js"></script>
     <script type="module" src="StudentLogin.js"></script>
     <script>
     (() => {

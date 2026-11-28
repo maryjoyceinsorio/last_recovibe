@@ -18,7 +18,7 @@ import {
   off,
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-database.js";
 import {
-  createAttendanceQrPayload,
+  getSharedAttendanceQrPayload,
   renderAttendanceQr,
 } from "./attendanceQr.js";
 import {
@@ -2196,11 +2196,8 @@ function renderMyQr(canvas, options = {}) {
       if (!uid || auth?.currentUser?.uid !== uid) {
         throw new Error("Sign in to load your attendance QR code.");
       }
-      const payload = createAttendanceQrPayload({
-        user: auth.currentUser,
-        eventId: options.eventId,
-        eventName: options.eventName,
-        registrationStatus: "registered",
+      const payload = getSharedAttendanceQrPayload(auth.currentUser, {
+        forceRefresh: options.forceRefresh === true,
       });
 
       if (!active) return;
@@ -2306,7 +2303,7 @@ function closeQrModal() {
   }
 }
 
-function initQrModal() {
+function initQrModal(forceRefresh = false) {
   if (qrModalCleanup) {
     qrModalCleanup();
     qrModalCleanup = null;
@@ -2317,6 +2314,7 @@ function initQrModal() {
     width: 260,
     eventId: qrModalEventId,
     eventName: qrModalEventTitle,
+    forceRefresh,
     onStateChange: (state) => {
       qrModalLoading = state === "loading";
       if (qrModalDownloadBtn) qrModalDownloadBtn.disabled = state !== "ready";
@@ -2427,7 +2425,7 @@ function setupModalEventListeners() {
           throw new Error("Sign in to refresh your attendance QR code.");
         }
         permanentQrToken = "";
-        initQrModal();
+        initQrModal(true);
       } catch (err) {
         console.error("Student attendance QR refresh failed:", {
           code: err?.code || "",
