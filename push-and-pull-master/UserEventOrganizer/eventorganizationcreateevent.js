@@ -353,7 +353,9 @@ loadCachedOrganizations();
   const readOnlyOrganizerValue = isOrganizerPage ? organizerOrgName : teacherName;
   function getAutomaticEventSource() {
     if (isOrganizerPage) {
-      if (/csc/i.test(organizerOrgName)) return "CSC";
+      if (getCanonicalOrganizationCode(organizerOrganizationIdentifier || organizerOrgName) === "CSC") {
+        return "CSC";
+      }
       return "Organization";
     }
     return "Teachers / Faculty";
@@ -554,7 +556,7 @@ loadCachedOrganizations();
             throw new Error("Your account is not authorized to submit events as an organizer.");
           }
           organizerOrganizationIdentifier = getOrganizerOrganizationIdentifier(profile);
-          renderApprovers();
+          applyApprovalStagesForOrganization(organizerOrganizationIdentifier);
           syncOrganizerTargetOrganization();
           return profile;
         })
@@ -1019,6 +1021,7 @@ loadCachedOrganizations();
   // 4. State Management
   const state = {
     mode: "existing",
+    activeWizardStep: 1,
     searchQuery: "",
     isCopied: false,
     copiedFrom: null,
@@ -1056,6 +1059,7 @@ loadCachedOrganizations();
     externalGuests: [],
     outsideGuests: false,
     addAsFavorite: false,
+    favoriteTemplateFingerprint: "",
     activeConfirm: null,
     isActionBusy: false,
     submissionEventId: null,
@@ -1068,6 +1072,7 @@ loadCachedOrganizations();
     if (explicitCode) {
       const raw = String(explicitCode).trim().toUpperCase();
       const normalized = raw.replace(/[^A-Z0-9]/g, "");
+      if (getCanonicalOrganizationCode(raw) === "CSC") return "CSC";
       if (normalized === "PIIE" || normalized === "PIEE" ||
           normalized.includes("PHILIPPINEINSTITUTEOFINDUSTRIALENGINEERS")) return "PIIE";
       return raw;
@@ -1082,6 +1087,7 @@ loadCachedOrganizations();
       (isOrganizerPage ? organizerOrganizationIdentifier : ""),
     ).trim().toUpperCase();
     const normalized = raw.replace(/[^A-Z0-9]/g, "");
+    if (getCanonicalOrganizationCode(raw) === "CSC") return "CSC";
     if (normalized === "PIIE" || normalized === "PIEE" ||
         normalized.includes("PHILIPPINEINSTITUTEOFINDUSTRIALENGINEERS")) return "PIIE";
     return raw;
@@ -1093,7 +1099,8 @@ loadCachedOrganizations();
     systemApprovalStages = normalizeApprovalStages(resolved.stages);
     systemApprovalStagesSource = resolved.source;
     state.selectedApprovers = systemApprovalStages
-      .filter((stage) => stage.required || selected.has(stage.id) || selected.has(stage.name))
+      .filter((stage) => !stage.notApplicable &&
+        (stage.required || selected.has(stage.id) || selected.has(stage.name)))
       .map((stage) => stage.id);
     renderApprovers();
   }
@@ -2537,8 +2544,19 @@ loadCachedOrganizations();
         <!-- Left Column: Form Cards -->
         <div class="ce-form-column ce-form-col">
           <form id="createEventMainForm" novalidate autocomplete="off">
+            <section class="ce-wizard-header" aria-label="Event creation progress">
+              <p class="ce-wizard-count" id="wizardStepCount">STEP 1 OF 6</p>
+              <ol class="ce-wizard-steps" aria-label="Event creation steps">
+                <li data-wizard-indicator="1" class="is-active" aria-current="step"><span>1</span><small>Identity</small></li>
+                <li data-wizard-indicator="2"><span>2</span><small>Schedule</small></li>
+                <li data-wizard-indicator="3"><span>3</span><small>Audience</small></li>
+                <li data-wizard-indicator="4"><span>4</span><small>Registration</small></li>
+                <li data-wizard-indicator="5"><span>5</span><small>Details</small></li>
+                <li data-wizard-indicator="6"><span>6</span><small>Review</small></li>
+              </ol>
+            </section>
             <!-- Card 1: Event Identity -->
-            <section class="ce-card" id="card-identity">
+            <section class="ce-card" id="card-identity" data-wizard-step="1">
               <div class="ce-card-header">
                 <h2 class="ce-card-title">1. Event Identity</h2>
               </div>
@@ -2555,6 +2573,7 @@ loadCachedOrganizations();
                          aria-describedby="duplicateNotice error-eventName">
                   <p id="duplicateNotice" class="ce-warning-note" role="status" aria-live="polite" hidden></p>
                   <p class="ce-error" id="error-eventName" hidden></p>
+                  <small class="ce-hint">Use a clear, specific title that helps students identify the event.</small>
                 </div>
 
                 <div class="ce-field" id="wrap-eventOrganizer">
@@ -2606,15 +2625,20 @@ loadCachedOrganizations();
                     </div>
                   </div>
                   <p class="ce-error" id="error-category" hidden></p>
+                  <small class="ce-hint">Choose 1 to 3 accurate categories so students can find this event.</small>
                 </div>
 
                 <input type="hidden" id="targetYear" name="targetYear" value="${state.isReusingEvent ? "" : "All Levels"}">
                 <input type="hidden" id="addAsFavoriteState" name="favorite" value="${String(state.addAsFavorite)}">
               </div>
+              <aside class="ce-step-guidance" aria-label="Why event identity matters">
+                <strong>Why this matters</strong>
+                <p>A precise event name and accurate categories help students understand the event and find it in the right listings.</p>
+              </aside>
             </section>
 
             <!-- Card 2: Schedule & Venue -->
-            <section class="ce-card" id="card-schedule">
+            <section class="ce-card" id="card-schedule" data-wizard-step="2">
               <div class="ce-card-header">
                 <h2 class="ce-card-title">2. Schedule & Venue</h2>
               </div>
@@ -2633,6 +2657,7 @@ loadCachedOrganizations();
                          aria-describedby="holidayNotice error-eventDate">
                   <p id="holidayNotice" class="ce-holiday-notice" role="status" aria-live="polite" hidden></p>
                   <p class="ce-error" id="error-eventDate" hidden></p>
+                  <small class="ce-hint">Choose the first event day; it must fall within the available date range.</small>
                 </div>
 
                 <!-- Date End with Min locked to Date Start -->
@@ -2647,6 +2672,7 @@ loadCachedOrganizations();
                          required
                          aria-describedby="error-eventDateEnd">
                   <p class="ce-error" id="error-eventDateEnd" hidden></p>
+                  <small class="ce-hint">For a single-day event, use the same date for both fields.</small>
                 </div>
 
                 <!-- Daily Schedule Dropdown -->
@@ -2690,6 +2716,7 @@ loadCachedOrganizations();
                     </div>
                   </div>
                   <p class="ce-error" id="error-timeStart" hidden></p>
+                  <small class="ce-hint">Set the start time in the campus time zone.</small>
                 </div>
 
                 <!-- Time End: Default 8:00 PM, allowed from after Time Start through 9:00 PM -->
@@ -2723,6 +2750,7 @@ loadCachedOrganizations();
                     </div>
                   </div>
                   <p class="ce-error" id="error-timeEnd" hidden></p>
+                  <small class="ce-hint">The end time must be later than the start time.</small>
                 </div>
 
                 <!-- Different time by day container (Photo 3) -->
@@ -2818,9 +2846,9 @@ loadCachedOrganizations();
             </section>
 
             <!-- Card 3: Approval Chain & Attendees (Task 3) -->
-            <section class="ce-card" id="card-approval-chain">
+            <section class="ce-card" id="card-approval-chain" data-wizard-step="3">
               <div class="ce-card-header">
-                <h2 class="ce-card-title">3. Approval Chain & Attendees</h2>
+                <h2 class="ce-card-title">3. Audience, Approvals & Attendees</h2>
               </div>
               <div class="ce-fields-grid">
                 <!-- Target Audience -->
@@ -2829,6 +2857,7 @@ loadCachedOrganizations();
                     Target audience
                     <span class="ce-req" style="color: #dc2626; display: block; margin-top: -2px;">*</span>
                   </label>
+                  <small class="ce-hint">Choose the audience that should be able to attend; additional targeting options appear when needed.</small>
                   <select id="targetAudience" name="targetAudience" class="ce-select" required aria-describedby="error-targetAudience">
                     <option value="Mixed Audience">Mixed Audience</option>
                     <option value="Organization Members Only">Organization Members Only</option>
@@ -2846,6 +2875,7 @@ loadCachedOrganizations();
                           <label><input type="checkbox" class="ce-target-organization" value="${escapeHTML(organization)}" ${state.targetOrganizations.some((selected) => getCanonicalOrganizationCode(selected) === organization) ? "checked" : ""}> ${escapeHTML(organization)}</label>
                         `).join("")}
                       </div>
+                      <small class="ce-hint">Select the organization or organizations eligible to attend.</small>
                       <p class="ce-error" id="error-targetDepartments" hidden></p>
                     </fieldset>
                     <fieldset class="ce-field" id="wrap-targetYearLevels">
@@ -2856,6 +2886,7 @@ loadCachedOrganizations();
                           <label><input type="checkbox" class="ce-target-year" value="${escapeHTML(year)}" ${state.targetYearLevels.includes(year) ? "checked" : ""}> ${escapeHTML(year)}</label>
                         `).join("")}
                       </div>
+                      <small class="ce-hint">Select specific year levels, or leave “All Year Level” selected.</small>
                     </fieldset>
                     <div class="ce-field" id="wrap-targetSections">
                       <label for="targetSectionsMode">Target Section</label>
@@ -2891,6 +2922,7 @@ loadCachedOrganizations();
                         <input type="checkbox" id="attendanceHighlyEncouraged" name="attendanceHighlyEncouraged" ${state.attendanceHighlyEncouraged ? "checked" : ""}>
                         Highly Encouraged
                       </label>
+                      <small class="ce-hint">Optionally highlight attendance for selected year levels.</small>
                     </div>
                     <fieldset class="ce-field ce-field--full" id="wrap-highlyEncouragedYearLevels" hidden>
                       <legend>Highly Encouraged year levels</legend>
@@ -2899,6 +2931,7 @@ loadCachedOrganizations();
                           <label><input type="checkbox" class="ce-highly-encouraged-year" name="highlyEncouragedYearLevels" value="${escapeHTML(year)}" ${state.highlyEncouragedYearLevels.includes(year) ? "checked" : ""}> ${escapeHTML(year)}</label>
                         `).join("")}
                       </div>
+                      <small class="ce-hint">Choose at least one year level when this option is enabled.</small>
                       <p class="ce-error" id="error-highlyEncouragedYearLevels" hidden></p>
                     </fieldset>
                   </div>
@@ -2983,7 +3016,7 @@ loadCachedOrganizations();
             </section>
 
             <!-- Card 4: Registration -->
-            <section class="ce-card" id="card-registration">
+            <section class="ce-card" id="card-registration" data-wizard-step="4">
               <div class="ce-card-header">
                 <h2 class="ce-card-title">4. Registration Information</h2>
               </div>
@@ -3025,7 +3058,7 @@ loadCachedOrganizations();
             </section>
 
             <!-- Card 5: Event Details -->
-            <section class="ce-card" id="card-details">
+            <section class="ce-card" id="card-details" data-wizard-step="5">
               <div class="ce-card-header">
                 <h2 class="ce-card-title">5. Event Details & Faculty</h2>
               </div>
@@ -3041,6 +3074,7 @@ loadCachedOrganizations();
                             minlength="20"
                             maxlength="1500"
                             placeholder="Provide a comprehensive summary of the event objectives, agenda, and target outcomes..."></textarea>
+                  <small class="ce-hint">Explain what participants will do and what they should expect.</small>
                 </div>
 
                 <!-- Rationale: Just like Event Description -->
@@ -3055,6 +3089,7 @@ loadCachedOrganizations();
                             minlength="20"
                             maxlength="1500"
                             placeholder="Provide the rationale, background, and justification for organizing this event..."></textarea>
+                  <small class="ce-hint">Describe the need for the event and the outcomes it is intended to support.</small>
                 </div>
 
                 <!-- Objectives (formerly Key Details) with bullet support -->
@@ -3166,10 +3201,10 @@ loadCachedOrganizations();
               </div>
             </section>
 
-            <!-- Card 5: Documents -->
-            <section class="ce-card" id="card-documents">
+            <!-- Supporting Documents -->
+            <section class="ce-card" id="card-documents" data-wizard-step="5">
               <div class="ce-card-header">
-                <h2 class="ce-card-title">5. Attached Documents</h2>
+                <h2 class="ce-card-title">Supporting Documents</h2>
               </div>
 
               <!-- Documents for Admin review -->
@@ -3196,6 +3231,61 @@ loadCachedOrganizations();
                        aria-describedby="hint-participantDocsLinks error-participantDocs">
                 <small class="ce-hint" id="hint-participantDocsLinks">Set access to “Anyone with the link can view”.</small>
                 <p class="ce-error ce-dropzone-error" id="error-participantDocs" hidden></p>
+              </div>
+            </section>
+            <section class="ce-card ce-review-card" id="card-review" data-wizard-step="6" aria-labelledby="reviewTitle">
+              <div class="ce-card-header">
+                <h2 class="ce-card-title" id="reviewTitle">6. Review your event</h2>
+              </div>
+              <p class="ce-hint">Check the event details below before submitting for approval.</p>
+              <div class="ce-review-grid">
+                <section class="ce-review-group">
+                  <div class="ce-review-group-header">
+                    <h3>Identity &amp; Categories</h3>
+                    <button type="button" class="ce-review-edit" data-wizard-edit-step="1">Edit</button>
+                  </div>
+                  <dl class="ce-review-list">
+                    <div><dt>Event</dt><dd id="reviewEventName">Not provided</dd></div>
+                    <div><dt>Categories</dt><dd id="reviewCategories">Not selected</dd></div>
+                  </dl>
+                </section>
+                <section class="ce-review-group">
+                  <div class="ce-review-group-header">
+                    <h3>Schedule &amp; Venue</h3>
+                    <button type="button" class="ce-review-edit" data-wizard-edit-step="2">Edit</button>
+                  </div>
+                  <dl class="ce-review-list">
+                    <div><dt>Schedule</dt><dd id="reviewSchedule">Not set</dd></div>
+                    <div><dt>Venue</dt><dd id="reviewVenue">Not selected</dd></div>
+                  </dl>
+                </section>
+                <section class="ce-review-group">
+                  <div class="ce-review-group-header">
+                    <h3>Audience</h3>
+                    <button type="button" class="ce-review-edit" data-wizard-edit-step="3">Edit</button>
+                  </div>
+                  <dl class="ce-review-list">
+                    <div><dt>Audience</dt><dd id="reviewAudience">Not selected</dd></div>
+                  </dl>
+                </section>
+                <section class="ce-review-group">
+                  <div class="ce-review-group-header">
+                    <h3>Registration</h3>
+                    <button type="button" class="ce-review-edit" data-wizard-edit-step="4">Edit</button>
+                  </div>
+                  <dl class="ce-review-list">
+                    <div><dt>Registration</dt><dd id="reviewRegistration">Not set</dd></div>
+                  </dl>
+                </section>
+                <section class="ce-review-group ce-review-group--wide">
+                  <div class="ce-review-group-header">
+                    <h3>Description</h3>
+                    <button type="button" class="ce-review-edit" data-wizard-edit-step="5">Edit</button>
+                  </div>
+                  <dl class="ce-review-list">
+                    <div><dt>Description</dt><dd id="reviewDescription">Not provided</dd></div>
+                  </dl>
+                </section>
               </div>
             </section>
           </form>
@@ -3346,10 +3436,37 @@ loadCachedOrganizations();
               ` : ""}
             </ul>
           </div>
+          <section class="ce-help-card" aria-labelledby="createEventHelpTitle">
+            <h2 class="ce-help-title" id="createEventHelpTitle">Need help?</h2>
+            <details>
+              <summary>What should I prepare first?</summary>
+              <p>Start with the event name, category, dates, and venue. Then complete audience, registration, and event details before reviewing.</p>
+            </details>
+            <details>
+              <summary>What makes a useful event identity?</summary>
+              <p>Use a specific title and select only the categories that accurately describe the event.</p>
+            </details>
+            <details>
+              <summary>What should I check in the schedule?</summary>
+              <p>Confirm the dates, start and end times, venue, capacity, and any required online meeting details.</p>
+            </details>
+            <details>
+              <summary>How do I set audience and registration?</summary>
+              <p>Choose who may attend, then check the registration window and attendance requirements.</p>
+            </details>
+            <details>
+              <summary>What belongs in the event details?</summary>
+              <p>Write a clear description and rationale, provide contact information, and attach the required review documents.</p>
+            </details>
+            <details>
+              <summary>What happens during review?</summary>
+              <p>Check the summary and readiness items. You can use Back to revisit any step before submitting.</p>
+            </details>
+          </section>
         </aside>
       </div>
 
-      <!-- Sticky Bottom Action Bar with Cancel, Save Draft, and Submit -->
+      <!-- Sticky Bottom Action Bar with favorites, draft saving, and wizard navigation -->
       <footer class="ce-bottom-bar">
         <div class="ce-bottom-bar-inner">
           <div class="ce-bottom-status" id="bottomStatusMessage">
@@ -3357,15 +3474,24 @@ loadCachedOrganizations();
           </div>
           <div class="ce-bottom-actions">
             <button type="button" class="ce-btn-secondary ${state.addAsFavorite ? "is-active" : ""}" id="btnAddAsFavorite" aria-pressed="${Boolean(state.addAsFavorite)}">
-              ${state.addAsFavorite ? "★ Added as Favorite" : "☆ Add as Favorite"}
+              ${state.addAsFavorite ? "★ Favorite after publish" : "☆ Favorite after publish"}
             </button>
             <button type="button" class="ce-btn-secondary" id="btnCancelEvent">
               Cancel
             </button>
-            <button type="button" class="ce-btn-secondary" id="btnSaveDraft">
-              Save Draft
+            <button type="button" class="ce-btn-secondary ${state.favoriteTemplateFingerprint ? "is-active" : ""}" id="btnFavoriteTemplate" aria-pressed="${Boolean(state.favoriteTemplateFingerprint)}">
+              ${state.favoriteTemplateFingerprint ? "★ Added to Favorites" : "☆ Add to Favorites"}
             </button>
-            <button type="button" class="ce-btn-primary" id="btnSubmitApproval">
+            <button type="button" class="ce-btn-secondary" id="btnSaveDraft">
+              Save as Draft
+            </button>
+            <button type="button" class="ce-btn-secondary" id="btnWizardBack" hidden>
+              Back
+            </button>
+            <button type="button" class="ce-btn-primary" id="btnWizardContinue">
+              Continue →
+            </button>
+            <button type="button" class="ce-btn-primary" id="btnSubmitApproval" hidden>
               ${requireApproval ? "Submit for Approval" : "Publish Event"}
             </button>
           </div>
@@ -3411,6 +3537,10 @@ loadCachedOrganizations();
           state.activeConfirm = null;
           state.isReusingEvent = false;
           state.addAsFavorite = false;
+          if (newMode === "new") {
+            state.activeWizardStep = 1;
+            state.favoriteTemplateFingerprint = "";
+          }
           if (newMode === "existing") {
             state.reuseLoading = false;
           }
@@ -3422,6 +3552,10 @@ loadCachedOrganizations();
     }
     state.isReusingEvent = false;
     state.addAsFavorite = false;
+    if (newMode === "new") {
+      state.activeWizardStep = 1;
+      state.favoriteTemplateFingerprint = "";
+    }
     if (newMode === "existing") {
       state.isCopied = false;
       state.copiedFrom = null;
@@ -3734,8 +3868,205 @@ loadCachedOrganizations();
   // 15. Setup Event Listeners & Interactive Handlers
   let saveDraftHandlerBound = false;
   let draftConfirmationOpen = false;
+  let favoriteTemplateDirtyHandlerBound = false;
+
+  function updateWizardStepView() {
+    const step = Math.min(6, Math.max(1, Number(state.activeWizardStep) || 1));
+    state.activeWizardStep = step;
+    root.querySelectorAll("[data-wizard-step]").forEach((panel) => {
+      panel.hidden = Number(panel.dataset.wizardStep) !== step;
+      panel.tabIndex = -1;
+    });
+    root.querySelectorAll("[data-wizard-indicator]").forEach((indicator) => {
+      const indicatorStep = Number(indicator.dataset.wizardIndicator);
+      indicator.classList.toggle("is-active", indicatorStep === step);
+      indicator.classList.toggle("is-completed", indicatorStep < step);
+      if (indicatorStep === step) indicator.setAttribute("aria-current", "step");
+      else indicator.removeAttribute("aria-current");
+    });
+
+    const count = document.getElementById("wizardStepCount");
+    if (count) count.textContent = `STEP ${step} OF 6`;
+    const backButton = document.getElementById("btnWizardBack");
+    const continueButton = document.getElementById("btnWizardContinue");
+    const submitButton = document.getElementById("btnSubmitApproval");
+    if (backButton) backButton.hidden = step === 1;
+    if (continueButton) continueButton.hidden = step === 6;
+    if (submitButton) submitButton.hidden = step !== 6;
+
+    const status = document.getElementById("bottomStatusText");
+    if (status) {
+      status.textContent = step === 6
+        ? "Review the summary and readiness checks before submitting."
+        : `Step ${step} of 6: complete the required fields, then continue.`;
+    }
+
+    if (step === 6) updateWizardReview();
+  }
+
+  function updateWizardReview() {
+    const form = root.querySelector("#createEventMainForm");
+    if (!form) return;
+    const valueFor = (id) => String(form.querySelector(`#${id}`)?.value || "").trim();
+    const setReviewValue = (id, value, fallback) => {
+      const element = document.getElementById(id);
+      if (element) element.textContent = value || fallback;
+    };
+    const formatDateTime = (value) => {
+      const match = /^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2})$/.exec(value);
+      return match ? `${formatDatePreview(match[1])} · ${formatTo12Hr(match[2])}` : value;
+    };
+    const time = [valueFor("timeStart"), valueFor("timeEnd")].filter(Boolean).join(" – ");
+    const date = [valueFor("eventDate"), valueFor("eventDateEnd")]
+      .filter(Boolean)
+      .map(formatDatePreview)
+      .join(" to ");
+    const schedule = [date, time].filter(Boolean).join(" · ");
+    const registration = [valueFor("registrationStart"), valueFor("registrationEnd")]
+      .filter(Boolean)
+      .map(formatDateTime)
+      .join(" to ");
+    setReviewValue("reviewEventName", valueFor("eventName"), "Not provided");
+    setReviewValue("reviewCategories", state.selectedCategories.join(", "), "Not selected");
+    setReviewValue("reviewSchedule", schedule, "Not set");
+    setReviewValue("reviewVenue", valueFor("customVenueName") || valueFor("venue"), "Not selected");
+    setReviewValue("reviewAudience", valueFor("targetAudience"), "Not selected");
+    setReviewValue("reviewRegistration", registration, "Not set");
+    setReviewValue("reviewDescription", valueFor("description"), "Not provided");
+  }
+
+  function getFavoriteTemplateSnapshot() {
+    const form = root.querySelector("#createEventMainForm");
+    if (!form) throw new Error("The event form is unavailable.");
+    collectExternalGuests();
+    const formValues = {};
+    Array.from(form.elements).forEach((field) => {
+      if (!field.name || field.disabled || field.type === "file" ||
+          field.name === "favorite" || field.name === "addAsFavoriteState") return;
+      if ((field.type === "checkbox" || field.type === "radio") && !field.checked) return;
+      if (Object.prototype.hasOwnProperty.call(formValues, field.name)) {
+        const existing = formValues[field.name];
+        formValues[field.name] = Array.isArray(existing) ? [...existing, field.value] : [existing, field.value];
+      } else {
+        formValues[field.name] = field.value;
+      }
+    });
+    return {
+      title: form.querySelector("#eventName")?.value.trim() || "",
+      formValues,
+      categories: [...state.selectedCategories],
+      targetOrganizations: [...state.targetOrganizations],
+      targetYearLevels: [...state.targetYearLevels],
+      targetSections: [...state.targetSections],
+      highlyEncouragedYearLevels: [...state.highlyEncouragedYearLevels],
+      selectedApprovers: [...state.selectedApprovers],
+      facultyInCharge: state.facultyInCharge ? { ...state.facultyInCharge } : null,
+      participatingFaculty: state.participatingFaculty.map((faculty) => ({ ...faculty })),
+      partnerOrganizations: state.partnerOrganizations.map((organization) => ({ ...organization })),
+      externalGuests: state.externalGuests.map((guest) => ({ ...guest })),
+    };
+  }
+
+  function setFavoriteTemplateVisual(button, isFavorite) {
+    button.classList.toggle("is-active", isFavorite);
+    button.setAttribute("aria-pressed", String(isFavorite));
+    button.textContent = isFavorite ? "★ Added to Favorites" : "☆ Add to Favorites";
+  }
 
   function setupEventHandlers() {
+    const backStepButton = document.getElementById("btnWizardBack");
+    const continueStepButton = document.getElementById("btnWizardContinue");
+    root.querySelectorAll("[data-wizard-edit-step]").forEach((button) => {
+      button.addEventListener("click", () => {
+        const step = Number(button.dataset.wizardEditStep);
+        if (!Number.isInteger(step) || step < 1 || step > 5) return;
+        state.activeWizardStep = step;
+        updateWizardStepView();
+        root.querySelector(`[data-wizard-step="${step}"]`)?.focus();
+      });
+    });
+    backStepButton?.addEventListener("click", () => {
+      if (state.activeWizardStep <= 1) return;
+      state.activeWizardStep -= 1;
+      updateWizardStepView();
+      root.querySelector(`[data-wizard-step="${state.activeWizardStep}"]`)?.focus();
+    });
+    continueStepButton?.addEventListener("click", () => {
+      if (!validateForm(state.activeWizardStep)) {
+        showToast("Complete the required fields in this step before continuing.");
+        return;
+      }
+      if (state.activeWizardStep >= 6) return;
+      state.activeWizardStep += 1;
+      updateWizardStepView();
+      root.querySelector(`[data-wizard-step="${state.activeWizardStep}"]`)?.focus();
+    });
+    updateWizardStepView();
+
+    const favoriteTemplateButton = document.getElementById("btnFavoriteTemplate");
+    favoriteTemplateButton?.addEventListener("click", () => {
+      const ownerId = getEffectiveUid();
+      if (!ownerId) {
+        showToast("Could not identify your organizer account. Please sign in again.");
+        return;
+      }
+
+      try {
+        const key = `recovibeFavoriteEventTemplates_${ownerId}`;
+        const storedValue = localStorage.getItem(key);
+        const templates = storedValue ? JSON.parse(storedValue) : [];
+        if (!Array.isArray(templates)) {
+          throw new Error("Saved event favorites are not in a valid format.");
+        }
+
+        const snapshot = getFavoriteTemplateSnapshot();
+        const fingerprint = JSON.stringify(snapshot);
+        const matchingIndex = templates.findIndex((template) => template?.fingerprint === fingerprint);
+        if (matchingIndex >= 0) {
+          if (state.favoriteTemplateFingerprint !== fingerprint) {
+            state.favoriteTemplateFingerprint = fingerprint;
+            setFavoriteTemplateVisual(favoriteTemplateButton, true);
+            showToast("This event template is already in Favorites.");
+            return;
+          }
+          templates.splice(matchingIndex, 1);
+          localStorage.setItem(key, JSON.stringify(templates));
+          state.favoriteTemplateFingerprint = "";
+          setFavoriteTemplateVisual(favoriteTemplateButton, false);
+          showToast("Event template removed from Favorites.");
+          return;
+        }
+
+        templates.push({
+          fingerprint,
+          title: snapshot.title || "Untitled Event",
+          categories: [...state.selectedCategories],
+          savedAt: new Date().toISOString(),
+          configuration: snapshot,
+        });
+        localStorage.setItem(key, JSON.stringify(templates));
+        state.favoriteTemplateFingerprint = fingerprint;
+        setFavoriteTemplateVisual(favoriteTemplateButton, true);
+        showToast("Event template added to Favorites.");
+      } catch (error) {
+        console.error("Could not update favorite event templates:", error);
+        showToast("Could not update Favorites in this browser. Check storage availability and try again.");
+      }
+    });
+
+    if (!favoriteTemplateDirtyHandlerBound) {
+      const clearTemplateFavoriteState = () => {
+        const button = document.getElementById("btnFavoriteTemplate");
+        if (button && state.favoriteTemplateFingerprint) {
+          state.favoriteTemplateFingerprint = "";
+          setFavoriteTemplateVisual(button, false);
+        }
+      };
+      root.addEventListener("input", clearTemplateFavoriteState);
+      root.addEventListener("change", clearTemplateFavoriteState);
+      favoriteTemplateDirtyHandlerBound = true;
+    }
+
     if (!saveDraftHandlerBound) {
       root.addEventListener("click", async (event) => {
         if (!(event.target instanceof Element)) return;
@@ -3755,7 +4086,7 @@ loadCachedOrganizations();
         const nameInput = form?.querySelector("#eventName");
         const nameVal = nameInput?.value.trim() || "";
         if (!nameVal) {
-          showToast("Please enter an event name before saving draft.");
+          showToast("Please enter an event name before saving as a draft.");
           nameInput?.focus();
           return;
         }
@@ -3772,7 +4103,7 @@ loadCachedOrganizations();
           showConfirmModal({
             title: "Save as Draft?",
             text: "Save this event as a draft? You can return and continue editing it at any time.",
-            confirmText: "Save Draft",
+            confirmText: "Save as Draft",
             cancelText: "Cancel",
             onCancel: () => {
               draftConfirmationOpen = false;
@@ -3780,7 +4111,7 @@ loadCachedOrganizations();
             onConfirm: async () => {
               if (state.isActionBusy) return;
               state.isActionBusy = true;
-              setRequestBusy(saveDraftButton, true, "Save Draft");
+              setRequestBusy(saveDraftButton, true, "Save as Draft");
               try {
                 const saveDraftFn = httpsCallable(functions, "saveEventDraft");
                 const result = await saveDraftFn(serializeFormForServer("draft"));
@@ -3801,7 +4132,7 @@ loadCachedOrganizations();
                 showToast(getFriendlyFunctionError(error, "Couldn't save your draft. Please try again."));
               } finally {
                 state.isActionBusy = false;
-                setRequestBusy(saveDraftButton, false, "Save Draft");
+                setRequestBusy(saveDraftButton, false, "Save as Draft");
               }
             },
           });
@@ -4073,7 +4404,7 @@ loadCachedOrganizations();
         if (favoriteInput) favoriteInput.value = String(state.addAsFavorite);
         btnAddFav.classList.toggle("is-active", state.addAsFavorite);
         btnAddFav.setAttribute("aria-pressed", String(state.addAsFavorite));
-        btnAddFav.innerHTML = state.addAsFavorite ? "★ Added as Favorite" : "☆ Add as Favorite";
+        btnAddFav.textContent = state.addAsFavorite ? "★ Favorite after publish" : "☆ Favorite after publish";
       });
     }
 
@@ -4257,7 +4588,7 @@ loadCachedOrganizations();
       });
     }
 
-    // Save Draft Button with Confirmation Modal
+    // Save as Draft Button with Confirmation Modal
     const btnSaveDraft = document.getElementById("btnSaveDraft");
     if (btnSaveDraft) {
       btnSaveDraft.dataset.draftSaveHandlerBound = "true";
@@ -4271,7 +4602,7 @@ loadCachedOrganizations();
         const form = document.getElementById("createEventMainForm");
         const nameVal = form?.eventName?.value.trim() || "";
         if (!nameVal) {
-          showToast("Please enter an event name before saving draft.");
+          showToast("Please enter an event name before saving as a draft.");
           form?.eventName?.focus();
           return;
         }
@@ -4287,7 +4618,7 @@ loadCachedOrganizations();
         showConfirmModal({
           title: "Save as Draft?",
           text: "Save this event as a draft? You can return and continue editing it at any time.",
-          confirmText: "Save Draft",
+          confirmText: "Save as Draft",
           cancelText: "Cancel",
           onCancel: () => {
             draftConfirmationOpen = false;
@@ -4295,7 +4626,7 @@ loadCachedOrganizations();
           onConfirm: async () => {
             if (state.isActionBusy) return;
             state.isActionBusy = true;
-            setRequestBusy(btnSaveDraft, true, "Save Draft");
+            setRequestBusy(btnSaveDraft, true, "Save as Draft");
             try {
               const saveDraftFn = httpsCallable(functions, "saveEventDraft");
               const result = await saveDraftFn(serializeFormForServer("draft"));
@@ -4316,7 +4647,7 @@ loadCachedOrganizations();
               showToast(getFriendlyFunctionError(error, "Couldn't save your draft. Please try again."));
             } finally {
               state.isActionBusy = false;
-              setRequestBusy(btnSaveDraft, false, "Save Draft");
+              setRequestBusy(btnSaveDraft, false, "Save as Draft");
             }
           },
         });
@@ -4356,7 +4687,7 @@ loadCachedOrganizations();
         showConfirmModal({
           title: "Unsaved Changes",
           text: "You have unsaved changes on this event. Would you like to save this as a draft before leaving?",
-          confirmText: nameVal.length >= 3 ? "Save Draft" : "Discard",
+          confirmText: nameVal.length >= 3 ? "Save as Draft" : "Discard",
           cancelText: "Keep Editing",
           onConfirm: async () => {
             if (nameVal.length >= 3) {
@@ -4396,10 +4727,12 @@ loadCachedOrganizations();
   function getSelectedApprovalStages() {
     const selected = new Set((state.selectedApprovers || []).map(String));
     return getFormApprovalStageOptions().filter((stage) =>
-      stage.required ||
-      selected.has(stage.id) ||
-      selected.has(stage.name) ||
-      selected.has(stage.key),
+      !stage.notApplicable && (
+        stage.required ||
+        selected.has(stage.id) ||
+        selected.has(stage.name) ||
+        selected.has(stage.key)
+      ),
     );
   }
 
@@ -4442,6 +4775,7 @@ loadCachedOrganizations();
     function updateStepTags() {
       const checkedIds = stages
         .filter((stage) => {
+          if (stage.notApplicable) return false;
           if (stage.required) return true;
           const input = document.getElementById(`approver-${stage.id}`);
           return input
@@ -4459,7 +4793,10 @@ loadCachedOrganizations();
         const item = document.getElementById(`approverItem-${stage.id}`);
         const isChecked = checkedIds.includes(stage.id);
         if (tag) {
-          if (isChecked) {
+          if (stage.notApplicable) {
+            tag.textContent = "Not required";
+            tag.classList.add("is-skipped");
+          } else if (isChecked) {
             tag.textContent = `Step ${currentStep}`;
             tag.classList.remove("is-skipped");
             currentStep += 1;
@@ -4493,21 +4830,24 @@ loadCachedOrganizations();
 
     list.innerHTML = stages
       .map((stage) => {
-        const isPreChecked = stage.required ||
+        const isNotApplicable = Boolean(stage.notApplicable);
+        const isPreChecked = !isNotApplicable && (stage.required ||
           state.selectedApprovers.includes(stage.id) ||
           state.selectedApprovers.includes(stage.name) ||
-          state.selectedApprovers.includes(stage.key);
-        const isLocked = Boolean(stage.required);
+          state.selectedApprovers.includes(stage.key));
+        const isLocked = Boolean(stage.required || isNotApplicable);
         const reviewerExtra = stage.reviewer && stage.reviewer.trim() !== stage.name.trim()
           ? `<span style="font-size:12px;color:#6b7280;margin-left:6px;font-weight:normal;">(${escapeHTML(stage.reviewer)})</span>`
           : "";
 
         return `
-          <div class="ce-approver-item ${isPreChecked ? "is-selected" : ""} ${isLocked ? "is-disabled" : ""}" id="approverItem-${stage.id}">
+          <div class="ce-approver-item ${isPreChecked ? "is-selected" : ""} ${isLocked ? "is-disabled" : ""} ${isNotApplicable ? "is-not-applicable" : ""}" id="approverItem-${stage.id}">
             <div class="ce-approver-col-left">
               <span class="ce-step-tag" id="stepTag-${stage.id}">Step -</span>
               <span class="ce-approver-name">${escapeHTML(stage.name)} ${reviewerExtra}</span>
-              ${stage.required ? '<span class="ce-req-badge">Required</span>' : ""}
+              ${isNotApplicable
+                ? '<span class="ce-approver-note">Not required for CSC</span>'
+                : stage.required ? '<span class="ce-req-badge">Required</span>' : ""}
             </div>
             <div class="ce-approver-col-right">
               <input type="checkbox"
@@ -4524,7 +4864,7 @@ loadCachedOrganizations();
 
     stages.forEach((stage) => {
       const input = document.getElementById(`approver-${stage.id}`);
-      if (input && !stage.required) {
+      if (input && !stage.required && !stage.notApplicable) {
         input.addEventListener("change", () => {
           updateStepTags();
           state.dirty = true;
@@ -7841,12 +8181,13 @@ loadCachedOrganizations();
   }
 
   // 28. Comprehensive Form Validation on Submit
-  function validateForm() {
+  function validateForm(step = null) {
     const form = document.getElementById("createEventMainForm");
     if (!form) return false;
 
     let isValid = true;
     let firstErrorElement = null;
+    const shouldValidateStep = (stepNumber) => step === null || step === stepNumber;
 
     function markError(id, msg) {
       isValid = false;
@@ -7887,37 +8228,37 @@ loadCachedOrganizations();
 
     // 1. Event Name
     const nameVal = form.eventName?.value.trim() || "";
-    if (nameVal.length < 5 || nameVal.length > 150) {
+    if (shouldValidateStep(1) && (nameVal.length < 5 || nameVal.length > 150)) {
       markError("eventName", "Event name must contain 5 to 150 characters.");
-    } else if (!/^[\p{L}\p{N}\p{P}\p{Zs}]+$/u.test(nameVal)) {
+    } else if (shouldValidateStep(1) && !/^[\p{L}\p{N}\p{P}\p{Zs}]+$/u.test(nameVal)) {
       markError("eventName", "Use letters, numbers, spaces, and punctuation only; line breaks and emoji are not allowed.");
     }
 
     // 2. Categories
-    if (state.selectedCategories.length < 1 || state.selectedCategories.length > 3) {
+    if (shouldValidateStep(1) && (state.selectedCategories.length < 1 || state.selectedCategories.length > 3)) {
       markError("category", "Please select 1 to 3 categories for this event.");
     }
 
     // 3. Date Validation (Asia/Manila today through the same date two years ahead)
     const dateVal = form.eventDate?.value || "";
-    if (!dateVal) {
+    if (shouldValidateStep(2) && !dateVal) {
       markError("eventDate", "Date Start is required.");
-    } else if (dateVal < manilaInfo.todayStr || dateVal > manilaInfo.maxDateStr) {
+    } else if (shouldValidateStep(2) && (dateVal < manilaInfo.todayStr || dateVal > manilaInfo.maxDateStr)) {
       markError("eventDate", `Choose a date from today through ${manilaInfo.maxDateStr}.`);
     }
 
     const dateEndVal = form.eventDateEnd?.value || "";
-    if (!dateEndVal) {
+    if (shouldValidateStep(2) && !dateEndVal) {
       markError("eventDateEnd", "Date End is required.");
-    } else if (dateEndVal < dateVal) {
+    } else if (shouldValidateStep(2) && dateEndVal < dateVal) {
       markError("eventDateEnd", "Date End cannot be earlier than Date Start.");
-    } else if (dateEndVal > manilaInfo.maxDateStr) {
+    } else if (shouldValidateStep(2) && dateEndVal > manilaInfo.maxDateStr) {
       markError("eventDateEnd", `Date End cannot be later than ${manilaInfo.maxDateStr}.`);
     }
 
     // 4. Time Start & Time End / Daily Schedule
     const isDifferentDaily = form.dailySchedule?.value === "Different time by day";
-    if (isDifferentDaily) {
+    if (shouldValidateStep(2) && isDifferentDaily) {
       const rows = document.querySelectorAll("#dailyScheduleList .ce-daily-schedule-row");
       if (rows.length === 0) {
         markError("dailySchedule", "Please select valid start and end dates for daily schedule.");
@@ -7943,7 +8284,7 @@ loadCachedOrganizations();
           markError("dailySchedule", dailyError);
         }
       }
-    } else {
+    } else if (shouldValidateStep(2)) {
       const tStart = parseTimeInMinutes(form.timeStart?.value);
       const tEnd = parseTimeInMinutes(form.timeEnd?.value);
 
@@ -7967,9 +8308,9 @@ loadCachedOrganizations();
     // 5. Venue & Conditional Fields
     const venueVal = form.venue?.value || "";
     const venueRecord = VENUES_FLAT_MAP[venueVal];
-    if (!venueVal) {
+    if (shouldValidateStep(2) && !venueVal) {
       markError("venue", "Please select a venue for the event.");
-    } else {
+    } else if (shouldValidateStep(2)) {
       const vLower = venueVal.toLowerCase();
       if (vLower.includes("outside pup")) {
         const customName = form.customVenueName?.value.trim() || "";
@@ -8003,14 +8344,14 @@ loadCachedOrganizations();
     const maxVenueLimit = venueRecord?.maxCapacity;
     const capValue = form.maxCapacity?.value.trim() || "";
     const cap = capValue ? Number(capValue) : NaN;
-    if (!Number.isInteger(cap) || cap <= 0) {
+    if (shouldValidateStep(2) && (!Number.isInteger(cap) || cap <= 0)) {
       markError("maxCapacity", "Enter a whole-number capacity greater than zero.");
-    } else if (maxVenueLimit && cap > maxVenueLimit) {
+    } else if (shouldValidateStep(2) && maxVenueLimit && cap > maxVenueLimit) {
       markError("maxCapacity", `Capacity cannot exceed venue maximum of ${maxVenueLimit}.`);
     }
 
     // 7. Venue Conflict
-    if (state.conflict) {
+    if (shouldValidateStep(2) && state.conflict) {
       markError("venue", `Conflict: Venue is already booked on this date/time for "${state.conflict.title || "another event"}".`);
     }
 
@@ -8018,15 +8359,15 @@ loadCachedOrganizations();
     const regStartVal = form.registrationStart?.value;
     const regEndVal = form.registrationEnd?.value || form.registrationDeadline?.value;
 
-    if (!regStartVal) {
+    if (shouldValidateStep(4) && !regStartVal) {
       markError("registrationStart", "Registration start date and time is required.");
-    } else if (regStartVal < getManilaDateTimeString()) {
+    } else if (shouldValidateStep(4) && regStartVal < getManilaDateTimeString()) {
       markError("registrationStart", "Registration start cannot be in the past.");
     }
 
-    if (!regEndVal) {
+    if (shouldValidateStep(4) && !regEndVal) {
       markError("registrationEnd", "Registration end date and time is required.");
-    } else {
+    } else if (shouldValidateStep(4)) {
       const regEndDate = new Date(regEndVal);
       if (isNaN(regEndDate.getTime())) {
         markError("registrationEnd", "Please enter a valid registration end date and time.");
@@ -8049,7 +8390,7 @@ loadCachedOrganizations();
       }
     }
 
-    if (regStartVal && regEndVal) {
+    if (shouldValidateStep(4) && regStartVal && regEndVal) {
       const sDate = new Date(regStartVal);
       const eDate = new Date(regEndVal);
       if (!isNaN(sDate.getTime()) && !isNaN(eDate.getTime()) && sDate >= eDate) {
@@ -8060,11 +8401,11 @@ loadCachedOrganizations();
 
     // 9. Required event detail text and structured lists
     const descriptionVal = form.description?.value.trim() || "";
-    if (descriptionVal.length < 20 || descriptionVal.length > 1500) {
+    if (shouldValidateStep(5) && (descriptionVal.length < 20 || descriptionVal.length > 1500)) {
       markError("description", "Event Description must contain 20 to 1,500 characters.");
     }
     const rationaleVal = form.rationale?.value.trim() || "";
-    if (rationaleVal.length < 20 || rationaleVal.length > 1500) {
+    if (shouldValidateStep(5) && (rationaleVal.length < 20 || rationaleVal.length > 1500)) {
       markError("rationale", "Rationale must contain 20 to 1,500 characters.");
     }
     const getBulletEntries = (value) => String(value || "")
@@ -8072,47 +8413,49 @@ loadCachedOrganizations();
       .map((entry) => entry.trim().replace(/^[•*–-]\s*/, "").trim())
       .filter(Boolean);
     const objectives = getBulletEntries(form.keyDetails?.value);
-    if (objectives.length < 1 || objectives.length > 10 || objectives.some((item) => item.length < 5 || item.length > 300)) {
+    if (shouldValidateStep(5) && (objectives.length < 1 || objectives.length > 10 || objectives.some((item) => item.length < 5 || item.length > 300))) {
       markError("keyDetails", "Enter 1 to 10 objectives, each 5 to 300 characters.");
     }
     const requirements = getBulletEntries(form.requirements?.value);
-    if (requirements.length > 20 || requirements.some((item) => item.length < 2 || item.length > 300)) {
+    if (shouldValidateStep(5) && (requirements.length > 20 || requirements.some((item) => item.length < 2 || item.length > 300))) {
       markError("requirements", "Enter no more than 20 reminders, each 2 to 300 characters.");
     }
 
     // 10. Contact Person Name
     const contactNameVal = form.contactName?.value.trim() || "";
-    if (!/^[\p{L} .-]{2,100}$/u.test(contactNameVal)) {
+    if (shouldValidateStep(5) && !/^[\p{L} .-]{2,100}$/u.test(contactNameVal)) {
       markError("contactName", "Enter a 2 to 100 character name using letters, spaces, periods, and hyphens only.");
     }
 
     // 11. Contact Person Email
     const contactEmailVal = form.contactEmail?.value.trim() || "";
-    if (!contactEmailVal || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(contactEmailVal)) {
+    if (shouldValidateStep(5) && (!contactEmailVal || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(contactEmailVal))) {
       markError("contactEmail", "A valid email address is required for the contact person.");
     }
 
     // 12. Optional Contact Phone
     const phoneVal = (form.contactPhone?.value || "").trim();
-    if (phoneVal && phoneVal !== "09" && !/^09\d{9}$/.test(phoneVal)) {
+    if (shouldValidateStep(5) && phoneVal && phoneVal !== "09" && !/^09\d{9}$/.test(phoneVal)) {
       markError("contactPhone", "Contact number must be 11 digits starting with 09 (e.g. 09171234567).");
     }
 
     // 13. Admin and participant Google Drive documents
     const adminReviewLink = document.getElementById("adminDoc-adminReview")?.value.trim() || "";
-    state.adminDocumentLinks.adminReview = adminReviewLink;
-    state.adminDocsLink = adminReviewLink;
-    if (!isGoogleDriveLink(adminReviewLink)) {
+    if (shouldValidateStep(5)) {
+      state.adminDocumentLinks.adminReview = adminReviewLink;
+      state.adminDocsLink = adminReviewLink;
+    }
+    if (shouldValidateStep(5) && !isGoogleDriveLink(adminReviewLink)) {
       markError("adminDoc-adminReview", "Provide a valid Google Drive folder or document link for admin review.");
     }
-    syncParticipantDocumentLinks();
+    if (shouldValidateStep(5)) syncParticipantDocumentLinks();
     const participantUrl = document.getElementById("participantDocsLinks")?.value.trim() || "";
-    if (participantUrl && !isGoogleDriveLink(participantUrl)) {
+    if (shouldValidateStep(5) && participantUrl && !isGoogleDriveLink(participantUrl)) {
       markError("participantDocs", "Enter a valid Google Drive link with viewing access enabled.");
     }
 
-    const registeredFaculty = loadFacultyPool();
-    if (isOrganizerPage) {
+    const registeredFaculty = step === null ? loadFacultyPool() : [];
+    if (shouldValidateStep(5) && isOrganizerPage) {
       if (!state.facultyInCharge?.id || !state.facultyInCharge?.name) {
         markError("facultyInCharge", "Select a faculty in charge.");
       } else if (!isFacultyInChargeSelected()) {
@@ -8126,13 +8469,13 @@ loadCachedOrganizations();
       }
     }
 
-    const unregisteredFaculty = state.participatingFaculty.some((selected) =>
+    const unregisteredFaculty = step === null && state.participatingFaculty.some((selected) =>
       !registeredFaculty.some((faculty) =>
         (selected.id && faculty.id === selected.id) ||
         String(faculty.name || "").trim().toLowerCase() === String(selected.name || "").trim().toLowerCase(),
       ),
     );
-    if (unregisteredFaculty) {
+    if (shouldValidateStep(5) && unregisteredFaculty) {
       markError("facultyChips", "Select participating faculty from registered faculty members only.");
     }
 
@@ -8145,8 +8488,8 @@ loadCachedOrganizations();
     );
     const activeApprovalStages = getSelectedApprovalStages();
     const approvalStepsError = getApprovalStepsValidationError();
-    if (missingReq.length > 0 || !state.selectedApprovers || approvalStepsError ||
-        activeApprovalStages.some((stage) => !stage.key)) {
+    if (shouldValidateStep(3) && (missingReq.length > 0 || !state.selectedApprovers || approvalStepsError ||
+        activeApprovalStages.some((stage) => !stage.key))) {
       markError(
         "approvers",
         missingReq.length
@@ -8157,9 +8500,9 @@ loadCachedOrganizations();
 
     // 14. Target Audience
     const targetAudienceVal = normalizeTargetAudience(form.targetAudience?.value || state.targetAudience || "");
-    if (!targetAudienceVal) {
+    if (shouldValidateStep(3) && !targetAudienceVal) {
       markError("targetAudience", "Please select a target audience.");
-    } else if (targetAudienceVal !== "Open to All") {
+    } else if (shouldValidateStep(3) && targetAudienceVal !== "Open to All") {
       state.targetDepartments = getSelectedTargetDepartments();
       const selectedOrganizations = getSelectedTargetOrganizations();
       if (state.targetDepartments.length === 0 && selectedOrganizations.length === 0) {
@@ -8187,37 +8530,39 @@ loadCachedOrganizations();
       }
     }
 
-    if (targetAudienceVal === "Organization Members Only" &&
+    if (shouldValidateStep(3) && targetAudienceVal === "Organization Members Only" &&
         getSelectedTargetYearLevels().length > 0) {
       form.attendanceRequirement.value = "required";
     }
     const attendanceRequirement = normalizeAttendanceRequirement(
       form.attendanceRequirement?.value,
     );
-    if (!attendanceRequirement) {
+    if (shouldValidateStep(3) && !attendanceRequirement) {
       markError("attendanceRequirement", "Select an attendance requirement.");
-    } else {
+    } else if (shouldValidateStep(3)) {
       state.attendanceRequirement = attendanceRequirement;
     }
-    syncHighlyEncouragedYearLevels();
+    if (shouldValidateStep(3)) syncHighlyEncouragedYearLevels();
     const attendanceHighlyEncouraged =
       Boolean(form.attendanceHighlyEncouraged?.checked);
     const highlyEncouragedYearLevels = attendanceHighlyEncouraged
       ? getSelectedHighlyEncouragedYearLevels()
       : [];
-    if (attendanceHighlyEncouraged && highlyEncouragedYearLevels.length === 0) {
+    if (shouldValidateStep(3) && attendanceHighlyEncouraged && highlyEncouragedYearLevels.length === 0) {
       markError(
         "highlyEncouragedYearLevels",
         "Select at least one eligible year level for Highly Encouraged attendance.",
       );
     }
-    state.attendanceHighlyEncouraged = attendanceHighlyEncouraged;
-    state.attendanceTargetYearLevels = resolveAttendanceTargetYearLevels();
-    state.highlyEncouragedYearLevels = highlyEncouragedYearLevels;
+    if (shouldValidateStep(3)) {
+      state.attendanceHighlyEncouraged = attendanceHighlyEncouraged;
+      state.attendanceTargetYearLevels = resolveAttendanceTargetYearLevels();
+      state.highlyEncouragedYearLevels = highlyEncouragedYearLevels;
+    }
 
     // 15. External Guests validation if any added
-    collectExternalGuests();
-    if (state.externalGuests && state.externalGuests.length > 0) {
+    if (shouldValidateStep(3)) collectExternalGuests();
+    if (shouldValidateStep(3) && state.externalGuests && state.externalGuests.length > 0) {
       const guestCards = document.querySelectorAll("#externalGuestsList .ce-guest-card");
       const seenGuests = new Set();
       const guestErrors = [];
@@ -8269,6 +8614,13 @@ loadCachedOrganizations();
     }
 
     if (!isValid && firstErrorElement) {
+      if (step === null) {
+        const invalidStep = Number(firstErrorElement.closest("[data-wizard-step]")?.dataset.wizardStep);
+        if (invalidStep >= 1 && invalidStep <= 6) {
+          state.activeWizardStep = invalidStep;
+          updateWizardStepView();
+        }
+      }
       firstErrorElement.focus();
       firstErrorElement.scrollIntoView({ behavior: "smooth", block: "center" });
     }
@@ -8300,7 +8652,7 @@ loadCachedOrganizations();
     }
   }
 
-  // 29. Save Draft & Submit Event Handlers
+  // 29. Save as Draft & Submit Event Handlers
   function serializeEvent(status) {
     const form = document.getElementById("createEventMainForm");
     const selectedApprovalStages = getSelectedApprovalStages();

@@ -19,6 +19,7 @@ const normalizeDecision = (value) =>
 
 const STAGE_KEY_ALIASES = new Map([
   ["adviser", "org_adv"],
+  ["orgadviser", "org_adv"],
   ["organizationadviser", "org_adv"],
   ["organizationadvisor", "org_adv"],
   ["labhead", "sir_abelida"],
@@ -47,6 +48,16 @@ function normalizeConfiguredStages(stages) {
     reviewerEmail: String(stage.reviewerEmail || stage.email || "").trim().toLowerCase(),
     order: index,
   }));
+}
+
+function isCscOrganizationCode(value) {
+  return ["csc", "centralstudentcouncil"].includes(normalizeStageKey(value));
+}
+
+function isOrganizationAdviserStage(stage) {
+  const aliases = Array.isArray(stage.aliases) ? stage.aliases : [];
+  return [stage.id, stage.key, stage.name, stage.label, ...aliases]
+    .some((value) => canonicalStageKey(value) === "org_adv");
 }
 
 function isValidOrganizationStages(stages) {
@@ -82,7 +93,9 @@ function isValidOrganizationStages(stages) {
 }
 
 export function resolveApprovalStages(settings, organizationCode) {
-  const code = String(organizationCode || "").trim().toUpperCase();
+  const rawCode = String(organizationCode || "").trim().toUpperCase();
+  const isCsc = isCscOrganizationCode(rawCode);
+  const code = isCsc ? "CSC" : rawCode;
   const fallbackStages = Array.isArray(settings?.approvalStages) && settings.approvalStages.length
     ? settings.approvalStages
     : EVENT_APPROVAL_STAGES.map((stage, index) => ({
@@ -95,15 +108,15 @@ export function resolveApprovalStages(settings, organizationCode) {
   const customEntry = code && ![".", "/", "[", "]", "*", "~"].some((character) => code.includes(character))
     ? settings?.approvalStagesByOrg?.[code]
     : null;
-  if (isValidOrganizationStages(customEntry?.stages)) {
-    return {
-      source: "organization",
-      stages: normalizeConfiguredStages(customEntry.stages),
-    };
-  }
+  const hasCustomStages = isValidOrganizationStages(customEntry?.stages);
+  const sourceStages = hasCustomStages ? customEntry.stages : fallbackStages;
   return {
-    source: "default",
-    stages: normalizeConfiguredStages(fallbackStages),
+    source: hasCustomStages ? "organization" : "default",
+    stages: normalizeConfiguredStages(sourceStages).map((stage) =>
+      isCsc && isOrganizationAdviserStage(stage)
+        ? { ...stage, required: false, notApplicable: true }
+        : stage,
+    ),
   };
 }
 
@@ -122,7 +135,9 @@ function getSnapshotStages(proposal) {
   const selectedIds = Array.isArray(proposal.approvalSteps)
     ? new Set(proposal.approvalSteps.map(String))
     : null;
-  return stages.filter((stage) => !selectedIds || selectedIds.has(stage.id));
+  return stages.filter((stage) =>
+    !stage.notApplicable && (!selectedIds || selectedIds.has(stage.id)),
+  );
 }
 
 export function getStages(proposal) {
