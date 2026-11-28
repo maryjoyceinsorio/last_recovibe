@@ -164,8 +164,14 @@ export function getCurrentStageKey(proposal) {
   if (!stageKeys.length) return null;
 
   const rawCurrentStage = String(proposal?.approvalCurrentStage || "").trim();
-  if (rawCurrentStage && stageKeys.includes(rawCurrentStage)) return rawCurrentStage;
-  const explicitStageKey = canonicalStageKey(rawCurrentStage);
+  const explicitStageKey = stageKeys.includes(rawCurrentStage)
+    ? rawCurrentStage
+    : canonicalStageKey(rawCurrentStage);
+  const workflow = getEventStage(proposal);
+  const explicitStageIsApproved = workflow.stages.some(
+    (stage) => stage.key === explicitStageKey && stage.approved,
+  );
+  if (explicitStageIsApproved) return workflow.currentStageKey;
   if (explicitStageKey && stageKeys.includes(explicitStageKey)) {
     return explicitStageKey;
   }
@@ -279,26 +285,28 @@ export function buildApprovalUpdate(event, {
   }
 
   const currentIndex = activeStageKeys.indexOf(stage.key);
-  const nextStage = activeStageKeys[currentIndex + 1] || null;
-  const nextIndex = nextStage ? currentIndex + 1 : currentIndex;
-  const complete = nextStage === null;
   const history = Array.isArray(event?.approvalHistory)
     ? event.approvalHistory
     : [];
+  const nextHistory = [
+    ...history,
+    {
+      stage: stage.key,
+      stageLabel: stage.label || stage.name,
+      decision: "approved",
+      note: "",
+      decidedBy,
+      decidedByName,
+      timestamp: now,
+    },
+  ];
+  const nextWorkflow = getEventStage({ ...event, approvalHistory: nextHistory });
+  const nextStage = nextWorkflow.currentStageKey;
+  const nextIndex = nextStage ? activeStageKeys.indexOf(nextStage) : currentIndex;
+  const complete = nextWorkflow.isFullyApproved;
 
   return {
-    approvalHistory: [
-      ...history,
-      {
-        stage: stage.key,
-        stageLabel: stage.label || stage.name,
-        decision: "approved",
-        note: "",
-        decidedBy,
-        decidedByName,
-        timestamp: now,
-      },
-    ],
+    approvalHistory: nextHistory,
     approvalCurrentStage: nextStage,
     approvalCurrentStep: nextIndex,
     approvalStatus: complete ? "approved" : "pending",

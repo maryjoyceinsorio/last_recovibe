@@ -508,6 +508,74 @@
       </section>
     </div>
 
+    <div
+      class="approval-receipt-modal"
+      id="approvalReceiptModal"
+      hidden
+      aria-hidden="true"
+    >
+      <div class="approval-receipt-backdrop" data-receipt-close></div>
+      <section
+        class="approval-receipt-dialog"
+        id="approvalReceiptDialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="approvalReceiptTitle"
+        aria-describedby="approvalReceiptNotice"
+        tabindex="-1"
+      >
+        <button
+          class="approval-receipt-close"
+          id="approvalReceiptClose"
+          type="button"
+          aria-label="Close approval receipt"
+        >
+          &times;
+        </button>
+        <header class="approval-receipt-header">
+          <span class="approval-receipt-badge">APPROVED IN RECOVIBE</span>
+          <h2 id="approvalReceiptTitle">Official Approval Receipt</h2>
+          <p>
+            Approval Reference / Ticket ID:
+            <strong id="approvalReceiptReference"></strong>
+          </p>
+          <p class="approval-receipt-notice" id="approvalReceiptNotice">
+            This serves as an official system-generated approval receipt and remains valid even when the event is archived.
+          </p>
+        </header>
+        <section
+          class="approval-receipt-section"
+          aria-labelledby="approvalReceiptEventHeading"
+        >
+          <h3 id="approvalReceiptEventHeading">Event details</h3>
+          <dl class="approval-receipt-details" id="approvalReceiptDetails"></dl>
+        </section>
+        <section
+          class="approval-receipt-section"
+          aria-labelledby="approvalReceiptTrailHeading"
+        >
+          <h3 id="approvalReceiptTrailHeading">Approval Trail</h3>
+          <ol
+            class="approval-receipt-trail"
+            id="approvalReceiptTrail"
+            aria-label="Chronological approval trail"
+          ></ol>
+        </section>
+        <footer class="approval-receipt-actions">
+          <button type="button" class="approval-receipt-action" id="approvalReceiptPrint">
+            Print / Save PDF
+          </button>
+          <button
+            type="button"
+            class="approval-receipt-action is-secondary"
+            data-receipt-close
+          >
+            Close
+          </button>
+        </footer>
+      </section>
+    </div>
+
     <div class="my-events-dialog-overlay" id="cancelEventConfirmOverlay" hidden>
       <section
         class="my-events-dialog"

@@ -103,6 +103,38 @@ test("standard proposals retain the complete adviser-first chain", () => {
   assert.equal(update.status, "pending");
 });
 
+test("adviser approval skips a pre-approved Sir Abelida stage and repairs stale pointers", () => {
+  const event = {
+    approvalSteps: EVENT_APPROVAL_STAGES.map((stage) => stage.key),
+    approvalCurrentStage: "org_adv",
+    approvalCurrentStep: 0,
+    approvalHistory: [{
+      stage: "sir_abelida",
+      decision: "approved",
+      note: "Automatically bypassed because no venue conflict was found.",
+    }],
+  };
+
+  assert.equal(getCurrentStageKey(event), "org_adv");
+
+  const update = buildApprovalUpdate(event, {
+    stageKey: "org_adv",
+    decidedBy: "adviser-user",
+    now: 350,
+  });
+
+  assert.equal(update.approvalCurrentStage, "hap");
+  assert.equal(update.approvalCurrentStep, 2);
+
+  const staleEvent = {
+    ...event,
+    ...update,
+    approvalCurrentStage: "sir_abelida",
+    approvalCurrentStep: 1,
+  };
+  assert.equal(getCurrentStageKey(staleEvent), "hap");
+});
+
 test("CSC snapshot skips the adviser and advances through active stages only", () => {
   let event = {
     approvalSteps: ["sir_abelida", "hap", "osas"],

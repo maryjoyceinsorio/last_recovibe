@@ -97,9 +97,18 @@ import { eventBoundaryMillis } from "./eventOrganizerDashboardDates.js";
   const btnTrackerEdit = document.getElementById("btnTrackerEdit");
   const btnTrackerDelete = document.getElementById("btnTrackerDelete");
   const btnTrackerScan = document.getElementById("btnTrackerScan");
+  const approvalReceiptModal = document.getElementById("approvalReceiptModal");
+  const approvalReceiptDialog = document.getElementById("approvalReceiptDialog");
+  const approvalReceiptClose = document.getElementById("approvalReceiptClose");
+  const approvalReceiptPrint = document.getElementById("approvalReceiptPrint");
+  const approvalReceiptReference = document.getElementById("approvalReceiptReference");
+  const approvalReceiptDetails = document.getElementById("approvalReceiptDetails");
+  const approvalReceiptTrail = document.getElementById("approvalReceiptTrail");
 
   let activeTrackingEventId = null;
   let activeReplacingFileId = null;
+  let approvalReceiptReturnFocus = null;
+  let approvalReceiptPreviousOverflow = "";
 
   const escapeHtml = (value) =>
     String(value ?? "").replace(
@@ -526,6 +535,212 @@ import { eventBoundaryMillis } from "./eventOrganizerDashboardDates.js";
     return isEventFullyApproved(event);
   }
 
+  function getReceiptConfiguredStages(event) {
+    if (Array.isArray(event.approvalStages)) {
+      return event.approvalStages.filter((stage) =>
+        stage && typeof stage === "object" && !Array.isArray(stage),
+      );
+    }
+    if (event.approvalStages && typeof event.approvalStages === "object") {
+      return Object.values(event.approvalStages).filter((stage) =>
+        stage && typeof stage === "object" && !Array.isArray(stage),
+      );
+    }
+    return [];
+  }
+
+  function normalizeReceiptStageKey(value) {
+    return String(value || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+  }
+
+  function getReceiptStageMetadata(event, stage) {
+    const stageKeys = [stage.key, stage.id, stage.label, stage.name]
+      .map(normalizeReceiptStageKey)
+      .filter(Boolean);
+    return getReceiptConfiguredStages(event).find((configuredStage) => {
+      const configuredKeys = [
+        configuredStage.id,
+        configuredStage.key,
+        configuredStage.label,
+        configuredStage.name,
+        ...(Array.isArray(configuredStage.aliases) ? configuredStage.aliases : []),
+      ].map(normalizeReceiptStageKey).filter(Boolean);
+      return stageKeys.some((key) => configuredKeys.includes(key));
+    }) || {};
+  }
+
+  function isReceiptOrganizationAdviserStage(stage) {
+    return [stage.id, stage.key, stage.label, stage.name]
+      .some((value) => {
+        const key = normalizeReceiptStageKey(value);
+        return key === "orgadv" ||
+          key.includes("organizationadviser") ||
+          key.includes("organizationadvisor") ||
+          key === "adviser" ||
+          key === "advisor";
+      });
+  }
+
+  function isCscReceiptEvent(event) {
+    const organizationValues = [
+      event.organizationCode,
+      event.organizerOrganization,
+      event.orgCode,
+      event.organization,
+      event.organizationName,
+    ];
+    return organizationValues.some((value) => {
+      const organization = value && typeof value === "object"
+        ? value.code || value.organizationCode || value.name || value.label
+        : value;
+      const key = normalizeReceiptStageKey(organization);
+      return key === "csc" || key.includes("centralstudentcouncil");
+    });
+  }
+
+  function formatReceiptValue(value, fallback = "Not specified") {
+    if (Array.isArray(value)) {
+      const items = value.map((item) => formatReceiptValue(item, "")).filter(Boolean);
+      return items.length ? items.join(", ") : fallback;
+    }
+    if (value && typeof value === "object") {
+      return String(value.name || value.label || value.code || value.organizationCode || fallback);
+    }
+    const text = String(value ?? "").trim();
+    return text || fallback;
+  }
+
+  function buildApprovalReceiptTrail(event) {
+    const workflow = getEventStage(event);
+    const trail = workflow.stages.map((stage, index) => {
+      const entry = stage.approvedEntry || {};
+      const metadata = getReceiptStageMetadata(event, stage);
+      const timestamp = entry.timestamp || entry.at || entry.createdAt || null;
+      const approvedAt = toApprovalDate(timestamp);
+      const label = stage.label || stage.name || stage.key;
+      const configuredApprover = [
+        metadata.reviewerName,
+        metadata.reviewer,
+        metadata.approverName,
+      ].find((name) =>
+        name && normalizeReceiptStageKey(name) !== normalizeReceiptStageKey(label),
+      );
+      return {
+        stageOrder: Number.isFinite(Number(metadata.order)) ? Number(metadata.order) : index,
+        timestamp: approvedAt,
+        label,
+        approver: formatReceiptValue(
+          entry.decidedByName || entry.by || configuredApprover,
+          "Approver name not recorded",
+        ),
+      };
+    });
+    trail.sort((first, second) => {
+      if (first.timestamp && second.timestamp) {
+        return first.timestamp.getTime() - second.timestamp.getTime() ||
+          first.stageOrder - second.stageOrder;
+      }
+      return first.stageOrder - second.stageOrder;
+    });
+
+    const configuredStages = getReceiptConfiguredStages(event);
+    const configuredAdviser = configuredStages.find(isReceiptOrganizationAdviserStage);
+    const activeAdviser = workflow.stages.some(isReceiptOrganizationAdviserStage);
+    if (isCscReceiptEvent(event) && (!activeAdviser || configuredAdviser?.notApplicable === true)) {
+      const adviserOrder = configuredAdviser && Number.isFinite(Number(configuredAdviser.order))
+        ? Number(configuredAdviser.order)
+        : -1;
+      trail.push({
+        stageOrder: adviserOrder,
+        timestamp: null,
+        label: "Organization Adviser",
+        approver: "Not required for CSC",
+        notRequired: true,
+      });
+      trail.sort((first, second) => {
+        if (first.timestamp && second.timestamp) {
+          return first.timestamp.getTime() - second.timestamp.getTime() ||
+            first.stageOrder - second.stageOrder;
+        }
+        return first.stageOrder - second.stageOrder;
+      });
+    }
+
+    return trail;
+  }
+
+  function openApprovalReceipt(eventId, opener) {
+    const event = findOrganizerEvent(eventId);
+    if (!event || !isFullyApproved(event) || !approvalReceiptModal) return;
+
+    const reference = `RV-APR-${event.eventId || event.id}`;
+    const title = event.title || event.eventName || event.name || "Untitled Event";
+    const organizer = formatReceiptValue(
+      event.organizerName || event.organizationName || event.organization ||
+        event.organizerOrganization || event.organizationCode,
+    );
+    const audienceParts = [
+      event.targetAudience,
+      event.targetOrganizations,
+      event.targetDepartments,
+      event.targetYearLevels,
+      event.targetSections,
+    ].filter((value) => value !== null && value !== undefined && value !== "");
+    const audience = audienceParts.length
+      ? audienceParts.map((value) => formatReceiptValue(value, "")).filter(Boolean).join(" · ")
+      : "Not specified";
+    const schedule = [formatDate(getEventDate(event)), getScheduleDisplay(event)]
+      .filter(Boolean)
+      .join(" · ");
+
+    approvalReceiptReference.textContent = reference;
+    approvalReceiptDetails.innerHTML = [
+      ["Title", title],
+      ["Organizer", organizer],
+      ["Venue", event.venue || event.location || event.venueOther || "Not specified"],
+      ["Schedule", schedule],
+      ["Target audience", audience],
+    ].map(([label, value]) => `
+      <div class="approval-receipt-detail">
+        <dt>${escapeHtml(label)}</dt>
+        <dd>${escapeHtml(value)}</dd>
+      </div>`).join("");
+
+    approvalReceiptTrail.innerHTML = buildApprovalReceiptTrail(event).map((entry) => {
+      const timestamp = entry.timestamp
+        ? `<time datetime="${escapeHtml(entry.timestamp.toISOString())}">${escapeHtml(formatDateTime(entry.timestamp))}</time>`
+        : entry.notRequired ? "" : "<span>Timestamp not recorded</span>";
+      return `
+        <li class="approval-receipt-trail-item${entry.notRequired ? " is-not-required" : ""}">
+          <div class="approval-receipt-trail-heading">
+            <strong>${escapeHtml(entry.label)}</strong>
+            <span class="approval-receipt-trail-status">${entry.notRequired ? "Not required for CSC" : "Approved"}</span>
+          </div>
+          ${entry.notRequired ? "" : `<p>Approved by ${escapeHtml(entry.approver)}</p>`}
+          ${timestamp}
+        </li>`;
+    }).join("");
+
+    approvalReceiptReturnFocus = opener || document.activeElement;
+    approvalReceiptPreviousOverflow = document.body.style.overflow;
+    approvalReceiptModal.hidden = false;
+    approvalReceiptModal.removeAttribute("aria-hidden");
+    document.body.classList.add("approval-receipt-open");
+    document.body.style.overflow = "hidden";
+    approvalReceiptClose?.focus();
+  }
+
+  function closeApprovalReceipt() {
+    if (!approvalReceiptModal) return;
+    approvalReceiptModal.hidden = true;
+    approvalReceiptModal.setAttribute("aria-hidden", "true");
+    document.body.classList.remove("approval-receipt-open");
+    document.body.style.overflow = approvalReceiptPreviousOverflow;
+    approvalReceiptPreviousOverflow = "";
+    if (approvalReceiptReturnFocus?.isConnected) approvalReceiptReturnFocus.focus();
+    approvalReceiptReturnFocus = null;
+  }
+
   function dateRangeBounds(value, today) {
     const date = new Date(today);
     if (value === "today") return [date, date];
@@ -760,6 +975,10 @@ import { eventBoundaryMillis } from "./eventOrganizerDashboardDates.js";
   function getAvailableActions(event) {
     const status = normalizeStatus(getEffectiveStatus(event));
     const actions = [{ type: "view", label: "View tracker" }];
+
+    if (isFullyApproved(event)) {
+      actions.push({ type: "approval-receipt", label: "View Approval Receipt" });
+    }
 
     if (status === "approved" && isFullyApproved(event)) {
       actions.push({ type: "publish", label: "Publish" });
@@ -1688,6 +1907,8 @@ import { eventBoundaryMillis } from "./eventOrganizerDashboardDates.js";
         handleDeleteEvent(eventId);
       } else if (action === "view") {
         openApprovalTracker(eventId);
+      } else if (action === "approval-receipt") {
+        openApprovalReceipt(eventId, btn);
       } else if (action === "publish") {
         handlePublishEvent(eventId);
       } else if (action === "cancel") {
@@ -1703,8 +1924,37 @@ import { eventBoundaryMillis } from "./eventOrganizerDashboardDates.js";
     // Tracker modal controls
     btnTrackerClose?.addEventListener("click", closeApprovalTracker);
     trackerBackdrop?.addEventListener("click", closeApprovalTracker);
+    approvalReceiptClose?.addEventListener("click", closeApprovalReceipt);
+    approvalReceiptModal?.addEventListener("click", (event) => {
+      if (event.target.closest("[data-receipt-close]")) closeApprovalReceipt();
+    });
+    approvalReceiptPrint?.addEventListener("click", () => window.print());
+    approvalReceiptDialog?.addEventListener("keydown", (event) => {
+      if (event.key !== "Tab") return;
+      const focusable = [...approvalReceiptDialog.querySelectorAll(
+        'button:not([disabled]), a[href], [tabindex]:not([tabindex="-1"])',
+      )].filter((element) => !element.hidden);
+      if (!focusable.length) {
+        event.preventDefault();
+        approvalReceiptDialog.focus();
+        return;
+      }
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    });
 
     document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape" && approvalReceiptModal && !approvalReceiptModal.hidden) {
+        closeApprovalReceipt();
+        return;
+      }
       if (e.key === "Escape" && trackerModalOverlay && !trackerModalOverlay.hidden) {
         closeApprovalTracker();
       }

@@ -1000,6 +1000,13 @@ loadCachedOrganizations();
       ],
     },
     {
+      campus: "PUP Canlalay",
+      venues: [
+        { name: "Open Field | PUP Canlalay", maxCapacity: 500, type: "outdoor" },
+        { name: "AVR | PUP Canlalay", maxCapacity: 150, type: "indoor" },
+      ],
+    },
+    {
       campus: "Other",
       venues: [
         { name: "Others | Inside PUP", maxCapacity: 100, type: "indoor" },
@@ -1015,6 +1022,17 @@ loadCachedOrganizations();
       VENUES_FLAT_MAP[v.name] = { maxCapacity: v.maxCapacity, type: v.type };
     });
   });
+
+  function getSelectedVenues() {
+    const select = document.getElementById("venue");
+    if (!select) return state.selectedVenues ? [...state.selectedVenues] : [];
+    const selected = [...select.selectedOptions].map((option) => option.value).filter(Boolean);
+    if (selected.length) {
+      state.selectedVenues = selected;
+      return selected;
+    }
+    return state.selectedVenues ? [...state.selectedVenues] : [];
+  }
 
   const manilaDateInfo = getManilaDateInfo();
 
@@ -1043,6 +1061,9 @@ loadCachedOrganizations();
     conflict: null,
     highlightedFields: new Set(),
     categoryDropdownOpen: false,
+    selectedVenues: [],
+    roomNumbers: [],
+    participatingDates: new Set(),
     deadlineManuallyEdited: false,
     targetAudience: "Open to All",
     targetDepartments: [],
@@ -1239,19 +1260,21 @@ loadCachedOrganizations();
     if (existing) existing.remove();
 
     const toast = document.createElement("div");
-    toast.className = "ce-toast";
+    toast.className = "ce-toast is-visible";
     toast.setAttribute("role", "status");
-    toast.textContent = message;
-    document.body.appendChild(toast);
-
-    setTimeout(() => {
-      toast.classList.add("is-visible");
-    }, 10);
-
-    setTimeout(() => {
+    toast.innerHTML = `<span class="ce-toast-message"></span><button type="button" class="ce-toast-close" aria-label="Dismiss notification">×</button>`;
+    toast.querySelector(".ce-toast-message").textContent = message;
+    toast.querySelector(".ce-toast-close").addEventListener("click", () => {
+      clearTimeout(toast._removeTimer);
       toast.classList.remove("is-visible");
       setTimeout(() => toast.remove(), 250);
-    }, 3000);
+    });
+    document.body.appendChild(toast);
+
+    toast._removeTimer = setTimeout(() => {
+      toast.classList.remove("is-visible");
+      setTimeout(() => toast.remove(), 250);
+    }, 8000);
   }
 
   function setRequestBusy(button, busy, idleLabel) {
@@ -2573,7 +2596,7 @@ loadCachedOrganizations();
                          aria-describedby="duplicateNotice error-eventName">
                   <p id="duplicateNotice" class="ce-warning-note" role="status" aria-live="polite" hidden></p>
                   <p class="ce-error" id="error-eventName" hidden></p>
-                  <small class="ce-hint">Use a clear, specific title that helps students identify the event.</small>
+                  <small class="ce-hint">Enter a clear and recognizable event title.</small>
                 </div>
 
                 <div class="ce-field" id="wrap-eventOrganizer">
@@ -2584,6 +2607,7 @@ loadCachedOrganizations();
                          value="${escapeHTML(organizerDisplayValue)}"
                          readonly
                          class="ce-input--readonly">
+                  <small class="ce-hint">Automatically based on your Event Organizer account.</small>
                 </div>
 
                 <div class="ce-field" id="wrap-eventSource">
@@ -2595,6 +2619,7 @@ loadCachedOrganizations();
                          readonly
                          aria-readonly="true"
                          class="ce-input--readonly ce-input--auto-linked">
+                  <small class="ce-hint">Automatically identified by RECOVIBE.</small>
                 </div>
 
                 <!-- Category Multi-Select Dropdown with Checkboxes (1 to 3 allowed) -->
@@ -2625,7 +2650,7 @@ loadCachedOrganizations();
                     </div>
                   </div>
                   <p class="ce-error" id="error-category" hidden></p>
-                  <small class="ce-hint">Choose 1 to 3 accurate categories so students can find this event.</small>
+                  <small class="ce-hint">Select 1 to 3 categories that best represent your event. These help students discover relevant activities.</small>
                 </div>
 
                 <input type="hidden" id="targetYear" name="targetYear" value="${state.isReusingEvent ? "" : "All Levels"}">
@@ -2633,7 +2658,7 @@ loadCachedOrganizations();
               </div>
               <aside class="ce-step-guidance" aria-label="Why event identity matters">
                 <strong>Why this matters</strong>
-                <p>A precise event name and accurate categories help students understand the event and find it in the right listings.</p>
+                <p>Your event title and categories appear in event listings and help RECOVIBE recommend the event to relevant students.</p>
               </aside>
             </section>
 
@@ -2657,7 +2682,7 @@ loadCachedOrganizations();
                          aria-describedby="holidayNotice error-eventDate">
                   <p id="holidayNotice" class="ce-holiday-notice" role="status" aria-live="polite" hidden></p>
                   <p class="ce-error" id="error-eventDate" hidden></p>
-                  <small class="ce-hint">Choose the first event day; it must fall within the available date range.</small>
+                  <small class="ce-hint">Choose the first event day.</small>
                 </div>
 
                 <!-- Date End with Min locked to Date Start -->
@@ -2672,7 +2697,7 @@ loadCachedOrganizations();
                          required
                          aria-describedby="error-eventDateEnd">
                   <p class="ce-error" id="error-eventDateEnd" hidden></p>
-                  <small class="ce-hint">For a single-day event, use the same date for both fields.</small>
+                  <small class="ce-hint">Choose the final event day.</small>
                 </div>
 
                 <!-- Daily Schedule Dropdown -->
@@ -2682,6 +2707,7 @@ loadCachedOrganizations();
                     <option value="Same time each day">Same time each day</option>
                     <option value="Different time by day">Different time by day</option>
                   </select>
+                  <small class="ce-hint">Choose whether your event follows the same schedule or has different operating hours each day.</small>
                   <p class="ce-error" id="error-dailySchedule" hidden></p>
                 </div>
 
@@ -2755,6 +2781,10 @@ loadCachedOrganizations();
 
                 <!-- Different time by day container (Photo 3) -->
                 <div class="ce-field ce-field--full" id="wrap-dailyScheduleContainer" hidden>
+                  <aside class="ce-step-guidance" aria-label="Date participation">
+                    <strong>Date participation</strong>
+                    <p>Every date is listed below. Sundays are automatically unchecked by default because events are generally not scheduled on Sundays. However, you may check a Sunday if your event will take place on that day. You may also uncheck any other date when your event will not take place. At least one date must remain included.</p>
+                  </aside>
                   <div class="ce-daily-schedule-card">
                     <p class="ce-daily-hint">Set a separate start and end time for each event date.</p>
                     <div class="ce-daily-schedule-list" id="dailyScheduleList">
@@ -2767,7 +2797,7 @@ loadCachedOrganizations();
                 <!-- Grouped Venue Dropdown -->
                 <div class="ce-field" id="wrap-venue">
                   <label for="venue">Venue <span class="ce-req">*</span></label>
-                  <select id="venue" name="venue" required aria-describedby="error-venue">
+                  <select id="venue" name="venue" multiple size="4" required aria-describedby="venueHint error-venue">
                     <option value="">Select venue...</option>
                     ${VENUES_GROUPED.map((grp) => `
                       <optgroup label="${escapeHTML(grp.campus)}">
@@ -2779,6 +2809,7 @@ loadCachedOrganizations();
                       </optgroup>
                     `).join("")}
                   </select>
+                  <small class="ce-hint" id="venueHint">Select all locations where the event will take place.</small>
                   <p class="ce-error" id="error-venue" hidden></p>
                 </div>
 
@@ -2789,11 +2820,10 @@ loadCachedOrganizations();
                          name="maxCapacity"
                          min="1"
                          step="1"
-                         disabled
                          required
                          placeholder="Expected Participants"
                          aria-describedby="venueCapacityHint error-maxCapacity">
-                  <small class="ce-hint" id="venueCapacityHint">Select a venue to view capacity limit.</small>
+                  <small class="ce-hint" id="venueCapacityHint">Enter the maximum number of participants allowed for this event. The number must not exceed the maximum capacity of the selected venue or venues.</small>
                   <p class="ce-error" id="error-maxCapacity" hidden></p>
                 </div>
 
@@ -2827,7 +2857,11 @@ loadCachedOrganizations();
                          id="customVenueAddress"
                          name="customVenueAddress"
                          placeholder="e.g. Aguinaldo Highway, Silang Junction North, Tagaytay City, Cavite"
-                         aria-describedby="error-customVenueAddress">
+                         aria-describedby="roomNumberHelp error-customVenueAddress">
+                  <div id="roomNumberInputWrap" hidden>
+                    <p class="ce-hint" id="roomNumberHelp">Room number input: first key and second key are digits-only. Example: First key: 1, Second key: 1, Automatically displayed result: 101.</p>
+                    <div id="roomNumberChips" class="ce-chips-list"></div>
+                  </div>
                   <p class="ce-error" id="error-customVenueAddress" hidden></p>
                 </div>
 
@@ -2842,6 +2876,11 @@ loadCachedOrganizations();
                   <small class="ce-hint">Provide the meeting link or virtual platform URL.</small>
                   <p class="ce-error" id="error-onlineMeetingLink" hidden></p>
                 </div>
+                <aside class="ce-field ce-field--full ce-step-guidance" aria-label="Before continuing">
+                  <strong>Before continuing</strong>
+                  <p>Confirm the venue and capacity with the appropriate campus office before proceeding. Carefully review the selected event dates, including dates with different schedules, included Sundays, and dates you have unchecked. Make sure that the maximum participant capacity is appropriate for your event.</p>
+                  <p>RECOVIBE checks venue availability based on your selected dates and schedules. If another event already occupies the selected venue at the same date and time, you cannot proceed until the conflict is resolved.</p>
+                </aside>
               </div>
             </section>
 
@@ -3469,24 +3508,20 @@ loadCachedOrganizations();
       <!-- Sticky Bottom Action Bar with favorites, draft saving, and wizard navigation -->
       <footer class="ce-bottom-bar">
         <div class="ce-bottom-bar-inner">
-          <div class="ce-bottom-status" id="bottomStatusMessage">
-            <span id="bottomStatusText">Review your event information before submitting.</span>
-          </div>
-          <div class="ce-bottom-actions">
-            <button type="button" class="ce-btn-secondary ${state.addAsFavorite ? "is-active" : ""}" id="btnAddAsFavorite" aria-pressed="${Boolean(state.addAsFavorite)}">
-              ${state.addAsFavorite ? "★ Favorite after publish" : "☆ Favorite after publish"}
+          <div class="ce-bottom-actions ce-bottom-actions-left">
+            <button type="button" class="ce-btn-secondary" id="btnWizardBack" hidden>
+              Back
             </button>
             <button type="button" class="ce-btn-secondary" id="btnCancelEvent">
               Cancel
             </button>
+          </div>
+          <div class="ce-bottom-actions ce-bottom-actions-right">
             <button type="button" class="ce-btn-secondary ${state.favoriteTemplateFingerprint ? "is-active" : ""}" id="btnFavoriteTemplate" aria-pressed="${Boolean(state.favoriteTemplateFingerprint)}">
               ${state.favoriteTemplateFingerprint ? "★ Added to Favorites" : "☆ Add to Favorites"}
             </button>
             <button type="button" class="ce-btn-secondary" id="btnSaveDraft">
               Save as Draft
-            </button>
-            <button type="button" class="ce-btn-secondary" id="btnWizardBack" hidden>
-              Back
             </button>
             <button type="button" class="ce-btn-primary" id="btnWizardContinue">
               Continue →
@@ -3891,8 +3926,13 @@ loadCachedOrganizations();
     const continueButton = document.getElementById("btnWizardContinue");
     const submitButton = document.getElementById("btnSubmitApproval");
     if (backButton) backButton.hidden = step === 1;
-    if (continueButton) continueButton.hidden = step === 6;
-    if (submitButton) submitButton.hidden = step !== 6;
+    if (continueButton) {
+      continueButton.hidden = false;
+      continueButton.textContent = step === 6
+        ? "Continue →"
+        : "Continue →";
+    }
+    if (submitButton) submitButton.hidden = true;
 
     const status = document.getElementById("bottomStatusText");
     if (status) {
@@ -3996,7 +4036,10 @@ loadCachedOrganizations();
         showToast("Complete the required fields in this step before continuing.");
         return;
       }
-      if (state.activeWizardStep >= 6) return;
+      if (state.activeWizardStep >= 6) {
+        document.getElementById("btnSubmitApproval")?.click();
+        return;
+      }
       state.activeWizardStep += 1;
       updateWizardStepView();
       root.querySelector(`[data-wizard-step="${state.activeWizardStep}"]`)?.focus();
@@ -4445,7 +4488,7 @@ loadCachedOrganizations();
     ].forEach((id) => {
       const el = document.getElementById(id);
       if (el) {
-        const handler = () => {
+        const handler = (event) => {
           const isInsidePupVenue = document.getElementById("venue")?.value.toLowerCase().includes("inside pup");
           if (id === "customVenueAddress" && isInsidePupVenue) {
             el.value = el.value.replace(/\D/g, "").slice(0, 3);
@@ -4458,6 +4501,7 @@ loadCachedOrganizations();
           if (id === "description") updateDescCounter();
           if (id === "rationale") updateRationaleCounter();
           if (id === "venue" || id === "maxCapacity" || id === "customVenueName" || id === "customVenueAddress" || id === "onlineMeetingLink") checkVenueCapacityHint();
+          if (id === "venue" && event.type === "change") syncVenueAssignedApprover();
           if (id === "eventName") checkDuplicateNameWarning();
           if (id === "eventDate") {
             checkDateHolidayNotice();
@@ -4549,6 +4593,7 @@ loadCachedOrganizations();
 
     // Set up Input Rules Helpers
     setupCategoryDropdown();
+    setupRoomNumberInput();
     handleDailyScheduleToggle();
     setupFacultyChipsInput();
     setupFacultyInChargeInput();
@@ -4736,6 +4781,37 @@ loadCachedOrganizations();
     );
   }
 
+  function isSirAbelidaApprovalStage(stage) {
+    const identities = [
+      stage.id,
+      stage.key,
+      stage.name,
+      stage.reviewer,
+      stage.reviewerName,
+      ...(Array.isArray(stage.aliases) ? stage.aliases : []),
+    ];
+    return identities.some((value) => {
+      const normalized = String(value || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+      return normalized.includes("abelida") ||
+        ["labhead", "laboratoryhead", "propertycustodian", "administrativeofficer"]
+          .some((alias) => normalized.includes(alias));
+    });
+  }
+
+  function syncVenueAssignedApprover() {
+    const stage = getFormApprovalStageOptions().find(isSirAbelidaApprovalStage);
+    if (!stage || stage.notApplicable) return;
+
+    const selected = new Set((state.selectedApprovers || []).map(String));
+    if (getSelectedVenues().length) {
+      selected.add(stage.id);
+    } else if (!stage.required) {
+      selected.delete(stage.id);
+    }
+    state.selectedApprovers = [...selected];
+    renderApprovers();
+  }
+
   function getApprovalStepsValidationError() {
     const selectedStages = getSelectedApprovalStages();
     const selectedIds = selectedStages.map((stage) => stage.id);
@@ -4766,6 +4842,7 @@ loadCachedOrganizations();
     if (!list) return;
 
     const stages = getFormApprovalStageOptions();
+    const hasSelectedVenue = getSelectedVenues().length > 0;
     stages.forEach((stage) => {
       if (stage.required && !state.selectedApprovers.includes(stage.id)) {
         state.selectedApprovers.push(stage.id);
@@ -4776,7 +4853,7 @@ loadCachedOrganizations();
       const checkedIds = stages
         .filter((stage) => {
           if (stage.notApplicable) return false;
-          if (stage.required) return true;
+          if (stage.required || (hasSelectedVenue && isSirAbelidaApprovalStage(stage))) return true;
           const input = document.getElementById(`approver-${stage.id}`);
           return input
             ? input.checked
@@ -4831,11 +4908,13 @@ loadCachedOrganizations();
     list.innerHTML = stages
       .map((stage) => {
         const isNotApplicable = Boolean(stage.notApplicable);
+        const isVenueAssigned = hasSelectedVenue && isSirAbelidaApprovalStage(stage);
         const isPreChecked = !isNotApplicable && (stage.required ||
+          isVenueAssigned ||
           state.selectedApprovers.includes(stage.id) ||
           state.selectedApprovers.includes(stage.name) ||
           state.selectedApprovers.includes(stage.key));
-        const isLocked = Boolean(stage.required || isNotApplicable);
+        const isLocked = Boolean(stage.required || isNotApplicable || isVenueAssigned);
         const reviewerExtra = stage.reviewer && stage.reviewer.trim() !== stage.name.trim()
           ? `<span style="font-size:12px;color:#6b7280;margin-left:6px;font-weight:normal;">(${escapeHTML(stage.reviewer)})</span>`
           : "";
@@ -4864,7 +4943,8 @@ loadCachedOrganizations();
 
     stages.forEach((stage) => {
       const input = document.getElementById(`approver-${stage.id}`);
-      if (input && !stage.required && !stage.notApplicable) {
+      if (input && !stage.required && !stage.notApplicable &&
+          !(hasSelectedVenue && isSirAbelidaApprovalStage(stage))) {
         input.addEventListener("change", () => {
           updateStepTags();
           state.dirty = true;
@@ -5075,8 +5155,25 @@ loadCachedOrganizations();
       const dt = row.dataset.date;
       const s = row.querySelector(".ce-daily-start-input")?.value;
       const e = row.querySelector(".ce-daily-end-input")?.value;
-      if (dt) existing[dt] = { start: s, end: e };
+      const included = row.querySelector(".ce-daily-participation")?.checked;
+      if (dt) {
+        existing[dt] = { start: s, end: e, included };
+      }
     });
+    if (state.participatingDates.size === 0) {
+      dates.forEach((dateStr) => {
+        const [y, m, d] = dateStr.split("-").map(Number);
+        const dateObj = new Date(y, m - 1, d);
+        if (dateObj.getDay() !== 0) state.participatingDates.add(dateStr);
+      });
+    } else {
+      dates.forEach((dateStr) => {
+        if (existing[dateStr]?.included !== undefined) return;
+        const [y, m, d] = dateStr.split("-").map(Number);
+        const dateObj = new Date(y, m - 1, d);
+        if (dateObj.getDay() !== 0) state.participatingDates.add(dateStr);
+      });
+    }
 
     const defaultStart = form?.timeStart?.value || "08:00 AM";
     const defaultEnd = form?.timeEnd?.value || "08:00 PM";
@@ -5093,10 +5190,17 @@ loadCachedOrganizations();
 
       const startVal = existing[dateStr]?.start || defaultStart;
       const endVal = existing[dateStr]?.end || defaultEnd;
+      const included = existing[dateStr]?.included !== undefined
+        ? existing[dateStr].included
+        : state.participatingDates.has(dateStr);
 
       return `
         <div class="ce-daily-schedule-row" data-date="${dateStr}" id="dailyRow_${idx}">
           <div class="ce-daily-date-col">
+            <label class="ce-daily-participation-label">
+              <input type="checkbox" class="ce-daily-participation" ${included ? "checked" : ""}>
+              <span>Include date</span>
+            </label>
             <span class="ce-daily-date-text">${escapeHTML(formattedDate)}</span>
           </div>
 
@@ -5162,6 +5266,7 @@ loadCachedOrganizations();
                 </div>
               </div>
             </div>
+            <p class="ce-daily-conflict" role="alert" hidden></p>
           </div>
         </div>
       `;
@@ -5171,6 +5276,29 @@ loadCachedOrganizations();
       attachCustomTimepicker(`dailyStart_${idx}`, "AM");
       attachCustomTimepicker(`dailyEnd_${idx}`, "PM");
 
+      const row = document.querySelector(`#dailyRow_${idx}`);
+      const participation = row?.querySelector(".ce-daily-participation");
+      if (participation) {
+        participation.addEventListener("change", () => {
+          const includedCount = [...document.querySelectorAll(".ce-daily-participation")]
+            .filter((checkbox) => checkbox.checked).length;
+          if (!participation.checked && includedCount === 0) {
+            participation.checked = true;
+            showToast("At least one event date must remain included.");
+            return;
+          }
+          state.participatingDates.clear();
+          document.querySelectorAll(".ce-daily-schedule-row").forEach((dateRow) => {
+            if (dateRow.querySelector(".ce-daily-participation")?.checked) {
+              state.participatingDates.add(dateRow.dataset.date);
+            }
+          });
+          state.dirty = true;
+          clearFieldError("dailySchedule");
+          updateAllReadinessChecks();
+          updateLivePreview();
+        });
+      }
       const sInp = document.getElementById(`dailyStart_${idx}`);
       const eInp = document.getElementById(`dailyEnd_${idx}`);
       if (sInp) sInp.addEventListener("input", () => {
@@ -5237,6 +5365,7 @@ loadCachedOrganizations();
     const container = document.getElementById("dailyScheduleList");
     if (!container) return list;
     container.querySelectorAll(".ce-daily-schedule-row").forEach((row) => {
+      if (!row.querySelector(".ce-daily-participation")?.checked) return;
       const dt = row.dataset.date;
       const sInput = row.querySelector(".ce-daily-start-input");
       const eInput = row.querySelector(".ce-daily-end-input");
@@ -5773,25 +5902,34 @@ loadCachedOrganizations();
   function checkVenueCapacityHint() {
     const venueEl = document.getElementById("venue");
     const hint = document.getElementById("venueCapacityHint");
+    const venueHint = document.getElementById("venueHint");
     const weatherEl = document.getElementById("weatherContingency");
     const capacityInput = document.getElementById("maxCapacity");
     if (!venueEl) return;
 
-    const chosenVenue = (venueEl.value || "").trim();
-    const venueRecord = VENUES_FLAT_MAP[chosenVenue];
+    const selectedVenues = getSelectedVenues();
+    const chosenVenue = selectedVenues[0] || "";
+    const venueRecords = selectedVenues.map((name) => VENUES_FLAT_MAP[name]).filter(Boolean);
+    const venueRecord = venueRecords.length ? venueRecords[0] : null;
+    const maxVenueLimit = venueRecords.length
+      ? Math.min(...venueRecords.map((record) => record.maxCapacity))
+      : null;
 
-    if (venueRecord && venueRecord.maxCapacity) {
-      if (hint) hint.textContent = `Venue maximum capacity: ${venueRecord.maxCapacity} attendees.`;
+    if (venueHint) {
+      venueHint.textContent = selectedVenues.length
+        ? "You can select multiple venues for one event. You may combine PUP Biñan, PUP Canlalay, off-campus, and online venues depending on your event's arrangements."
+        : "Select all locations where the event will take place.";
+    }
+
+    if (maxVenueLimit) {
+      if (hint) hint.textContent = `Enter the maximum number of participants allowed for this event. Maximum for selected venues: ${maxVenueLimit} attendees.`;
       if (capacityInput) {
-        capacityInput.disabled = false;
-        capacityInput.max = String(venueRecord.maxCapacity);
+        capacityInput.max = String(maxVenueLimit);
       }
     } else {
-      if (hint) hint.textContent = "Select a venue to view capacity limit.";
+      if (hint) hint.textContent = "Enter the maximum number of participants allowed for this event. The number must not exceed the maximum capacity of the selected venue or venues.";
       if (capacityInput) {
-        capacityInput.disabled = true;
         capacityInput.removeAttribute("max");
-        capacityInput.value = "";
       }
     }
 
@@ -5814,10 +5952,14 @@ loadCachedOrganizations();
     const wrapOutsideAddr = document.getElementById("wrap-customVenueAddress");
     const wrapOnlineLink = document.getElementById("wrap-onlineMeetingLink");
 
-    const vLower = chosenVenue.toLowerCase();
-    const isOutside = vLower.includes("outside pup");
-    const isInsideOther = vLower.includes("inside pup");
+    const isInsideOther = selectedVenues.some(
+      (name) => name.trim().toLowerCase() === "others | inside pup",
+    );
+    const isOutside = selectedVenues.some(
+      (name) => name.trim().toLowerCase() === "others | outside pup",
+    );
     const isCustomVenue = isOutside || isInsideOther;
+    const vLower = chosenVenue.toLowerCase();
     const isOnline = vLower.includes("online") || venueRecord?.type === "online";
 
     if (wrapOutsideName) {
@@ -5840,12 +5982,15 @@ loadCachedOrganizations();
       wrapOutsideAddr.style.display = isCustomVenue ? "" : "none";
       const lbl = wrapOutsideAddr.querySelector("label");
       const inp = document.getElementById("customVenueAddress");
+      const roomWrap = document.getElementById("roomNumberInputWrap");
       if (lbl) {
         lbl.innerHTML = isInsideOther ? 'Room Number <span class="ce-req">*</span>' : 'Exact Address <span class="ce-req">*</span>';
       }
       if (inp) {
-        inp.placeholder = isInsideOther ? "e.g. Room 204" : "e.g. Aguinaldo Highway, Silang Junction North, Tagaytay City, Cavite";
+        inp.placeholder = isInsideOther ? "Type a room number and press Enter" : "e.g. Aguinaldo Highway, Silang Junction North, Tagaytay City, Cavite";
+        inp.readOnly = false;
       }
+      if (roomWrap) roomWrap.hidden = !isInsideOther;
       if (!isCustomVenue) {
         clearFieldError("customVenueAddress");
       }
@@ -5927,6 +6072,63 @@ loadCachedOrganizations();
   }
 
   // 23. Category Dropdown: Multi-Select with Checkboxes (1 to 3)
+  function setupRoomNumberInput() {
+    const input = document.getElementById("customVenueAddress");
+    const chips = document.getElementById("roomNumberChips");
+    if (!input || !chips) return;
+
+    const isInsideVenueSelected = () => getSelectedVenues().some(
+      (name) => name.trim().toLowerCase() === "others | inside pup",
+    );
+
+    const normalizeRoom = (digits) => {
+      if (!/^\d{2}$/.test(digits)) return "";
+      return `${digits.charAt(0)}0${digits.charAt(1)}`;
+    };
+
+    const render = () => {
+      chips.innerHTML = state.roomNumbers.map((room, index) => `
+        <div class="ce-chip" data-room-index="${index}">
+          <span class="ce-chip-label">${escapeHTML(room)}</span>
+          <button type="button" class="ce-chip-remove" aria-label="Remove room ${escapeHTML(room)}" data-remove-room="${index}">X</button>
+        </div>
+      `).join("");
+      chips.querySelectorAll("[data-remove-room]").forEach((button) => {
+        button.addEventListener("click", () => {
+          state.roomNumbers.splice(Number(button.dataset.removeRoom), 1);
+          render();
+          clearFieldError("customVenueAddress");
+        });
+      });
+    };
+
+    input.addEventListener("input", () => {
+      if (isInsideVenueSelected()) {
+        input.value = input.value.replace(/\D/g, "").slice(0, 2);
+      }
+    });
+    input.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter" || !isInsideVenueSelected()) return;
+      event.preventDefault();
+      const room = normalizeRoom(input.value);
+      if (!room) {
+        markError("customVenueAddress", "Enter exactly two digits for the room number.");
+        showToast("Enter exactly two digits for the room number.");
+        return;
+      }
+      if (state.roomNumbers.includes(room)) {
+        markError("customVenueAddress", "This room number has already been added.");
+        showToast("This room number has already been added.");
+        return;
+      }
+      state.roomNumbers.push(room);
+      input.value = "";
+      clearFieldError("customVenueAddress");
+      render();
+    });
+    render();
+  }
+
   function setupCategoryDropdown() {
     const btn = document.getElementById("catDropdownBtn");
     const menu = document.getElementById("catDropdownMenu");
@@ -7223,6 +7425,12 @@ loadCachedOrganizations();
         errorEl.hidden = true;
       }
       if (wrapEl) wrapEl.classList.remove("has-error");
+      if (wrapEl) {
+        wrapEl.querySelectorAll(":scope > .ce-hint").forEach((hint) => {
+          if (hint.dataset.normalHelper) hint.textContent = hint.dataset.normalHelper;
+          hint.classList.remove("ce-error-hint");
+        });
+      }
       zone.classList.remove("has-error");
     }
 
@@ -7681,9 +7889,9 @@ loadCachedOrganizations();
       const vLower = (v || "").toLowerCase();
       if (vLower.includes("outside pup") && form.customVenueName?.value.trim()) {
         venueEl.textContent = `${v} (${form.customVenueName.value.trim()})`;
-      } else if (vLower.includes("inside pup") && (form.customVenueName?.value.trim() || form.customVenueAddress?.value.trim())) {
+      } else if (vLower.includes("inside pup") && (form.customVenueName?.value.trim() || state.roomNumbers.length)) {
         const bldg = form.customVenueName?.value.trim() || "";
-        const room = form.customVenueAddress?.value.trim() || "";
+        const room = state.roomNumbers.join(", ");
         const extra = [bldg, room].filter(Boolean).join(", ");
         venueEl.textContent = extra ? `${v} (${extra})` : v;
       } else if (vLower.includes("online") && form.onlineMeetingLink?.value.trim()) {
@@ -7886,7 +8094,15 @@ loadCachedOrganizations();
       if (rows.length > 0) {
         let allRowsValid = true;
         let dailyError = "";
+        const includedRows = [...rows].filter((row) =>
+          row.querySelector(".ce-daily-participation")?.checked,
+        );
+        if (includedRows.length === 0) {
+          allRowsValid = false;
+          dailyError = "At least one event date must remain included.";
+        }
         rows.forEach((row) => {
+          if (!row.querySelector(".ce-daily-participation")?.checked) return;
           const rowDate = row.dataset.date;
           const sInp = row.querySelector(".ce-daily-start-input")?.value;
           const eInp = row.querySelector(".ce-daily-end-input")?.value;
@@ -7976,21 +8192,52 @@ loadCachedOrganizations();
     }
 
     // 4. Cross-event venue conflict check
-    const venueVal = form.venue?.value || "";
+    const selectedVenueNames = getSelectedVenues();
+    const venueVal = selectedVenueNames[0] || form.venue?.value || "";
     let conflict = null;
     if (isDifferentDaily) {
       const rows = document.querySelectorAll("#dailyScheduleList .ce-daily-schedule-row");
       for (const row of rows) {
+        if (!row.querySelector(".ce-daily-participation")?.checked) continue;
         const rowDate = row.dataset.date;
         const sInp = row.querySelector(".ce-daily-start-input")?.value;
         const eInp = row.querySelector(".ce-daily-end-input")?.value;
-        conflict = checkCrossEventConflict(rowDate, venueVal, sInp, eInp);
-        if (conflict) break;
+        for (const selectedVenue of (selectedVenueNames.length ? selectedVenueNames : [venueVal])) {
+          conflict = checkCrossEventConflict(rowDate, selectedVenue, sInp, eInp);
+          if (conflict) {
+            conflict.venue = selectedVenue;
+            break;
+          }
+        }
+        if (conflict) {
+          conflict.date = rowDate;
+          conflict.startTime = sInp;
+          conflict.endTime = eInp;
+          break;
+        }
       }
     } else {
-      conflict = checkCrossEventConflict(dateVal, venueVal, form.timeStart?.value, form.timeEnd?.value);
+      for (const selectedVenue of (selectedVenueNames.length ? selectedVenueNames : [venueVal])) {
+        conflict = checkCrossEventConflict(dateVal, selectedVenue, form.timeStart?.value, form.timeEnd?.value);
+        if (conflict) {
+          conflict.venue = selectedVenue;
+          break;
+        }
+      }
     }
     state.conflict = conflict;
+    document.querySelectorAll(".ce-daily-schedule-row").forEach((row) => {
+      const conflictEl = row.querySelector(".ce-daily-conflict");
+      if (!conflictEl) return;
+      const isRowConflict = isDifferentDaily && conflict && conflict.date === row.dataset.date;
+      conflictEl.hidden = !isRowConflict;
+      row.classList.toggle("has-conflict", Boolean(isRowConflict));
+      if (isRowConflict) {
+        conflictEl.textContent = `${conflict.venue || venueVal} is already booked from ${conflict.startTime || ""} to ${conflict.endTime || ""}${conflict.title ? ` for "${conflict.title}"` : ""}.`;
+      } else {
+        conflictEl.textContent = "";
+      }
+    });
     const conflictPass = !conflict;
     setCheckStatus("check-conflict", conflictPass, conflict ? `Venue conflict with "${conflict.title || "another event"}"` : "No venue booking conflict");
     if (conflictPass) {
@@ -8055,7 +8302,12 @@ loadCachedOrganizations();
     const capValue = form.maxCapacity?.value.trim() || "";
     const capVal = capValue ? Number(capValue) : NaN;
     const venueRecord = VENUES_FLAT_MAP[venueVal];
-    const maxVenueLimit = venueRecord?.maxCapacity;
+    const selectedVenueRecords = getSelectedVenues()
+      .map((name) => VENUES_FLAT_MAP[name])
+      .filter(Boolean);
+    const maxVenueLimit = selectedVenueRecords.length
+      ? Math.min(...selectedVenueRecords.map((record) => record.maxCapacity))
+      : venueRecord?.maxCapacity;
     capacityPass = Number.isInteger(capVal) && capVal > 0;
     if (capacityPass && maxVenueLimit) {
       capacityPass = capVal <= maxVenueLimit;
@@ -8207,6 +8459,13 @@ loadCachedOrganizations();
         errEl.hidden = false;
       }
       if (wrapEl) wrapEl.classList.add("has-error");
+      if (wrapEl) {
+        wrapEl.querySelectorAll(":scope > .ce-hint").forEach((hint) => {
+          if (!hint.dataset.normalHelper) hint.dataset.normalHelper = hint.textContent.trim();
+          hint.textContent = msg;
+          hint.classList.add("ce-error-hint");
+        });
+      }
       if (inputEl) {
         inputEl.setAttribute("aria-invalid", "true");
         inputEl.classList.add("has-error");
@@ -8223,6 +8482,10 @@ loadCachedOrganizations();
     });
     root.querySelectorAll(".has-error").forEach((el) => el.classList.remove("has-error"));
     root.querySelectorAll("[aria-invalid]").forEach((el) => el.removeAttribute("aria-invalid"));
+    root.querySelectorAll(".ce-hint.ce-error-hint").forEach((hint) => {
+      if (hint.dataset.normalHelper) hint.textContent = hint.dataset.normalHelper;
+      hint.classList.remove("ce-error-hint");
+    });
 
     const manilaInfo = getManilaDateInfo();
 
@@ -8264,7 +8527,14 @@ loadCachedOrganizations();
         markError("dailySchedule", "Please select valid start and end dates for daily schedule.");
       } else {
         let dailyError = null;
+        const includedRows = [...rows].filter((row) =>
+          row.querySelector(".ce-daily-participation")?.checked,
+        );
+        if (includedRows.length === 0) {
+          markError("dailySchedule", "At least one event date must remain included.");
+        }
         rows.forEach((row) => {
+          if (!row.querySelector(".ce-daily-participation")?.checked) return;
           const rowDate = row.dataset.date;
           const sInp = row.querySelector(".ce-daily-start-input")?.value;
           const eInp = row.querySelector(".ce-daily-end-input")?.value;
@@ -8312,7 +8582,14 @@ loadCachedOrganizations();
       markError("venue", "Please select a venue for the event.");
     } else if (shouldValidateStep(2)) {
       const vLower = venueVal.toLowerCase();
-      if (vLower.includes("outside pup")) {
+      const selectedVenueNames = getSelectedVenues();
+      const isInsideOther = selectedVenueNames.some(
+        (name) => name.trim().toLowerCase() === "others | inside pup",
+      );
+      const isOutside = selectedVenueNames.some(
+        (name) => name.trim().toLowerCase() === "others | outside pup",
+      );
+      if (isOutside) {
         const customName = form.customVenueName?.value.trim() || "";
         const customAddr = form.customVenueAddress?.value.trim() || "";
         if (!customName) {
@@ -8321,16 +8598,13 @@ loadCachedOrganizations();
         if (!customAddr) {
           markError("customVenueAddress", "Please enter the Exact Address of the outside venue.");
         }
-      } else if (vLower.includes("inside pup")) {
+      } else if (isInsideOther) {
         const customName = form.customVenueName?.value.trim() || "";
-        const customAddr = form.customVenueAddress?.value.trim() || "";
         if (!customName) {
           markError("customVenueName", "Please enter the Building name.");
         }
-        if (!customAddr) {
+        if (state.roomNumbers.length === 0) {
           markError("customVenueAddress", "Please enter the Room Number.");
-        } else if (!/^\d{1,3}$/.test(customAddr)) {
-          markError("customVenueAddress", "Room Number must contain 1 to 3 digits only.");
         }
       } else if (vLower.includes("online") || venueRecord?.type === "online") {
         const link = form.onlineMeetingLink?.value.trim() || "";
@@ -8341,7 +8615,12 @@ loadCachedOrganizations();
     }
 
     // 6. Capacity
-    const maxVenueLimit = venueRecord?.maxCapacity;
+    const selectedVenueRecords = getSelectedVenues()
+      .map((name) => VENUES_FLAT_MAP[name])
+      .filter(Boolean);
+    const maxVenueLimit = selectedVenueRecords.length
+      ? Math.min(...selectedVenueRecords.map((record) => record.maxCapacity))
+      : venueRecord?.maxCapacity;
     const capValue = form.maxCapacity?.value.trim() || "";
     const cap = capValue ? Number(capValue) : NaN;
     if (shouldValidateStep(2) && (!Number.isInteger(cap) || cap <= 0)) {
@@ -8657,6 +8936,28 @@ loadCachedOrganizations();
     const form = document.getElementById("createEventMainForm");
     const selectedApprovalStages = getSelectedApprovalStages();
     const approvalSteps = getApprovalStepsForSubmission();
+    const sirAbelidaStage = selectedApprovalStages.find(isSirAbelidaApprovalStage);
+    const sirAbelidaStepId = sirAbelidaStage
+      ? String(sirAbelidaStage.id || sirAbelidaStage.key || "")
+      : "";
+    const autoBypassSirAbelida = status === "pending" &&
+      !state.conflict &&
+      sirAbelidaStepId &&
+      approvalSteps.includes(sirAbelidaStepId);
+    const approvalHistory = autoBypassSirAbelida
+      ? [{
+          stage: sirAbelidaStepId,
+          stageLabel: String(sirAbelidaStage.name || sirAbelidaStage.label || ""),
+          decision: "approved",
+          note: "Automatically bypassed because no venue conflict was found.",
+          decidedBy: "system",
+          decidedByName: "RECOVIBE (automatic no-conflict bypass)",
+          timestamp: Date.now(),
+        }]
+      : [];
+    const firstPendingApprovalStep = approvalSteps.find(
+      (step) => !autoBypassSirAbelida || step !== sirAbelidaStepId,
+    ) || null;
     const approvalSnapshot = state.editingEventId
       ? {}
       : {
@@ -8672,9 +8973,11 @@ loadCachedOrganizations();
               : [],
           })),
           approvalSteps,
-          approvalCurrentStage: approvalSteps[0] || null,
-          approvalCurrentStep: 0,
-          approvalHistory: [],
+          approvalCurrentStage: firstPendingApprovalStep,
+          approvalCurrentStep: firstPendingApprovalStep
+            ? approvalSteps.indexOf(firstPendingApprovalStep)
+            : 0,
+          approvalHistory,
           stagesSource: systemApprovalStagesSource,
         };
     const id = state.editingEventId || state.submissionEventId ||
@@ -8696,6 +8999,12 @@ loadCachedOrganizations();
     }
 
     const venue = form?.venue?.value || "";
+    const isInsideOtherVenue = getSelectedVenues().some(
+      (name) => name.trim().toLowerCase() === "others | inside pup",
+    );
+    const customVenueAddress = isInsideOtherVenue
+      ? state.roomNumbers.join(", ")
+      : form?.customVenueAddress?.value.trim() || "";
     const capacityValue = form?.maxCapacity?.value.trim() || "";
     const maxCapacity = capacityValue ? Number(capacityValue) : null;
     const outsideGuests = Boolean(form?.outsideGuests?.checked);
@@ -8772,11 +9081,11 @@ loadCachedOrganizations();
       venue,
       location: venue,
       customVenueName: form?.customVenueName?.value.trim() || "",
-      customVenueAddress: form?.customVenueAddress?.value.trim() || "",
+      customVenueAddress,
       venueName: form?.customVenueName?.value.trim() || "",
-      venueAddress: form?.customVenueAddress?.value.trim() || "",
+      venueAddress: customVenueAddress,
       building: form?.customVenueName?.value.trim() || "",
-      roomNumber: form?.customVenueAddress?.value.trim() || "",
+      roomNumber: customVenueAddress,
       onlineMeetingLink: form?.onlineMeetingLink?.value.trim() || "",
       meetingLink: form?.onlineMeetingLink?.value.trim() || "",
       maxCapacity,

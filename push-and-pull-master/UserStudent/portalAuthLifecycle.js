@@ -184,7 +184,10 @@ async function handleLoginPageShow(event = null) {
     console.error("[Portal Auth] Could not initialize Firebase Auth on the login page.", error);
     return;
   }
-  if (auth.currentUser) {
+  const showLoginRequested =
+    portalName === "UserEventOrganizer" &&
+    new URL(window.location.href).searchParams.get("showLogin") === "1";
+  if (auth.currentUser && !showLoginRequested) {
     clearLogoutHistoryMarker();
     window.location.replace(activeDashboard(auth.currentUser));
     return;

@@ -686,7 +686,11 @@ import {
     const workflow = getEventStage({ ...event, approvalHistory });
     const activeStages = getStages(event);
     const hasStageHistory = approvalHistory.some((entry) => getHistoryStageKey(entry));
-    const explicitStageKey = activeStages.includes(event.approvalCurrentStage)
+    const explicitStageIsApproved = workflow.stages.some(
+      (stage) => stage.key === event.approvalCurrentStage && stage.approved,
+    );
+    const explicitStageKey = activeStages.includes(event.approvalCurrentStage) &&
+      !explicitStageIsApproved
       ? event.approvalCurrentStage
       : null;
     const fallbackStageKey = !explicitStageKey &&
@@ -804,7 +808,7 @@ import {
     const wasRevised = actionHistory.some((entry) =>
       normalizeHistoryDecision(entry.decision) === "revision",
     );
-    const currentStageIndex = proposalStages.indexOf(workflow.currentStageKey);
+    const currentStageIndex = workflow.currentStageIndex;
     const hasMovedPastStage = currentStageIndex > ownStageIndex ||
       workflow.isFullyApproved;
     const currentStage = workflow.stages[workflow.currentStageIndex] || null;
@@ -826,7 +830,7 @@ import {
       };
     }
     if (
-      workflow.currentStageKey === ownProposalStageKey &&
+      currentStageIndex === ownStageIndex &&
       (isAssignedQueueItem || isFirestoreActionRequired(event))
     ) {
       return { section: "action-required", badge: "Action required", workflow };
@@ -1330,6 +1334,7 @@ import {
       settleInitialApprovalSource("directory");
       findOrAssignAdminKey();
       subscribeFirestorePendingEvents();
+      subscribeFirestoreReviewHistory();
       if (activeReviewEventId) renderReviewScreen();
       else renderReviewQueue();
     });
@@ -1339,8 +1344,6 @@ import {
     requestedQueueFocusEventId = urlParams.get("focus") || "";
     const reviewSource = urlParams.get("source");
 
-    subscribeFirestorePendingEvents();
-    subscribeFirestoreReviewHistory();
     subscribeRecentDecisions();
 
     if (reviewId) {
