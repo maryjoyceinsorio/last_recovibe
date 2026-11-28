@@ -229,6 +229,9 @@ body {
 .admin-toast[hidden] {
   display: none;
 }
+.admin-toast.is-error {
+  background: #7a1f2e;
+}
 .admin-button {
   display: inline-flex;
   align-items: center;
@@ -442,7 +445,62 @@ body {
 .admin-profile-form .admin-checkbox { grid-column: 1 / -1; }
 .admin-profile-form[hidden], .card-view-mode[hidden], .card-edit-mode[hidden] { display: none !important; }
 .admin-checkbox { display: flex; align-items: center; gap: 7px; font-size: 10px; }
-.admin-password-dialog { width: min(430px, 100%); }
+.admin-modal-backdrop#passwordLayer {
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  background: rgba(43, 26, 29, 0.65);
+  backdrop-filter: blur(4px);
+}
+.admin-password-dialog {
+  width: min(580px, 100%);
+  max-height: 90vh;
+  padding: 32px;
+  border: 1px solid #eadfd5;
+  border-radius: 14px;
+  background: #fff;
+  box-shadow: 0 16px 40px rgba(43, 26, 29, 0.25);
+  color: #2b1a1d;
+}
+.admin-password-dialog h2 {
+  margin: 0 0 20px;
+  color: #2b1a1d;
+  font: 600 22px Fraunces, Georgia, serif;
+}
+.admin-password-dialog .admin-close {
+  top: 16px;
+  right: 16px;
+  width: 36px;
+  height: 36px;
+  border-radius: 8px;
+  color: #6b5459;
+  cursor: pointer;
+}
+.admin-password-dialog .admin-field {
+  margin: 0 0 16px;
+}
+.admin-password-dialog .admin-field label {
+  margin-bottom: 6px;
+  color: #6b5459;
+  font: 600 12px Inter, sans-serif;
+}
+.admin-password-dialog .admin-field input {
+  min-height: 44px;
+  padding: 0 14px;
+  border: 1.5px solid #eadfd5;
+  border-radius: 10px;
+  background: #fff;
+  color: #2b1a1d;
+  font: 14.5px Inter, sans-serif;
+  outline: none;
+  transition: border-color 0.15s ease;
+}
+.admin-password-dialog .admin-field input:focus {
+  border-color: #7a1f2e;
+  outline: 2px solid #e0b13a;
+}
 .admin-password-dialog .password-control { position: relative; display: flex; align-items: center; width: 100%; }
 .admin-password-dialog .password-control input { width: 100%; padding-right: 48px; }
 .admin-password-dialog .password-control button {
@@ -459,11 +517,79 @@ body {
   border-radius: 8px;
   background: transparent;
   color: #6b5459;
-  font: 600 18px/1 Inter, sans-serif;
   cursor: pointer;
 }
 .admin-password-dialog .password-control button:hover { background: rgba(43,26,29,.07); color: #7a1f2e; }
-.admin-password-dialog .password-control button:focus-visible { outline: 2px solid #e0b13a; outline-offset: 1px; }
+.admin-password-dialog .password-control button:focus-visible { outline: 2px solid #e0b13a; outline-offset: 2px; }
+.admin-password-dialog .password-control button svg { width: 19px; height: 19px; }
+.admin-password-dialog .password-control .password-eye-off,
+.admin-password-dialog .password-control button[aria-pressed="true"] .password-eye-on {
+  display: none;
+}
+.admin-password-dialog .password-control button[aria-pressed="true"] .password-eye-off {
+  display: block;
+}
+.admin-password-dialog .password-rules {
+  margin: -8px 0 16px;
+  color: #6b5459;
+  font: 12px/1.45 Inter, sans-serif;
+}
+.admin-password-dialog .admin-password-status {
+  min-height: 1.2em;
+  margin: 12px 0;
+  font: 13px/1.4 Inter, sans-serif;
+}
+.admin-password-dialog .admin-dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+  margin-top: 24px;
+}
+.admin-password-dialog .admin-dialog-actions .admin-button {
+  min-height: 44px;
+  padding: 0 20px;
+  border: 1.5px solid #eadfd5;
+  border-radius: 10px;
+  background: transparent;
+  color: #2b1a1d;
+  font: 600 14px Inter, sans-serif;
+}
+.admin-password-dialog .admin-dialog-actions .admin-button.green {
+  border-color: #7a1f2e;
+  background: #7a1f2e;
+  color: #fff;
+}
+.admin-password-dialog .admin-dialog-actions .admin-button:hover:not(:disabled) {
+  filter: brightness(.95);
+}
+.admin-password-dialog .admin-dialog-actions .admin-button:focus-visible {
+  outline: 3px solid rgba(122, 31, 46, .22);
+  outline-offset: 2px;
+}
+.admin-password-dialog .admin-dialog-actions .admin-button:disabled,
+.admin-password-dialog .admin-close:disabled {
+  cursor: wait;
+  opacity: .65;
+}
+@media (max-width: 560px) {
+  .admin-password-dialog {
+    padding: 28px 20px;
+  }
+  .admin-password-dialog .admin-dialog-actions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+  }
+  .admin-password-dialog .admin-dialog-actions .admin-button {
+    min-width: 0;
+    padding-inline: 12px;
+  }
+}
+@media (max-width: 380px) {
+  .admin-password-dialog .admin-dialog-actions {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
 @media (max-width: 650px) {
   .profile-summary-grid,
   .admin-profile-form {

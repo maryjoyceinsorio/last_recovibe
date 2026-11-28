@@ -34,8 +34,6 @@ import { isOsasReviewer } from "../correctionAccess.js";
     lifetime = 30 * 86400000;
   let filter = "all",
     deleted = false,
-    search = "",
-  searchRenderTimer = 0,
     undoSnapshot = null,
     undoTimer,
     currentAdminUid = null,
@@ -968,13 +966,6 @@ import { isOsasReviewer } from "../correctionAccess.js";
     }
   }
   function render() {
-    window.clearTimeout(searchRenderTimer);
-    searchRenderTimer = 0;
-    const activeSearch = root.querySelector("#notificationSearch");
-    const restoreSearchFocus = document.activeElement === activeSearch;
-    const selectionStart = restoreSearchFocus ? activeSearch.selectionStart : null;
-    const selectionEnd = restoreSearchFocus ? activeSearch.selectionEnd : null;
-    const selectionDirection = restoreSearchFocus ? activeSearch.selectionDirection : null;
     try {
       if (sharedNotificationState.error) {
         root.innerHTML = `<div class="admin-error" role="alert">${esc(sharedNotificationState.error)} <button class="admin-row-action" id="retryFirestoreNotifications" type="button">Retry</button></div>`;
@@ -987,16 +978,8 @@ import { isOsasReviewer } from "../correctionAccess.js";
       const retainedTrash = read(trashKey, []).filter((item) => item.expiresAt > Date.now());
       localStorage.setItem(trashKey, JSON.stringify(retainedTrash));
       const source = deleted ? trash : live;
-      const searchQuery = search.trim().toLowerCase();
       const visible = source.filter(
-        (item) =>
-          (!searchQuery ||
-            `${item.title} ${item.message}`
-              .toLowerCase()
-              .includes(searchQuery)) &&
-          (deleted ||
-            filter === "all" ||
-            (filter === "read" ? item.read : !item.read)),
+        (item) => deleted || filter === "all" || !item.read,
       );
       const unreadCount = sharedNotificationState.unreadCount;
       const pendingCorrectionCount = (sharedNotificationState.correctionRequests || [])
@@ -1024,7 +1007,7 @@ import { isOsasReviewer } from "../correctionAccess.js";
               : "";
           }).join("");
       const emptyMarkup = `<div class="notification-state"><span class="notification-state-icon" aria-hidden="true">${notificationIcon("default")}</span><strong>${deleted ? "Recently Deleted is empty" : filter === "unread" ? "No unread notifications" : "You have no notifications"}</strong><p>${deleted ? "Notifications you delete will wait here for 30 days before they are removed." : filter === "unread" ? "Everything has been read. Nice work." : "New notifications will show up here."}</p></div>`;
-      root.innerHTML = `<section class="admin-notifications"><header class="notifications-header"><h1>Notifications</h1>${correctionReviewButton}</header><div class="notification-controls"><nav class="notification-tabs" aria-label="Notification view"><button type="button" data-filter="unread" class="${filter === "unread" ? "is-active" : ""}" aria-pressed="${filter === "unread"}">Unread <span>${unreadCount}</span></button></nav><label class="notification-read-filter">Show <select id="notificationReadFilter" aria-label="Show notifications"><option value="all" ${filter === "all" || filter === "unread" ? "selected" : ""}>All</option><option value="read" ${filter === "read" ? "selected" : ""}>Read</option></select></label><div class="notification-actions"><button type="button" id="markRead" ${deleted ? (trash.length ? "" : "disabled") : (unreadCount ? "" : "disabled")}>${deleted ? "Empty trash" : "Mark all as read"}</button><button type="button" id="toggleTrash" class="notification-trash-button${deleted ? " is-active" : ""}" aria-label="${deleted ? "Return to notifications" : "Open Recently Deleted"}" aria-pressed="${deleted}" title="Recently Deleted"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 6h12M8 6V4.5h4V6m-6.5 0 .7 10h7.6l-.7-10M8.5 9v4m3-4v4"/></svg></button></div></div><label class="notification-search"><span>Search notifications</span><input id="notificationSearch" type="search" placeholder="Search notifications" aria-label="Search notifications" value="${esc(search)}"></label><section class="admin-section"><div class="admin-cards">${visibleMarkup || emptyMarkup}</div></section></section>`;
+      root.innerHTML = `<section class="admin-notifications"><header class="notifications-header"><h1>Notifications</h1>${correctionReviewButton}</header><div class="notification-controls"><nav class="notification-tabs" aria-label="Notification view"><button type="button" data-filter="unread" class="${filter === "unread" ? "is-active" : ""}" aria-pressed="${filter === "unread"}">Unread <span>${unreadCount}</span></button></nav><div class="notification-actions"><button type="button" id="markRead" ${deleted ? (trash.length ? "" : "disabled") : (unreadCount ? "" : "disabled")}>${deleted ? "Empty trash" : "Mark all as read"}</button><button type="button" id="toggleTrash" class="notification-trash-button${deleted ? " is-active" : ""}" aria-label="${deleted ? "Return to notifications" : "Open Recently Deleted"}" aria-pressed="${deleted}" title="Recently Deleted"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 6h12M8 6V4.5h4V6m-6.5 0 .7 10h7.6l-.7-10M8.5 9v4m3-4v4"/></svg></button></div></div><section class="admin-section"><div class="admin-cards">${visibleMarkup || emptyMarkup}</div></section></section>`;
       const partialError = sharedNotificationState.partialError;
       if (partialError) {
         root.insertAdjacentHTML(
@@ -1060,19 +1043,6 @@ import { isOsasReviewer } from "../correctionAccess.js";
       });
       wire();
       renderCorrectionPanel();
-      if (restoreSearchFocus) {
-        const nextSearch = root.querySelector("#notificationSearch");
-        if (nextSearch) {
-          nextSearch.focus({ preventScroll: true });
-          if (selectionStart !== null && selectionEnd !== null) {
-            nextSearch.setSelectionRange(
-              selectionStart,
-              selectionEnd,
-              selectionDirection || "none",
-            );
-          }
-        }
-      }
     } catch (error) {
       console.error("[AdminNotifications] render failed:", error.code, error.message);
       root.innerHTML =
@@ -1145,14 +1115,10 @@ import { isOsasReviewer } from "../correctionAccess.js";
     root.querySelectorAll("[data-filter]").forEach(
       (button) =>
         (button.onclick = () => {
-          filter = button.dataset.filter;
+          filter = filter === "unread" ? "all" : "unread";
           render();
         }),
     );
-    root.querySelector("#notificationReadFilter").onchange = (event) => {
-      filter = event.target.value;
-      render();
-    };
     root.querySelector("#toggleTrash").onclick = () => {
       deleted = !deleted;
       render();
@@ -1238,17 +1204,16 @@ import { isOsasReviewer } from "../correctionAccess.js";
         if (event.target.closest("button")) return;
         const item = snapshots().find((note) => note.id === card.dataset.notification);
         if (!item) return;
-        const updated = await setReadState(item, true);
-        if (!updated) return;
+        void setReadState(item, true);
         if (item.type === "correction-request") {
           openCorrectionPanel();
           return;
         }
-        const proposalId = item.proposalId || item.eventId;
+        const proposalId = item.proposalId || item.eventId || item.targetId;
         if (proposalId) {
           const reviewUrl = new URL("AdminApproval.html", window.location.href);
           reviewUrl.searchParams.set("review", proposalId);
-          if (item.source === "firestore") {
+          if (item.source === "firestore" || item.proposalSource === "firestore") {
             reviewUrl.searchParams.set("source", "firestore");
           }
           location.href = reviewUrl.href;
@@ -1274,15 +1239,6 @@ import { isOsasReviewer } from "../correctionAccess.js";
       }[type] || "pending_approval"
     );
   }
-  root.addEventListener("input", (event) => {
-    if (!(event.target instanceof HTMLInputElement) || event.target.id !== "notificationSearch") return;
-    search = event.target.value;
-    window.clearTimeout(searchRenderTimer);
-    searchRenderTimer = window.setTimeout(() => {
-      searchRenderTimer = 0;
-      render();
-    }, 120);
-  });
   function toastUndo(message) {
     const toast = document.querySelector(".admin-toast");
     toast.innerHTML = `${esc(message)} <button type="button">Undo</button>`;

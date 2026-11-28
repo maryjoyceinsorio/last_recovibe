@@ -1381,8 +1381,8 @@ export function subscribeAdminNotifications(onChange, { includeAcademicCalendar 
                   return {
                     ...data,
                     id: snap.id,
-                    eventId: data.proposalId || data.eventId || "",
-                    proposalId: data.proposalId || data.eventId || "",
+                    eventId: data.proposalId || data.eventId || data.targetId || "",
+                    proposalId: data.proposalId || data.eventId || data.targetId || "",
                     type: data.type || "default",
                     title: data.title || "Notification",
                     createdAt: data.createdAt ?? null,

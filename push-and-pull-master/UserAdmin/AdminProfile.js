@@ -448,8 +448,9 @@ import {
       return fallback;
     }
   }
-  function toast(message) {
+  function toast(message, isError = false) {
     toastElement.textContent = message;
+    toastElement.classList.toggle("is-error", isError);
     toastElement.hidden = false;
     clearTimeout(toastElement._timer);
     toastElement._timer = setTimeout(() => (toastElement.hidden = true), 3000);
@@ -968,31 +969,99 @@ import {
     };
   }
   const layer = root.querySelector("#passwordLayer");
+  const passwordForm = root.querySelector("#passwordForm");
+  const passwordError = root.querySelector("#passwordError");
+  const passwordFieldIds = ["currentPassword", "newPassword", "confirmPassword"];
+  const passwordSubmitButton = passwordForm.querySelector('[type="submit"]');
+  let passwordUpdateInProgress = false;
+  let passwordUpdateSaving = false;
+  let passwordSuccessCloseTimer = null;
+  const eyeOnMarkup = '<svg class="password-eye-on" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M2.5 12s3.4-6.5 9.5-6.5 9.5 6.5 9.5 6.5-3.4 6.5-9.5 6.5-9.5-6.5-9.5-6.5Z"/><circle cx="12" cy="12" r="2.8"/></svg>';
+  const eyeOffMarkup = '<svg class="password-eye-off" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M3 3l18 18M10.6 5.7A10.7 10.7 0 0112 5.5c6.1 0 9.5 6.5 9.5 6.5a15 15 0 01-3 3.8M6.2 6.2C3.8 7.7 2.5 12 2.5 12s3.4 6.5 9.5 6.5c1.4 0 2.6-.4 3.7-1"/><path d="M9.9 9.9a3 3 0 004.2 4.2"/></svg>';
+  const passwordRules = root.querySelector(".password-rules");
+  if (passwordRules) {
+    passwordRules.textContent =
+      "Use 8–64 characters with uppercase, lowercase, a number, and a special character, without spaces.";
+  }
+  passwordFieldIds.forEach((id) => {
+    const input = root.querySelector(`#${id}`);
+    if (input) input.required = true;
+  });
+  passwordError.classList.add("admin-password-status");
+  passwordError.setAttribute("role", "status");
+  passwordError.setAttribute("aria-live", "polite");
+  function setPasswordStatus(message, isError = false) {
+    passwordError.textContent = message;
+    passwordError.style.color = message ? (isError ? "#c0392b" : "#1b6d43") : "";
+    passwordError.setAttribute("role", isError ? "alert" : "status");
+    passwordError.setAttribute("aria-live", isError ? "assertive" : "polite");
+  }
+  function resetPasswordVisibility() {
+    root.querySelectorAll("[data-toggle]").forEach((toggle) => {
+      const input = root.querySelector(`#${toggle.dataset.toggle}`);
+      if (!input) return;
+      input.type = "password";
+      toggle.innerHTML = `${eyeOnMarkup}${eyeOffMarkup}`;
+      toggle.setAttribute("aria-controls", input.id);
+      toggle.setAttribute("aria-pressed", "false");
+      toggle.setAttribute("aria-label", `Show ${input.labels[0]?.textContent.trim() || "password"}`);
+      toggle.title = `Show ${input.labels[0]?.textContent.trim() || "password"}`;
+    });
+  }
+  function setPasswordSaving(isSaving) {
+    passwordUpdateSaving = isSaving;
+    passwordForm.setAttribute("aria-busy", String(isSaving));
+    passwordFieldIds.forEach((id) => {
+      const input = root.querySelector(`#${id}`);
+      if (input) input.disabled = isSaving;
+    });
+    root.querySelector("#cancelPassword").disabled = isSaving;
+    root.querySelector("#passwordClose").disabled = isSaving;
+    passwordSubmitButton.disabled = isSaving || passwordUpdateInProgress;
+    passwordSubmitButton.textContent = isSaving ? "Updating..." : "Update Password";
+  }
+  resetPasswordVisibility();
   function closePassword() {
+    if (passwordUpdateSaving) return;
+    if (passwordSuccessCloseTimer) {
+      clearTimeout(passwordSuccessCloseTimer);
+      passwordSuccessCloseTimer = null;
+    }
     layer.hidden = true;
     layer.style.display = "none";
+    layer.setAttribute("aria-hidden", "true");
     document.body.style.overflow = "";
     root.querySelector("#changePassword").focus();
-    root.querySelector("#passwordError").textContent = "";
-    root.querySelector("#passwordForm").reset();
+    setPasswordStatus("");
+    passwordForm.reset();
+    resetPasswordVisibility();
   }
   root.querySelector("#changePassword").onclick = () => {
+    if (passwordUpdateSaving) return;
+    if (passwordSuccessCloseTimer) {
+      clearTimeout(passwordSuccessCloseTimer);
+      passwordSuccessCloseTimer = null;
+    }
+    passwordForm.reset();
+    resetPasswordVisibility();
+    setPasswordStatus("");
     layer.hidden = false;
-    layer.style.display = "grid";
+    layer.style.display = "flex";
+    layer.setAttribute("aria-hidden", "false");
     document.body.style.overflow = "hidden";
     root.querySelector("#currentPassword").focus();
   };
   root.querySelectorAll("[data-toggle]").forEach(
     (button) =>
       (button.onclick = () => {
-        const input = document.getElementById(button.dataset.toggle),
-          visible = input.type === "password";
+        const input = root.querySelector(`#${button.dataset.toggle}`);
+        if (!input) return;
+        const visible = input.type === "password";
         input.type = visible ? "text" : "password";
         button.setAttribute("aria-pressed", String(visible));
-        button.setAttribute(
-          "aria-label",
-          `${visible ? "Hide" : "Show"} ${input.labels[0]?.textContent.toLowerCase() || "password"}`,
-        );
+        const label = input.labels[0]?.textContent.trim() || "password";
+        button.setAttribute("aria-label", `${visible ? "Hide" : "Show"} ${label}`);
+        button.title = `${visible ? "Hide" : "Show"} ${label}`;
       }),
   );
   root.querySelector("#passwordClose").onclick = closePassword;
@@ -1002,46 +1071,87 @@ import {
   });
   root.querySelector("#passwordForm").onsubmit = async (event) => {
     event.preventDefault();
+    if (passwordUpdateInProgress) return;
     const current = root.querySelector("#currentPassword").value,
       next = root.querySelector("#newPassword").value,
       confirmValue = root.querySelector("#confirmPassword").value,
-      error = root.querySelector("#passwordError"),
-      button = event.submitter || event.currentTarget.querySelector('[type="submit"]');
-    error.textContent = "";
+      button = event.submitter || passwordSubmitButton;
+    setPasswordStatus("");
+    if (!current.length) {
+      setPasswordStatus("Enter your current password.", true);
+      return;
+    }
+    if (!next.length) {
+      setPasswordStatus("Enter a new password.", true);
+      return;
+    }
+    if (!confirmValue.length) {
+      setPasswordStatus("Confirm your new password.", true);
+      return;
+    }
     if (
-      !current ||
       next.length < 8 ||
+      next.length > 64 ||
+      /\s/.test(next) ||
       !/[A-Z]/.test(next) ||
       !/[a-z]/.test(next) ||
-      !/[0-9]/.test(next)
+      !/\d/.test(next) ||
+      !/[^\p{L}\p{N}\s]/u.test(next)
     ) {
-      error.textContent =
-        "Use at least 8 characters with uppercase, lowercase, and a number.";
+      setPasswordStatus(
+        "Use 8–64 characters with uppercase, lowercase, a number, and a special character, without spaces.",
+        true,
+      );
+      return;
+    }
+    if (next === current) {
+      setPasswordStatus("The new password must be different from the current password.", true);
       return;
     }
     if (next !== confirmValue) {
-      error.textContent = "The new passwords do not match.";
+      setPasswordStatus("The new passwords do not match.", true);
       return;
     }
+    passwordUpdateInProgress = true;
     button.disabled = true;
-    button.textContent = "Updating…";
     try {
+      if (!window.confirm("Are you sure you want to change your account password? You will need your new password for future sign-ins.")) return;
+      setPasswordSaving(true);
       if (!firebaseUser?.email) throw new Error("Your signed-in account could not be verified.");
       const credential = EmailAuthProvider.credential(firebaseUser.email, current);
       await reauthenticateWithCredential(firebaseUser, credential);
       await updatePassword(firebaseUser, next);
-      closePassword();
+      passwordForm.reset();
+      resetPasswordVisibility();
+      setPasswordStatus("Password changed successfully.");
       toast("Password changed successfully.");
+      passwordSuccessCloseTimer = window.setTimeout(() => {
+        passwordSuccessCloseTimer = null;
+        closePassword();
+      }, 1200);
     } catch (failure) {
-      error.textContent =
-        failure.code === "auth/wrong-password" || failure.code === "auth/invalid-credential"
-          ? "Current password is incorrect."
-          : failure.code === "auth/requires-recent-login"
-            ? "Please sign in again before changing your password."
-            : "Password could not be changed. Please try again.";
+      console.error("Admin password update failed:", failure);
+      const message = failure?.code === "auth/wrong-password" ||
+        failure?.code === "auth/invalid-credential" ||
+        failure?.code === "auth/invalid-login-credentials"
+        ? "Current password is incorrect."
+        : failure?.code === "auth/requires-recent-login" ||
+          failure?.code === "auth/user-token-expired"
+          ? "Your sign-in has expired. Sign in again, then retry changing your password."
+          : failure?.code === "auth/weak-password"
+            ? "The new password does not meet the password requirements."
+            : failure?.code === "auth/too-many-requests"
+              ? "Too many attempts. Wait a few minutes, then try again."
+              : failure?.code === "auth/network-request-failed"
+                ? "A network error interrupted the password update. Check your connection and try again."
+                : failure?.code === "auth/operation-not-allowed"
+                  ? "Password sign-in is not enabled for this account."
+                  : failure?.message || "Password could not be changed. Please try again.";
+      setPasswordStatus(message, true);
+      toast(message, true);
     } finally {
-      button.disabled = false;
-      button.textContent = "Update Password";
+      passwordUpdateInProgress = false;
+      setPasswordSaving(false);
     }
   };
   layer.addEventListener("keydown", (event) => {

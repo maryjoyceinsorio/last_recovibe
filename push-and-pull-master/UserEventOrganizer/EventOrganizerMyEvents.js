@@ -1611,21 +1611,7 @@ import { eventBoundaryMillis } from "./eventOrganizerDashboardDates.js";
 
     try {
       const eventRef = doc(firestoreDb, "events", eventId);
-      const latestSnapshot = await getDoc(eventRef);
-      if (!latestSnapshot.exists()) {
-        throw new Error("This event is no longer available.");
-      }
-      const latestEvent = latestSnapshot.data();
-      const isOwner = [latestEvent.organizerUid, latestEvent.organizerId, latestEvent.createdBy]
-        .some((ownerId) => String(ownerId || "") === activeUser.uid);
-      if (!isOwner) {
-        throw new Error("You don't have permission to delete this event.");
-      }
-      if (auth?.currentUser?.uid !== activeUser.uid || organizerId !== activeUser.uid) {
-        throw new Error("Your sign-in session changed. Please refresh and try again.");
-      }
-
-      await deleteDoc(doc(firestoreDb, "events", eventId));
+      await deleteDoc(eventRef);
       firestoreEventsById.delete(eventId);
       firestoreApprovalsById.delete(eventId);
       showEventNotice("Event deleted.");
